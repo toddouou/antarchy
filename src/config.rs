@@ -1,0 +1,204 @@
+use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+pub const ADMIN_USERNAME: &str = "ADMIN";
+pub const ADMIN_PASSWORD: &str = "admin";
+
+pub const HUES: &[&str] = &[
+    "#ff2e3f","#ff8c42","#ffb800","#f4d35e","#7fb069","#52b788",
+    "#43aa8b","#4d908e","#577590","#5e60ce","#7400b8","#9d4edd",
+    "#c77dff","#e0aaff","#ff70a6","#ff006e","#fb5607","#ffbe0b",
+    "#8338ec","#3a86ff","#06d6a0","#118ab2","#84a98c","#ef476f",
+];
+
+pub const ENEMY_HUES: &[&str] = &["#9b3027","#6b4423","#5a4e7c","#3d5a80","#52796f"];
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub port: u16,
+    pub world_w: u32,
+    pub world_h: u32,
+    pub spawn_x: u32,
+    pub spawn_y: u32,
+    pub spawn_pan: f64,
+    pub tick_rate: u32,
+    pub lifespan: u32,
+    pub bubble_r: f64,
+    pub hp_base: i32,
+    pub convert_pct: f64,
+    pub daily_ants: i32,
+    pub save_file: String,
+    pub xp_base: f64,
+    pub xp_exp: f64,
+    pub xp_level_cap: u16,
+    pub xp_tile_milestone: u64,
+    pub xp_tile_award: f64,
+    pub xp_kill: f64,
+    pub xp_convert: f64,
+    pub xp_heal: f64,
+    pub xp_highway_tick: f64,
+    pub levelup_ant_grant: i32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            port: 8080,
+            world_w:    1_500_000,
+            world_h:      750_000,
+            spawn_x:      750_000,
+            spawn_y:      375_000,
+            spawn_pan:        200.0,
+            tick_rate:         50,
+            lifespan:   4_320_000,
+            bubble_r:          30.0,
+            hp_base:           30,
+            convert_pct:       0.65,
+            daily_ants:        5,
+            save_file: "world.snapshot".to_string(),
+            xp_base:         500.0,
+            xp_exp:            2.2,
+            xp_level_cap:    100,
+            xp_tile_milestone: 500,
+            xp_tile_award:    25.0,
+            xp_kill:        5000.0,
+            xp_convert:        5.0,
+            xp_heal:           1.0,
+            xp_highway_tick:   1.0,
+            levelup_ant_grant: 1,
+        }
+    }
+}
+
+static GLOBAL_CFG: OnceLock<RwLock<Config>> = OnceLock::new();
+
+fn lock() -> &'static RwLock<Config> {
+    GLOBAL_CFG.get_or_init(|| RwLock::new(Config::default()))
+}
+
+pub fn cfg() -> RwLockReadGuard<'static, Config> {
+    lock().read().unwrap()
+}
+
+pub fn cfg_write() -> RwLockWriteGuard<'static, Config> {
+    lock().write().unwrap()
+}
+
+const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
+    ("tick_rate",         1.0,       200.0),
+    ("lifespan",       1000.0, 8_640_000.0),
+    ("bubble_r",          5.0,     5_000.0),
+    ("hp_base",           1.0, 1_000_000.0),
+    ("convert_pct",       0.1,         1.0),
+    ("daily_ants",        0.0,     1_000.0),
+    ("xp_base",           1.0, 1_000_000.0),
+    ("xp_exp",            0.5,         5.0),
+    ("xp_kill",           0.0, 1_000_000.0),
+    ("xp_convert",        0.0,    10_000.0),
+    ("xp_tile_milestone", 1.0,   100_000.0),
+    ("xp_tile_award",     0.0,    10_000.0),
+    ("levelup_ant_grant", 0.0,       100.0),
+    ("spawn_pan",        10.0,    10_000.0),
+];
+
+/// Returns the clamped value, or None if key is unknown.
+pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
+    let key_lc = key.to_lowercase();
+    let key = key_lc.as_str();
+    let &(_, lo, hi) = ADMIN_CLAMP.iter().find(|(k, _, _)| *k == key)?;
+    let v = value.clamp(lo, hi);
+    let mut c = cfg_write();
+    match key {
+        "tick_rate"         => c.tick_rate          = v as u32,
+        "lifespan"          => c.lifespan           = v as u32,
+        "bubble_r"          => c.bubble_r           = v,
+        "hp_base"           => c.hp_base            = v as i32,
+        "convert_pct"       => c.convert_pct        = v,
+        "daily_ants"        => c.daily_ants         = v as i32,
+        "xp_base"           => c.xp_base            = v,
+        "xp_exp"            => c.xp_exp             = v,
+        "xp_kill"           => c.xp_kill            = v,
+        "xp_convert"        => c.xp_convert         = v,
+        "xp_tile_milestone" => c.xp_tile_milestone  = v as u64,
+        "xp_tile_award"     => c.xp_tile_award      = v,
+        "levelup_ant_grant" => c.levelup_ant_grant  = v as i32,
+        "spawn_pan"         => c.spawn_pan          = v,
+        _ => return None,
+    }
+    Some(v)
+}
+
+pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
+    let d = Config::default();
+    let vals: &[(&'static str, f64)] = &[
+        ("tick_rate",         d.tick_rate as f64),
+        ("lifespan",          d.lifespan as f64),
+        ("bubble_r",          d.bubble_r),
+        ("hp_base",           d.hp_base as f64),
+        ("convert_pct",       d.convert_pct),
+        ("daily_ants",        d.daily_ants as f64),
+        ("xp_base",           d.xp_base),
+        ("xp_exp",            d.xp_exp),
+        ("xp_kill",           d.xp_kill),
+        ("xp_convert",        d.xp_convert),
+        ("xp_tile_milestone", d.xp_tile_milestone as f64),
+        ("xp_tile_award",     d.xp_tile_award),
+        ("levelup_ant_grant", d.levelup_ant_grant as f64),
+        ("spawn_pan",         d.spawn_pan),
+    ];
+    let mut out = Vec::with_capacity(vals.len());
+    let mut c = cfg_write();
+    c.tick_rate          = d.tick_rate;
+    c.lifespan           = d.lifespan;
+    c.bubble_r           = d.bubble_r;
+    c.hp_base            = d.hp_base;
+    c.convert_pct        = d.convert_pct;
+    c.daily_ants         = d.daily_ants;
+    c.xp_base            = d.xp_base;
+    c.xp_exp             = d.xp_exp;
+    c.xp_kill            = d.xp_kill;
+    c.xp_convert         = d.xp_convert;
+    c.xp_tile_milestone  = d.xp_tile_milestone;
+    c.xp_tile_award      = d.xp_tile_award;
+    c.levelup_ant_grant  = d.levelup_ant_grant;
+    c.spawn_pan          = d.spawn_pan;
+    drop(c);
+    for &(k, v) in vals { out.push((k, v)); }
+    out
+}
+
+pub fn queen_size_for_level(lvl: u16) -> u8 {
+    if lvl >= 100 { 8 }
+    else if lvl >= 90 { 7 }
+    else if lvl >= 75 { 6 }
+    else if lvl >= 50 { 5 }
+    else if lvl >= 25 { 4 }
+    else if lvl >= 10 { 3 }
+    else { 2 }
+}
+
+pub fn total_xp_for_level(n: u16, cfg: &Config) -> f64 {
+    if n <= 1 { return 0.0; }
+    (cfg.xp_base * ((n - 1) as f64).powf(cfg.xp_exp)).floor()
+}
+
+pub fn level_for_xp(xp: f64, cfg: &Config) -> u16 {
+    let mut lvl: u16 = 1;
+    while lvl < cfg.xp_level_cap && total_xp_for_level(lvl + 1, cfg) <= xp {
+        lvl += 1;
+    }
+    lvl
+}
+
+pub fn calc_score(tiles: u64, queen_placed_at_ms: Option<u64>, kills: u32) -> f64 {
+    let secs = queen_placed_at_ms
+        .map(|t| (current_ms() - t) / 1000)
+        .unwrap_or(0);
+    tiles as f64 + secs as f64 * 0.5 + kills as f64 * 500.0
+}
+
+pub fn current_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}

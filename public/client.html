@@ -1,0 +1,2603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>HIVE — Madison WI</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f3ec; --bg2: #ffffff; --ink: #0d0d0d;
+    --dim: #6e6e6e; --line: #c8c4b8; --grid: #ece8da;
+    --red: #ff2e3f; --yel: #ffb800; --grn: #00b86b; --blu: #0066ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html,body { height:100%; background:var(--bg); color:var(--ink);
+    font-family:'IBM Plex Mono',monospace; overflow:hidden; user-select:none;
+    overscroll-behavior:none; touch-action:none; }
+  body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background:repeating-linear-gradient(0deg, transparent 0px, transparent 2px, rgba(0,0,0,.025) 2px, rgba(0,0,0,.025) 3px); }
+
+  /* Layout — admin panel is dynamic */
+  body { display:grid;
+    grid-template-columns: 270px 1fr 0px;
+    grid-template-rows: 52px 1fr 32px;
+    grid-template-areas: "h h h" "s c a" "f f f";
+    transition: grid-template-columns .25s; }
+  body.admin-on { grid-template-columns: 270px 1fr 360px; }
+
+  header { grid-area:h; border-bottom:2px solid var(--ink); display:flex; align-items:center;
+    padding:0 16px; gap:16px; background:var(--bg2); }
+  .logo { font-family:'Press Start 2P',monospace; font-size:14px; display:flex; align-items:center; gap:8px; }
+  .logo::before { content:"▲"; color:var(--red); font-size:18px; }
+  .logo em { color:var(--red); font-style:normal; }
+  .region { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
+    padding:4px 8px; border:1px solid var(--line); }
+  .region b { color:var(--red); font-weight:normal; }
+  .admin-badge { font-family:'Press Start 2P',monospace; font-size:8px; padding:4px 8px;
+    background:var(--ink); color:var(--yel); border:1px solid var(--ink); display:none; }
+  body.admin-on .admin-badge { display:inline-block; }
+  .hstats { margin-left:auto; display:flex; }
+  .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 12px;
+    border-left:1px solid var(--line); }
+  .hstat .l { font-family:'Press Start 2P',monospace; color:var(--dim); font-size:7px; }
+  .hstat .v { font-family:'Press Start 2P',monospace; font-size:11px; margin-top:4px; }
+  .hstat.score-stat .v { color:var(--red); font-size:13px; }
+
+  /* SIDEBAR */
+  .sidebar { grid-area:s; border-right:2px solid var(--ink); background:var(--bg2);
+    overflow-y:auto; padding:10px; }
+  .panel { margin-bottom:12px; border:2px solid var(--ink); background:var(--bg2); }
+  .ptitle { padding:5px 8px; border-bottom:2px solid var(--ink); font-family:'Press Start 2P',monospace;
+    font-size:7px; background:var(--yel); letter-spacing:.05em; }
+  .ptitle::before { content:"▶ "; }
+  .pbody { padding:8px; }
+  .profile { display:flex; gap:10px; align-items:center; }
+  .pfp { width:42px; height:42px; border:2px solid var(--ink); display:grid; place-items:center;
+    font-family:'VT323',monospace; font-size:26px; background:var(--bg); }
+  .pname { font-family:'Press Start 2P',monospace; font-size:10px; }
+  .pmeta { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:3px; }
+
+  .hp-bar { height:10px; background:var(--bg); border:1px solid var(--ink); position:relative;
+    margin-top:4px;
+    background-image:repeating-linear-gradient(90deg,transparent 0,transparent 8px,var(--ink) 8px,var(--ink) 9px); }
+  .hp-fill { height:100%; background:var(--red); transition:width .3s; }
+
+  .xp-wrap { margin-top:8px; }
+  .xp-label { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
+    display:flex; justify-content:space-between; margin-bottom:3px; }
+  .xp-label .xv { color:var(--grn); }
+  .xp-bar { height:10px; background:var(--bg); border:1px solid var(--ink); position:relative;
+    background-image:repeating-linear-gradient(90deg,transparent 0,transparent 12px,var(--ink) 12px,var(--ink) 13px); }
+  .xp-fill { height:100%; background:linear-gradient(90deg,#00b86b 0,#7fff8a 100%);
+    transition:width .4s; }
+
+  .stat-grid { display:grid; grid-template-columns:1fr 1fr; border-top:2px solid var(--ink); }
+  .stat-cell { padding:6px 8px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .stat-cell:nth-child(2n) { border-right:none; }
+  .stat-cell:nth-last-child(-n+2) { border-bottom:none; }
+  .stat-cell .l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
+  .stat-cell .v { font-family:'Press Start 2P',monospace; font-size:11px; margin-top:3px; }
+  .stat-cell .v.r { color:var(--red); }
+  .stat-cell .v.g { color:var(--grn); }
+  .stat-cell .v.b { color:var(--blu); }
+
+  /* SCORE PANEL */
+  .score-panel { border:2px solid var(--ink); background:var(--ink); color:var(--bg2);
+    padding:10px; margin-bottom:12px; }
+  .score-panel .slbl { font-family:'Press Start 2P',monospace; font-size:7px;
+    color:var(--yel); margin-bottom:6px; }
+  .score-big { font-family:'Press Start 2P',monospace; font-size:20px;
+    color:var(--yel); line-height:1; }
+  .score-sub { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; }
+  .score-sub div { font-family:'Press Start 2P',monospace; font-size:8px;
+    color:rgba(255,255,255,.6); border-top:1px solid rgba(255,255,255,.15); padding-top:4px; }
+  .score-sub div b { color:#fff; font-weight:normal; font-size:10px; display:block; margin-top:2px; }
+
+  /* BUTTONS */
+  .btn { background:var(--red); color:#fff; border:2px solid var(--ink); padding:8px 10px;
+    font-family:'Press Start 2P',monospace; font-size:8px; cursor:pointer; width:100%;
+    box-shadow:3px 3px 0 0 var(--ink); transition:transform .08s; letter-spacing:.05em; }
+  .btn:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:4px 4px 0 0 var(--ink); }
+  .btn:active:not(:disabled) { transform:translate(2px,2px); box-shadow:1px 1px 0 0 var(--ink); }
+  .btn:disabled { background:var(--bg); color:var(--dim); cursor:not-allowed; box-shadow:3px 3px 0 0 var(--line); }
+  .btn.active { background:var(--ink); color:var(--yel); animation:pulseGlow 1s steps(2) infinite; }
+  @keyframes pulseGlow { 0%,100%{box-shadow:3px 3px 0 0 var(--red);} 50%{box-shadow:3px 3px 0 0 var(--yel);} }
+  .btn.ghost { background:var(--bg2); color:var(--ink); }
+  .btn.ghost:hover:not(:disabled) { background:var(--yel); }
+  .lb-table { display:flex; flex-direction:column; }
+  .lb-row { display:grid; grid-template-columns:18px 1fr 40px 22px; align-items:center; gap:4px;
+    padding:5px 0; border-bottom:1px solid var(--line);
+    font-family:'Press Start 2P',monospace; font-size:6px; }
+  .lb-row:last-child { border-bottom:none; }
+  .lb-rank { color:var(--dim); }
+  .lb-name { display:flex; align-items:center; gap:4px; min-width:0; overflow:hidden; }
+  .lb-swatch { width:8px; height:8px; border:1px solid var(--ink); flex-shrink:0; }
+  .lb-name-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lb-tiles { text-align:right; font-family:'IBM Plex Mono',monospace; font-size:8px; }
+  .lb-trend { text-align:right; font-size:8px; }
+  .lb-trend.up { color:var(--grn); }
+  .lb-trend.dn { color:var(--red); }
+  .lb-me { background:rgba(255,184,0,.08); }
+
+  /* CANVAS */
+  .canvas-area { grid-area:c; position:relative; background:var(--bg2); overflow:hidden; touch-action:none; }
+canvas { display:block; width:100%; height:100%; cursor:grab;
+    image-rendering:pixelated; image-rendering:crisp-edges;
+    touch-action: none; }
+  canvas.placing { cursor:crosshair; }
+  canvas.dragging { cursor:grabbing; }
+
+  #dir-overlay { position:absolute; pointer-events:none; display:none; z-index:50; }
+  .ovr { position:absolute; pointer-events:none; font-family:'Press Start 2P',monospace; font-size:8px; }
+  .compass { top:12px; left:12px; background:var(--bg2); border:2px solid var(--ink);
+    padding:8px 10px; box-shadow:3px 3px 0 0 var(--ink); }
+  .coord { color:var(--red); }
+  .zooml { color:var(--dim); margin-top:4px; }
+  .tick-ind { top:12px; right:12px; background:var(--bg2); border:2px solid var(--ink);
+    padding:8px 10px; display:flex; align-items:center; gap:6px; box-shadow:3px 3px 0 0 var(--ink); }
+  .pulse { width:8px; height:8px; background:var(--grn); animation:blink .5s steps(2) infinite; }
+  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+  .place-prompt { bottom:28px; left:50%; transform:translateX(-50%); background:var(--red);
+    color:#fff; border:2px solid var(--ink); padding:12px 20px;
+    font-family:'Press Start 2P',monospace; font-size:10px;
+    box-shadow:4px 4px 0 0 var(--ink); animation:bob 1.2s steps(2) infinite; }
+  @keyframes bob { 0%,100%{transform:translateX(-50%) translateY(0);} 50%{transform:translateX(-50%) translateY(-3px);} }
+  .toast { position:absolute; top:70px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:var(--bg2); border:2px solid var(--ink);
+    padding:10px 16px; font-family:'Press Start 2P',monospace; font-size:8px;
+    opacity:0; transition:opacity .3s; pointer-events:none; z-index:100;
+    box-shadow:4px 4px 0 0 var(--red); }
+  .toast.show { opacity:1; }
+
+  /* INSPECT BOX */
+  .inspect-box { position:absolute; bottom:12px; left:12px; background:var(--ink); color:var(--yel);
+    border:2px solid var(--ink); padding:8px 10px; box-shadow:3px 3px 0 0 var(--red);
+    min-width:160px; max-width:220px; z-index:30; display:none; }
+  .inspect-header { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--red);
+    margin-bottom:6px; letter-spacing:.1em; }
+  .inspect-row { display:flex; align-items:center; gap:6px; margin-top:4px;
+    font-family:'Press Start 2P',monospace; font-size:7px; color:rgba(255,230,0,.8); }
+  .inspect-swatch { width:8px; height:8px; border:1px solid var(--yel); flex-shrink:0; }
+
+  /* CAPITOL MARKER on map */
+  .cap-label { position:absolute; pointer-events:none;
+    font-family:'Press Start 2P',monospace; font-size:7px;
+    color:var(--ink); background:var(--yel); padding:2px 4px;
+    border:1px solid var(--ink); z-index:20; transform:translate(-50%,12px); }
+
+  /* ADMIN PANEL */
+  .admin { grid-area:a; border-left:2px solid var(--ink); background:var(--bg2);
+    overflow:hidden; display:flex; flex-direction:column; }
+  body:not(.admin-on) .admin { display:none; }
+  .adm-tabs { display:flex; border-bottom:2px solid var(--ink); flex-shrink:0; }
+  .adm-tab { flex:1; padding:6px 2px; font-family:'Press Start 2P',monospace; font-size:6px;
+    background:var(--bg2); border:none; border-right:1px solid var(--line); cursor:pointer;
+    color:var(--dim); letter-spacing:.03em; }
+  .adm-tab:last-child { border-right:none; }
+  .adm-tab:hover { background:var(--bg); }
+  .adm-tab.active { background:var(--ink); color:var(--yel); }
+  .adm-pane { display:none; padding:10px; overflow-y:auto; flex:1; }
+  .adm-pane.active { display:block; }
+  .adm-cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px;
+    background:var(--ink); border:2px solid var(--ink); margin-bottom:10px; }
+  .adm-card { background:var(--bg2); padding:6px 8px; }
+  .adm-cl { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
+  .adm-cv { font-family:'Press Start 2P',monospace; font-size:10px; margin-top:3px; color:var(--red); }
+  .adm-subsec { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--blu);
+    margin:10px 0 5px; padding-bottom:3px; border-bottom:1px solid var(--line); letter-spacing:.05em; }
+  .adm-log { max-height:220px; overflow-y:auto; }
+  .adm-log-entry { font-family:'IBM Plex Mono',monospace; font-size:9px; color:var(--dim);
+    padding:2px 0; border-bottom:1px solid var(--grid); line-height:1.3; }
+  .adm-log-entry:last-child { border-bottom:none; }
+  .adm-ptable-hdr { display:grid; grid-template-columns:1fr 28px 48px 16px;
+    gap:4px; padding:4px 6px; background:var(--ink); color:var(--yel);
+    font-family:'Press Start 2P',monospace; font-size:6px; margin-bottom:2px; }
+  .adm-ptable-row { display:grid; grid-template-columns:1fr 28px 48px 16px;
+    gap:4px; padding:5px 6px; border-bottom:1px solid var(--line);
+    font-family:'Press Start 2P',monospace; font-size:6px; cursor:pointer; align-items:center; }
+  .adm-ptable-row:hover { background:var(--yel); }
+  .adm-ptable-row:last-child { border-bottom:none; }
+  .adm-tgt-name { font-family:'Press Start 2P',monospace; font-size:9px;
+    padding:6px 8px; margin-bottom:6px; border:2px solid var(--ink); }
+  .adm-tgt-meta { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
+    margin-bottom:8px; }
+  .adm-tgt-hp-bar { height:8px; background:var(--bg); border:1px solid var(--ink); margin-bottom:2px; }
+  .adm-input-row { display:flex; align-items:center; gap:4px; margin-bottom:4px; }
+  .adm-il { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
+    white-space:nowrap; flex-shrink:0; }
+  .adm-in { background:var(--bg); border:2px solid var(--ink); color:var(--ink);
+    font-family:'IBM Plex Mono',monospace; font-size:11px; padding:4px 6px; width:100%; }
+  .adm-in:focus { outline:none; background:var(--yel); }
+  .adm-in-sm { background:var(--bg); border:2px solid var(--ink); color:var(--ink);
+    font-family:'IBM Plex Mono',monospace; font-size:11px; padding:3px 5px; min-width:0; flex:1; }
+  .adm-in-sm:focus { outline:none; background:var(--yel); }
+  .adm-speed.active-speed { background:var(--blu); color:#fff; }
+  .adm-xp-preview { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
+    padding:6px; background:var(--bg); border:1px dashed var(--line); margin-bottom:8px; line-height:1.8; }
+  .slider-g { margin-bottom:10px; }
+  .slider-l { display:flex; justify-content:space-between;
+    font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-bottom:3px; }
+  .slider-l .v { color:var(--red); }
+  input[type="range"] { width:100%; -webkit-appearance:none; appearance:none;
+    height:6px; background:var(--bg); border:1px solid var(--ink); outline:none; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none;
+    width:14px; height:14px; background:var(--red); cursor:pointer;
+    border:2px solid var(--ink); border-radius:0; }
+  input[type="range"]::-moz-range-thumb { width:14px; height:14px; background:var(--red);
+    cursor:pointer; border:2px solid var(--ink); border-radius:0; }
+  .btn-row { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:4px; }
+  .btn-sm { background:var(--bg2); border:2px solid var(--ink); color:var(--ink);
+    padding:6px; font-family:'Press Start 2P',monospace; font-size:7px; cursor:pointer;
+    box-shadow:2px 2px 0 0 var(--ink); }
+  .btn-sm:hover { background:var(--yel); }
+  .btn-sm:active { transform:translate(1px,1px); box-shadow:1px 1px 0 0 var(--ink); }
+  .btn-sm.r { background:var(--red); color:#fff; }
+  .btn-sm.r:hover { background:#ff1020; }
+  .diag { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); line-height:1.8; }
+  .diag span { color:var(--red); }
+
+  footer { grid-area:f; border-top:2px solid var(--ink); background:var(--bg2);
+    display:flex; align-items:center; padding:0 12px; gap:16px;
+    font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); }
+  footer .dot { animation:blink .5s steps(2) infinite; }
+  footer .dot.ok { color:var(--grn); }
+  footer .dot.bad { color:var(--red); }
+  footer .right { margin-left:auto; }
+  /* admin toggle switch */
+  .admin-tog { display:none; align-items:center; gap:7px; cursor:pointer;
+    font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
+    user-select:none; }
+  .admin-tog.vis { display:flex; }
+  .admin-tog input { display:none; }
+  .tog-track { width:32px; height:14px; background:var(--line); border:1px solid var(--ink);
+    position:relative; flex-shrink:0; transition:background .15s; }
+  .admin-tog input:checked ~ .tog-track { background:var(--yel); }
+  .tog-thumb { position:absolute; top:1px; left:1px; width:10px; height:10px;
+    background:var(--ink); transition:left .15s; }
+  .admin-tog input:checked ~ .tog-track .tog-thumb { left:19px; }
+
+  /* SPAWN SELECTION SCREEN */
+  #spawn-screen {
+    position:fixed; inset:0; z-index:200; pointer-events:none;
+    display:none;
+    grid-template-columns:270px 1fr;
+    grid-template-rows:52px 1fr 32px;
+  }
+  #spawn-screen.vis { display:grid; animation:ss-in .22s ease-out; }
+  @keyframes ss-in { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:translateY(0)} }
+  #ss-header {
+    grid-column:1/3; grid-row:1;
+    background:var(--ink); color:var(--yel);
+    border-bottom:2px solid var(--ink);
+    display:flex; align-items:center; padding:0 18px; gap:14px;
+    pointer-events:auto;
+    font-family:'Press Start 2P',monospace; font-size:8px; letter-spacing:.05em;
+  }
+  #ss-header .ss-logo { font-size:13px; color:var(--yel); }
+  #ss-header .ss-logo::before { content:"▲ "; color:var(--red); }
+  #ss-header .ss-title { color:var(--yel); flex:1; text-align:center; letter-spacing:.1em; }
+  #ss-header .ss-player { display:flex; align-items:center; gap:8px; color:rgba(255,230,0,.6); font-size:7px; }
+  #ss-header .ss-pswatch { width:10px; height:10px; border:1px solid var(--yel); flex-shrink:0; }
+  #ss-left {
+    grid-column:1; grid-row:2;
+    background:var(--bg2); border-right:2px solid var(--ink);
+    overflow-y:auto; padding:18px 14px;
+    pointer-events:auto;
+    display:flex; flex-direction:column; gap:0;
+  }
+  .ss-headline {
+    font-family:'Press Start 2P',monospace; font-size:13px;
+    line-height:1.7; color:var(--ink); margin-bottom:10px;
+  }
+  .ss-headline em { color:var(--red); font-style:normal; }
+  .ss-body {
+    font-family:'VT323',monospace; font-size:18px;
+    color:var(--dim); line-height:1.4; margin-bottom:14px;
+  }
+  .ss-rule { border:none; border-top:2px solid var(--line); margin:12px 0; }
+  .ss-sub {
+    font-family:'Press Start 2P',monospace; font-size:7px;
+    color:var(--dim); margin-bottom:8px; letter-spacing:.05em;
+  }
+  .ss-step {
+    display:flex; align-items:flex-start; gap:8px;
+    font-family:'VT323',monospace; font-size:17px; color:var(--ink);
+    margin-bottom:6px; line-height:1.3;
+  }
+  .ss-step-arrow { color:var(--red); flex-shrink:0; }
+  .ss-status {
+    margin-top:auto; padding-top:14px;
+    border-top:2px solid var(--line);
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .ss-stat {
+    display:flex; align-items:center; gap:8px;
+    font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
+  }
+  .ss-stat b { color:var(--red); font-size:10px; }
+  .ss-ident {
+    display:flex; align-items:center; gap:8px;
+    font-family:'Press Start 2P',monospace; font-size:8px;
+    border:2px solid var(--ink); padding:7px 9px; background:var(--bg);
+  }
+  .ss-ident-swatch { width:14px; height:14px; border:1px solid var(--ink); flex-shrink:0; }
+  /* grid col 2 / row 2 is intentionally absent — canvas shows through */
+  #ss-footer {
+    grid-column:1/3; grid-row:3;
+    background:var(--ink);
+    border-top:2px solid var(--ink);
+    display:flex; align-items:center; padding:0 16px; gap:20px;
+    pointer-events:auto;
+    font-family:'Press Start 2P',monospace; font-size:7px;
+  }
+  #ss-footer .ss-hint { color:rgba(255,230,0,.55); }
+  #ss-footer .ss-hint b { color:var(--yel); }
+  /* Floating cursor card */
+  #ss-card {
+    position:fixed; z-index:201; pointer-events:none;
+    border:2px solid var(--ink); padding:9px 12px;
+    font-family:'Press Start 2P',monospace; font-size:7px;
+    box-shadow:3px 3px 0 0 var(--ink);
+    min-width:160px; display:none;
+  }
+  #ss-card.ok { background:var(--ink); color:var(--yel); }
+  #ss-card.bad { background:var(--red); color:#fff; }
+  #ss-card.out { background:var(--bg2); color:var(--dim); border-color:var(--line); box-shadow:none; }
+  #ss-card-title { font-size:8px; margin-bottom:4px; }
+  #ss-card-sub { font-size:6px; opacity:.7; }
+
+  /* AUTH MODAL */
+  .modal-bg { position:fixed; inset:0; background:rgba(245,243,236,.92);
+    display:grid; place-items:center; z-index:1000; }
+  .modal { background:var(--bg2); border:3px solid var(--ink); padding:30px 34px;
+    max-width:440px; width:90%; box-shadow:8px 8px 0 0 var(--red); }
+  .modal h2 { font-family:'Press Start 2P',monospace; font-size:16px; line-height:1.4;
+    margin-bottom:6px; }
+  .modal h2 em { color:var(--red); font-style:normal; }
+  .modal .tag { font-family:'Press Start 2P',monospace; color:var(--dim);
+    font-size:8px; margin-bottom:18px; }
+  .step { display:none; } .step.active { display:block; }
+  .modal label { display:block; font-family:'Press Start 2P',monospace; font-size:8px;
+    color:var(--ink); margin-bottom:5px; margin-top:10px; }
+  .modal input { width:100%; background:var(--bg); border:2px solid var(--ink);
+    color:var(--ink); padding:10px 12px; font-family:'IBM Plex Mono',monospace; font-size:14px; }
+  .modal input:focus { outline:none; background:var(--yel); }
+  .hue-picker { display:grid; grid-template-columns:repeat(8,1fr); gap:4px; margin-top:6px; }
+  .hue-sw { aspect-ratio:1; cursor:pointer; border:2px solid var(--ink); }
+  .hue-sw:hover { transform:translate(-1px,-1px); box-shadow:2px 2px 0 0 var(--ink); }
+  .hue-sw.sel { transform:translate(-2px,-2px); box-shadow:3px 3px 0 0 var(--ink); }
+  .actions { margin-top:18px; display:flex; gap:6px; }
+  .switch { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
+    margin-top:12px; text-align:center; }
+  .switch a { color:var(--red); cursor:pointer; text-decoration:underline; }
+  .ascii { font-family:'VT323',monospace; font-size:18px; color:var(--red);
+    white-space:pre; margin-bottom:14px; text-align:center; line-height:1.1; }
+  .err { color:var(--red); font-family:'Press Start 2P',monospace; font-size:7px;
+    margin-top:6px; min-height:12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">HIVE<em>.</em></div>
+  <div class="region">REGION · <b>MADISON, WI</b></div>
+  <span class="admin-badge" id="admin-badge">◆ ADMIN</span>
+  <div class="hstats">
+    <div class="hstat"><span class="l">TICK</span><span class="v" id="hdr-tick">0</span></div>
+    <div class="hstat"><span class="l">ANTS</span><span class="v" id="hdr-ants">0</span></div>
+    <div class="hstat"><span class="l">PLAYERS</span><span class="v" id="hdr-players">0</span></div>
+    <div class="hstat score-stat"><span class="l">SCORE</span><span class="v" id="hdr-score">0</span></div>
+  </div>
+</header>
+
+<aside class="sidebar">
+  <div class="score-panel">
+    <div class="slbl">◆ GRAND SCORE</div>
+    <div class="score-big" id="score-big">0</div>
+    <div class="score-sub">
+      <div>TILES<b id="sc-tiles">0</b></div>
+      <div>TIME<b id="sc-time">0:00</b></div>
+      <div>KILLS<b id="sc-kills">0</b></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">QUEEN</div>
+    <div class="pbody">
+      <div class="profile">
+        <div class="pfp" id="pfp">◆</div>
+        <div>
+          <div class="pname" id="pname">—</div>
+          <div class="pmeta">LEVEL <span id="lvl">1</span>/<span id="lvl-cap">100</span></div>
+        </div>
+      </div>
+      <div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);margin-top:10px;">HP</div>
+      <div class="hp-bar"><div class="hp-fill" id="hp-fill" style="width:100%"></div></div>
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-top:3px;"><span id="hp-cur">100</span>/<span id="hp-max">100</span></div>
+      <div class="xp-wrap">
+        <div class="xp-label"><span>XP</span><span class="xv" id="xp-val">0/0</span></div>
+        <div class="xp-bar"><div class="xp-fill" id="xp-fill" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">STATS</div>
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="l">LIFESPAN</div><div class="v g" id="s-life">0:00</div></div>
+      <div class="stat-cell"><div class="l">TILES</div><div class="v" id="s-tiles">0</div></div>
+      <div class="stat-cell"><div class="l">ARMY</div><div class="v b" id="s-army">0</div></div>
+      <div class="stat-cell"><div class="l">KILLS</div><div class="v r" id="s-kills">0</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">WORKERS</div>
+    <div class="pbody">
+      <div style="font-family:'Press Start 2P',monospace;font-size:9px;margin-bottom:6px;">AVAIL: <span id="ants-avail" style="color:var(--red);">0</span></div>
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:8px;">REFILL <span id="refill-timer" style="color:var(--blu);">--:--:--</span></div>
+      <button class="btn" id="btn-ant" disabled>+ DEPLOY WORKER</button>
+      <div id="drag-hint" style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-top:6px;display:none;">CLICK &amp; DRAG → DIR</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ptitle">LEADERBOARD</div>
+    <div id="lb-body" style="padding:0 8px;">
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);padding:10px 0;text-align:center;">AWAITING DATA...</div>
+    </div>
+  </div>
+
+  <button class="btn ghost" id="btn-recenter" style="margin-bottom:5px;">⊕ CENTER QUEEN</button>
+<button class="btn ghost" id="btn-logout">⎋ LOGOUT</button>
+</aside>
+
+<main class="canvas-area">
+  <canvas id="map"></canvas>
+  <div id="dir-overlay"><svg width="48" height="48" viewBox="0 0 48 48">
+    <line x1="24" y1="24" x2="24" y2="8" stroke="#ff2e3f" stroke-width="4" stroke-linecap="round"/>
+    <polygon points="24,4 30,18 18,18" fill="#ff2e3f"/>
+  </svg></div>
+
+  <div class="ovr compass">
+    <div class="coord" id="ovr-coord">— — —</div>
+    <div class="zooml">ZOOM <span id="ovr-zoom">1.00X</span> · CELL <span id="ovr-cell">8PX</span></div>
+    <div class="zooml" id="ovr-tile" style="color:var(--yel);display:none;"></div>
+  </div>
+  <button id="btn-mute" style="position:absolute;bottom:14px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle audio">♪</button>
+  <div class="ovr tick-ind">
+    <div class="pulse"></div>
+    <span><span id="ovr-hz">20</span>HZ · T<span id="ovr-tick">0</span></span>
+  </div>
+  <div class="ovr place-prompt" id="prompt" style="display:none;">CLICK TO PLACE</div>
+  <div class="toast" id="toast"></div>
+  <div class="inspect-box ovr" id="inspect-box">
+    <div class="inspect-header" id="inspect-type"></div>
+    <div id="inspect-rows"></div>
+  </div>
+</main>
+
+<aside class="admin" id="admin-panel">
+  <div class="adm-tabs">
+    <button class="adm-tab active" data-tab="status" onclick="admTab(this,'status')">STATUS</button>
+    <button class="adm-tab" data-tab="players" onclick="admTab(this,'players')">PLYRS</button>
+    <button class="adm-tab" data-tab="target" onclick="admTab(this,'target')">TARGET</button>
+    <button class="adm-tab" data-tab="sandbox" onclick="admTab(this,'sandbox')">BOX</button>
+    <button class="adm-tab" data-tab="tune" onclick="admTab(this,'tune')">TUNE</button>
+  </div>
+
+  <!-- STATUS -->
+  <div class="adm-pane active" id="atab-status">
+    <div class="adm-cards">
+      <div class="adm-card"><div class="adm-cl">TPS</div><div class="adm-cv" id="adm-tps">50</div></div>
+      <div class="adm-card"><div class="adm-cl">TICK</div><div class="adm-cv" id="adm-tick">0</div></div>
+      <div class="adm-card"><div class="adm-cl">ONLINE</div><div class="adm-cv" id="adm-online">0</div></div>
+      <div class="adm-card"><div class="adm-cl">QUEENS</div><div class="adm-cv" id="adm-queens">0</div></div>
+      <div class="adm-card"><div class="adm-cl">ANTS</div><div class="adm-cv" id="adm-ants">0</div></div>
+      <div class="adm-card"><div class="adm-cl">UPTIME</div><div class="adm-cv" id="adm-uptime">--</div></div>
+    </div>
+    <div class="adm-subsec">DIAG</div>
+    <div class="diag">FPS: <span id="d-fps">60</span> · TILES: <span id="d-tiles">0</span> · ARMY: <span id="d-army">0</span></div>
+    <div class="adm-subsec">EVENT LOG</div>
+    <div id="adm-log" class="adm-log"></div>
+  </div>
+
+  <!-- PLAYERS -->
+  <div class="adm-pane" id="atab-players">
+    <input class="adm-in" id="adm-filter" placeholder="FILTER BY NAME..." type="text" oninput="admFilterPlayers()" style="margin-bottom:8px;">
+    <div id="adm-ptable">
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);text-align:center;padding:20px 0;">LOADING...</div>
+    </div>
+  </div>
+
+  <!-- TARGET -->
+  <div class="adm-pane" id="atab-target">
+    <div id="adm-no-tgt" style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);text-align:center;padding:30px 10px;line-height:2.2;">NO TARGET<br><br>SELECT FROM PLAYERS<br>OR CLICK A QUEEN</div>
+    <div id="adm-tgt" style="display:none;">
+      <div class="adm-tgt-name" id="adm-tgt-name">—</div>
+      <div class="adm-tgt-meta" id="adm-tgt-meta">LV — · — TILES</div>
+      <div class="adm-tgt-hp-bar"><div id="adm-tgt-hp-fill" style="height:100%;background:var(--red);width:100%;transition:width .3s;"></div></div>
+      <div id="adm-tgt-hp-text" style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);margin-bottom:8px;"></div>
+      <div class="adm-subsec">QUICK</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:3px;margin-bottom:6px;">
+        <button class="btn-sm" id="atgt-heal">♥</button>
+        <button class="btn-sm" id="atgt-ants">+10♟</button>
+        <button class="btn-sm" id="atgt-lvlu">LV▲</button>
+        <button class="btn-sm" id="atgt-lvld">LV▼</button>
+      </div>
+      <div class="adm-subsec">EXACT VALUES</div>
+      <div class="adm-input-row">
+        <span class="adm-il">LVL</span>
+        <input class="adm-in-sm" id="atgt-setlvl" type="number" min="1" max="100" placeholder="1">
+        <button class="btn-sm" onclick="admSetLevel()">SET</button>
+      </div>
+      <div class="adm-input-row">
+        <span class="adm-il">XP+</span>
+        <input class="adm-in-sm" id="atgt-givexp" type="number" min="0" placeholder="0">
+        <button class="btn-sm" onclick="admGiveXp()">ADD</button>
+      </div>
+      <div class="adm-input-row">
+        <span class="adm-il">ANTS</span>
+        <input class="adm-in-sm" id="atgt-setants" type="number" min="0" placeholder="0">
+        <button class="btn-sm" onclick="admSetAnts()">SET</button>
+      </div>
+      <div class="adm-subsec">ACTIONS</div>
+      <div class="btn-row" style="margin-bottom:4px;">
+        <button class="btn-sm" id="atgt-move">⊕ MOVE</button>
+        <button class="btn-sm r" id="atgt-del">✕ DELETE</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn-sm" id="atgt-kick">⊙ KICK</button>
+        <button class="btn-sm r" id="atgt-ban">⊘ BAN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SANDBOX -->
+  <div class="adm-pane" id="atab-sandbox">
+    <div class="adm-subsec">SIMULATION</div>
+    <div class="btn-row" style="margin-bottom:6px;">
+      <button class="btn-sm" id="adm-pause-btn" onclick="admTogglePause()">⏸ PAUSE</button>
+      <button class="btn-sm" onclick="admSandboxRecenter()">⊛ RECENTER</button>
+    </div>
+    <div class="adm-subsec">SPEED</div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:3px;margin-bottom:8px;">
+      <button class="btn-sm adm-speed" data-hz="25" onclick="admSetSpeed(25)">0.5×</button>
+      <button class="btn-sm adm-speed active-speed" data-hz="50" onclick="admSetSpeed(50)">1×</button>
+      <button class="btn-sm adm-speed" data-hz="100" onclick="admSetSpeed(100)">2×</button>
+      <button class="btn-sm adm-speed" data-hz="250" onclick="admSetSpeed(250)">5×</button>
+      <button class="btn-sm adm-speed" data-hz="500" onclick="admSetSpeed(500)">10×</button>
+    </div>
+    <div class="adm-subsec">SPAWN NPCs</div>
+    <div class="adm-input-row" style="margin-bottom:8px;">
+      <input class="adm-in-sm" id="adm-npc-count" type="number" min="1" max="50" value="1" style="width:60px;">
+      <button class="btn-sm" style="flex:1;" onclick="admSpawnN()">⊕ SPAWN N</button>
+    </div>
+    <div class="adm-subsec">WORLD</div>
+    <div id="adm-wipe-normal">
+      <button class="btn-sm r" style="width:100%;margin-bottom:4px;" onclick="admWipeStart()">⚠ WIPE WORLD &amp; RESET ALL</button>
+    </div>
+    <div id="adm-wipe-confirm" style="display:none;padding:8px;background:var(--bg);border:2px solid var(--red);margin-bottom:6px;">
+      <div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--red);margin-bottom:6px;">TYPE "WIPE" TO CONFIRM</div>
+      <input class="adm-in" id="adm-wipe-input" type="text" placeholder="WIPE" style="margin-bottom:4px;">
+      <div class="btn-row">
+        <button class="btn-sm r" onclick="admWipeConfirm()">CONFIRM</button>
+        <button class="btn-sm" onclick="admWipeCancel()">CANCEL</button>
+      </div>
+    </div>
+    <div class="adm-subsec">TELEPORT ADMIN QUEEN</div>
+    <div class="adm-input-row" style="margin-bottom:8px;">
+      <span class="adm-il">X</span>
+      <input class="adm-in-sm" id="adm-tp-x" type="number" placeholder="750000">
+      <span class="adm-il">Y</span>
+      <input class="adm-in-sm" id="adm-tp-y" type="number" placeholder="375000">
+      <button class="btn-sm" onclick="admTeleport()">GO</button>
+    </div>
+    <div class="adm-subsec">BROADCAST</div>
+    <div class="adm-input-row">
+      <input class="adm-in" id="adm-bcast" type="text" placeholder="MESSAGE ALL..." style="flex:1;">
+      <button class="btn-sm" onclick="admBroadcast()">▶</button>
+    </div>
+  </div>
+
+  <!-- TUNE -->
+  <div class="adm-pane" id="atab-tune">
+    <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:6px;">
+      <button class="btn-sm" onclick="admCfgReset()">↺ RESET ALL DEFAULTS</button>
+    </div>
+    <div class="adm-subsec">PRESETS</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:3px;margin-bottom:8px;">
+      <button class="btn-sm" onclick="admSavePreset('A')" title="Save preset A">SV A</button>
+      <button class="btn-sm" onclick="admLoadPreset('A')" title="Load preset A">LD A</button>
+      <button class="btn-sm" onclick="admSavePreset('B')" title="Save preset B">SV B</button>
+      <button class="btn-sm" onclick="admLoadPreset('B')" title="Load preset B">LD B</button>
+      <button class="btn-sm" onclick="admSavePreset('C')" title="Save preset C">SV C</button>
+      <button class="btn-sm" onclick="admLoadPreset('C')" title="Load preset C">LD C</button>
+    </div>
+    <div class="adm-xp-preview" id="adm-xp-preview">L100 NEEDS: —</div>
+    <div class="adm-subsec">CORE</div>
+    <div class="slider-g">
+      <div class="slider-l"><span>TICK RATE</span><span class="v"><span id="v-tr">50</span>HZ</span></div>
+      <input type="range" id="s-tr" min="1" max="200" step="1" value="50">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>ANT LIFESPAN</span><span class="v"><span id="v-ls">24h</span></span></div>
+      <input type="range" id="s-ls" min="1000" max="8640000" step="1000" value="4320000">
+    </div>
+    <div class="adm-subsec">QUEEN</div>
+    <div class="slider-g">
+      <div class="slider-l"><span>BUBBLE R</span><span class="v"><span id="v-br">30</span></span></div>
+      <input type="range" id="s-br" min="5" max="5000" step="5" value="30">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>HP/LEVEL</span><span class="v"><span id="v-hp">30</span></span></div>
+      <input type="range" id="s-hp" min="1" max="1000000" step="1" value="30">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>SPAWN PAN</span><span class="v"><span id="v-sp">200</span></span></div>
+      <input type="range" id="s-sp" min="10" max="10000" step="10" value="200">
+    </div>
+    <div class="adm-subsec">COMBAT</div>
+    <div class="slider-g">
+      <div class="slider-l"><span>CONVERT %</span><span class="v"><span id="v-cp">65</span></span></div>
+      <input type="range" id="s-cp" min="10" max="100" step="1" value="65">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>DAILY ANTS</span><span class="v"><span id="v-da">5</span></span></div>
+      <input type="range" id="s-da" min="0" max="1000" step="1" value="5">
+    </div>
+    <div class="adm-subsec">XP CURVE</div>
+    <div class="slider-g">
+      <div class="slider-l"><span>XP BASE</span><span class="v"><span id="v-xpb">500</span></span></div>
+      <input type="range" id="s-xpb" min="1" max="1000000" step="1" value="500">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>XP EXP</span><span class="v"><span id="v-xpe">2.2</span></span></div>
+      <input type="range" id="s-xpe" min="0.5" max="5.0" step="0.05" value="2.2">
+    </div>
+    <div class="adm-subsec">REWARDS</div>
+    <div class="slider-g">
+      <div class="slider-l"><span>XP/KILL</span><span class="v"><span id="v-xpk">5000</span></span></div>
+      <input type="range" id="s-xpk" min="0" max="1000000" step="100" value="5000">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>XP/CONVERT</span><span class="v"><span id="v-xpc">5</span></span></div>
+      <input type="range" id="s-xpc" min="0" max="10000" step="1" value="5">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>TILE MILESTONE</span><span class="v"><span id="v-tm">500</span></span></div>
+      <input type="range" id="s-tm" min="1" max="100000" step="10" value="500">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>XP/MILESTONE</span><span class="v"><span id="v-xptm">25</span></span></div>
+      <input type="range" id="s-xptm" min="0" max="10000" step="1" value="25">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l"><span>ANT/LEVEL</span><span class="v"><span id="v-ag">1</span></span></div>
+      <input type="range" id="s-ag" min="0" max="100" step="1" value="1">
+    </div>
+  </div>
+</aside>
+
+<footer>
+  <span class="dot ok" id="dot">●</span>
+  <span id="cstat">CONNECTING…</span>
+  <span>WS://LOCALHOST:8080</span>
+  <span style="flex:1"></span>
+  <label class="admin-tog" id="admin-tog">
+    <input type="checkbox" id="admin-chk">
+    <span class="tog-track"><span class="tog-thumb"></span></span>
+    ADMIN PANEL
+  </label>
+  <span>V0.3 · CAPITOL=(0,0)</span>
+</footer>
+
+<div id="spawn-screen">
+  <div id="ss-header">
+    <span class="ss-logo">HIVE</span>
+    <span class="ss-title">— CLAIM YOUR SPAWN POINT —</span>
+    <div class="ss-player">
+      <span class="ss-pswatch" id="ss-pswatch"></span>
+      <span id="ss-pname">—</span>
+    </div>
+  </div>
+
+  <div id="ss-left">
+    <div class="ss-headline">YOUR<br>QUEEN<br>HAS NO<br><em>HOME.</em></div>
+    <div class="ss-body">
+      The front is live.<br>
+      Every tile you wait on<br>
+      is claimed by an enemy first.
+    </div>
+
+    <hr class="ss-rule">
+    <div class="ss-sub">HOW TO SPAWN</div>
+    <div class="ss-step"><span class="ss-step-arrow">→</span><span>Click anywhere on the map to place your queen</span></div>
+    <div class="ss-step"><span class="ss-step-arrow">→</span><span>Avoid <b>RED ZONES</b> — enemy queens are too close</span></div>
+    <div class="ss-step"><span class="ss-step-arrow">→</span><span>This is <b>permanent</b>. Your queen cannot move once placed.</span></div>
+
+    <div class="ss-status">
+      <div class="ss-stat">
+        <b id="ss-queen-count">0</b> QUEENS ACTIVE IN ZONE
+      </div>
+      <div class="ss-ident">
+        <span class="ss-ident-swatch" id="ss-color"></span>
+        <span id="ss-name">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="ss-footer">
+    <span class="ss-hint"><b>RED ZONE</b> = ENEMY TERRITORY — AVOID</span>
+    <span class="ss-hint" style="margin-left:auto;color:rgba(255,230,0,.35);">PAN WITH MOUSE DRAG · SCROLL TO ZOOM</span>
+  </div>
+
+  <div id="ss-card">
+    <div id="ss-card-title">OUTSIDE ZONE</div>
+    <div id="ss-card-sub"></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="auth-modal">
+  <div class="modal">
+    <div class="ascii">  ▲
+ ╱│╲
+●─●─●
+ ╲│╱
+  ▼</div>
+    <h2>WELCOME TO<br><em>THE HIVE.</em></h2>
+    <p class="tag">MADISON, WI · LOCAL DEMO</p>
+    <div class="step active" data-step="login">
+      <label>USERNAME</label>
+      <input id="li-u" type="text" placeholder="ANTLORD" maxlength="20" autocomplete="username">
+      <label>PASSWORD</label>
+      <input id="li-p" type="password" placeholder="••••••••" autocomplete="current-password">
+      <div class="actions"><button class="btn" onclick="doLogin()">LOG IN →</button></div>
+      <div class="err" id="li-err"></div>
+      <div class="switch">NEW? <a onclick="showStep('reg1')">CREATE ACCOUNT</a></div>
+    </div>
+    <div class="step" data-step="reg1">
+      <label>USERNAME</label>
+      <input id="r-u" type="text" placeholder="ANTLORD" maxlength="20">
+      <label>PASSWORD (MIN 4)</label>
+      <input id="r-p" type="password" placeholder="••••••••">
+      <div class="actions"><button class="btn" onclick="showStep('reg2')">NEXT →</button></div>
+      <div class="switch"><a onclick="showStep('login')">← BACK</a></div>
+    </div>
+    <div class="step" data-step="reg2">
+      <label>CHOOSE HUE</label>
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">ONE CHANGE ALLOWED LATER.</div>
+      <div class="hue-picker" id="hue-picker"></div>
+      <div class="actions">
+        <button class="btn ghost" onclick="showStep('reg1')">← BACK</button>
+        <button class="btn" onclick="doRegister()">REGISTER →</button>
+      </div>
+      <div class="err" id="r-err"></div>
+    </div>
+    <div class="step" data-step="admin-color">
+      <label>CHOOSE YOUR COLONY COLOR</label>
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">THIS CANNOT BE CHANGED LATER.</div>
+      <div class="hue-picker" id="admin-hue-picker"></div>
+      <div class="actions">
+        <button class="btn" onclick="doSetAdminColor()">ENTER HIVE →</button>
+      </div>
+      <div class="err" id="admin-err"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===================================================================
+   HIVE CLIENT v0.3 — admin gating, Madison overlay, capitol origin
+   =================================================================== */
+const HUES = [
+  '#ff2e3f','#ff8c42','#ffb800','#f4d35e','#7fb069','#52b788',
+  '#43aa8b','#4d908e','#577590','#5e60ce','#7400b8','#9d4edd',
+  '#c77dff','#e0aaff','#ff70a6','#ff006e','#fb5607','#ffbe0b',
+  '#8338ec','#3a86ff','#06d6a0','#118ab2','#84a98c','#ef476f'
+];
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+function fmtTicks(ticks) {
+  const hrs = Math.round(ticks / 360000);
+  if (hrs < 24) return hrs + 'h';
+  const d = Math.floor(hrs / 24), h = hrs % 24;
+  return h ? d + 'd ' + h + 'h' : d + 'd';
+}
+
+/* CFG key → admin slider/label mapping. scale: multiply server value before display. fmt: custom display function. */
+const CFG_SLIDER_MAP = {
+  TICK_RATE:         { sid:'s-tr',   vid:'v-tr'   },
+  LIFESPAN:          { sid:'s-ls',   vid:'v-ls',   fmt: fmtTicks },
+  BUBBLE_R:          { sid:'s-br',   vid:'v-br'   },
+  HP_BASE:           { sid:'s-hp',   vid:'v-hp'   },
+  SPAWN_PAN:         { sid:'s-sp',   vid:'v-sp'   },
+  XP_BASE:           { sid:'s-xpb',  vid:'v-xpb'  },
+  XP_EXP:            { sid:'s-xpe',  vid:'v-xpe'  },
+  XP_KILL:           { sid:'s-xpk',  vid:'v-xpk'  },
+  XP_CONVERT:        { sid:'s-xpc',  vid:'v-xpc'  },
+  XP_TILE_MILESTONE: { sid:'s-tm',   vid:'v-tm'   },
+  XP_TILE_AWARD:     { sid:'s-xptm', vid:'v-xptm' },
+  LEVELUP_ANT_GRANT: { sid:'s-ag',   vid:'v-ag'   },
+  CONVERT_PCT:       { sid:'s-cp',   vid:'v-cp',  scale:100 }, // server 0-1 → slider 0-100
+  DAILY_ANTS:        { sid:'s-da',   vid:'v-da'   },
+};
+function applyCfgSlider(key, val) {
+  const m = CFG_SLIDER_MAP[key]; if (!m) return;
+  const s=$(m.sid), v=$(m.vid); if (!s||!v) return;
+  const display = m.scale ? +(val * m.scale).toFixed(2) : val;
+  s.value = display;
+  v.textContent = m.fmt ? m.fmt(display) : display;
+  updateXpPreview();
+}
+
+let ws=null, me=null, reconnecting=false, _queenPlaceCooldown=false;
+let view={x:32768, y:32768, zoom:0.22};
+let zoomTarget=1;       // smooth zoom lerp target
+let panTarget=null;     // {x,y} smooth camera fly target, null when idle
+let vw=null;
+let palette={0:'#ffffff'};
+let WORLD={w:2048, h:2048, geo:null, spawnX:1024, spawnY:1024, spawnPan:100};
+let mode='idle';
+let hover=null;
+let panLocked=true;
+let antPlaceOrigin=null, antPlaceDir=[0,-1];
+let toastTmr=null, frameCount=0, fpsT=performance.now();
+const floatingTexts=[];
+// Ant interpolation
+let prevAntPos=new Map(), lastVwAt=0;
+// Tile layer pixel cache (1px-per-tile offscreen canvas)
+const tileCanvas=document.createElement('canvas');
+const tileCtx=tileCanvas.getContext('2d',{alpha:true});
+let tileCacheVw=null, tileCachePlacing=false;
+// Near-colored tile set cache
+let nearColoredCache=null, nearColoredVw=null;
+// pushView debounce
+let lastPushAt=0;
+// Leaderboard
+let lbPrevTiles={};
+function fmtLbTiles(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(0)+'K';return String(n);}
+// OSM tile cache
+const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
+// Inspect / admin-target
+let selectedTarget=null, adminMoveTargetId=null;
+// Click-vs-drag
+let mouseDownAt=null;
+
+/* hex -> RGB cache for fog blending */
+const rgbCache={};
+function toRGB(hex) {
+  if (rgbCache[hex]) return rgbCache[hex];
+  let h=hex.replace('#','');
+  if (h.length===3) h=h.split('').map(c=>c+c).join('');
+  return rgbCache[hex]=[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
+}
+function fogBlend(hex, t) {
+  const [r,g,b]=toRGB(hex);
+  return `rgb(${(r*(1-t)+10*t)|0},${(g*(1-t)+8*t)|0},${(b*(1-t)+24*t)|0})`;
+}
+
+
+/* ===================================================================
+   COORDINATE DISPLAY: capitol at (0,0)
+   Internal coords use array indices; display subtracts spawn.
+   =================================================================== */
+function toDisplayXY(tx, ty) {
+  return { x: tx - WORLD.spawnX, y: WORLD.spawnY - ty }; // y flipped so north is positive
+}
+
+/* ===================================================================
+   TILE PIXEL CACHE  — 1px-per-tile offscreen canvas, rebuilt on new vw
+   =================================================================== */
+function getNearColored(v) {
+  if (v === nearColoredVw) return nearColoredCache;
+  const nc = new Uint8Array(v.w * v.h);
+  const R = 5;
+  for (let ty = 0; ty < v.h; ty++) {
+    for (let tx = 0; tx < v.w; tx++) {
+      if (v.tiles[ty * v.w + tx] !== 0) {
+        const y0 = Math.max(0, ty-R), y1 = Math.min(v.h-1, ty+R);
+        const x0 = Math.max(0, tx-R), x1 = Math.min(v.w-1, tx+R);
+        for (let ny = y0; ny <= y1; ny++)
+          for (let nx = x0; nx <= x1; nx++)
+            nc[ny * v.w + nx] = 1;
+      }
+    }
+  }
+  nearColoredCache = nc; nearColoredVw = v;
+  return nc;
+}
+
+function buildTileCache(v, myId=0, placing=false) {
+  if (tileCanvas.width !== v.w || tileCanvas.height !== v.h) {
+    tileCanvas.width = v.w; tileCanvas.height = v.h;
+  }
+  const img = tileCtx.createImageData(v.w, v.h);
+  const d = img.data;
+  for (let i = 0; i < v.w * v.h; i++) {
+    const t = v.tiles[i];
+    if (t === 0) continue;
+    const fog = v.fog[i];
+    if (fog >= 100) continue;
+    const o = i * 4;
+    const [r,g,b] = toRGB(palette[t]||'#9b3027');
+    d[o]=r; d[o+1]=g; d[o+2]=b;
+    const isOwn = t === myId;
+    const baseAlpha = placing ? (isOwn ? 230 : 38) : (isOwn ? 255 : 178);
+    d[o+3] = fog === 0 ? baseAlpha : Math.max(placing ? 8 : 40, (baseAlpha - fog * 1.5)|0);
+  }
+  tileCtx.putImageData(img, 0, 0);
+  tileCacheVw = v;
+  tileCachePlacing = placing;
+}
+
+/* ===================================================================
+   FLOATING TEXT
+   =================================================================== */
+function spawnFloatingText(text, wx, wy, color='#ffb800') {
+  floatingTexts.push({ text, wx, wy, born: performance.now(), color });
+}
+
+/* ===================================================================
+   SPATIAL AUDIO HELPER
+   =================================================================== */
+function spatialFromWorld(wx, wy) {
+  const cp = CELL * view.zoom;
+  const W = cvs.width, H = cvs.height;
+  const dx = (wx - view.x) * cp;
+  const dy = (wy - view.y) * cp;
+  const maxR = Math.sqrt((W / 2) ** 2 + (H / 2) ** 2);
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const vol = Math.max(0.08, 1 - dist / maxR);
+  const pan = Math.max(-1, Math.min(1, dx / (W / 2)));
+  return { pan, vol };
+}
+
+/* ===================================================================
+   AUDIO ENGINE  (Web Audio API — all sounds procedural, no files)
+   =================================================================== */
+const AudioEngine = (() => {
+  let _ctx = null, _master = null, _bgmSrc = null, _muted = false;
+
+  function _ensureCtx() {
+    if (_ctx) return;
+    _ctx = new (window.AudioContext || window.webkitAudioContext)();
+    _master = _ctx.createGain();
+    _master.gain.value = 0.6;
+    _master.connect(_ctx.destination);
+  }
+
+  function init() {
+    _ensureCtx();
+    if (_ctx.state === 'suspended') _ctx.resume();
+  }
+
+  function setMute(bool) {
+    _muted = bool;
+    if (_master) _master.gain.value = bool ? 0 : 0.6;
+  }
+
+  /* — primitive tone helper — */
+  function _tone(freq, type, dur, gain, pan = 0, delay = 0) {
+    if (!_ctx || _muted) return;
+    const t0 = _ctx.currentTime + delay;
+    const osc = _ctx.createOscillator();
+    const g = _ctx.createGain();
+    const panner = _ctx.createStereoPanner();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    panner.pan.value = pan;
+    osc.connect(g); g.connect(panner); panner.connect(_master);
+    osc.start(t0); osc.stop(t0 + dur + 0.01);
+  }
+
+  /* — noise burst helper — */
+  function _noise(dur, gain, pan = 0, lpFreq = 4000, delay = 0) {
+    if (!_ctx || _muted) return;
+    const t0 = _ctx.currentTime + delay;
+    const sr = _ctx.sampleRate;
+    const buf = _ctx.createBuffer(1, sr * dur, sr);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const src = _ctx.createBufferSource();
+    src.buffer = buf;
+    const lp = _ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = lpFreq;
+    const g = _ctx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    const panner = _ctx.createStereoPanner();
+    panner.pan.value = pan;
+    src.connect(lp); lp.connect(g); g.connect(panner); panner.connect(_master);
+    src.start(t0); src.stop(t0 + dur + 0.01);
+  }
+
+  /* — sweep helper — */
+  function _sweep(f0, f1, type, dur, gain, pan = 0, delay = 0) {
+    if (!_ctx || _muted) return;
+    const t0 = _ctx.currentTime + delay;
+    const osc = _ctx.createOscillator();
+    const g = _ctx.createGain();
+    const panner = _ctx.createStereoPanner();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0, t0);
+    osc.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    panner.pan.value = pan;
+    osc.connect(g); g.connect(panner); panner.connect(_master);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  }
+
+  /* ---- individual sounds ---- */
+
+  function click() {
+    if (!_ctx) return;
+    _noise(0.04, 0.35, 0, 1200);
+    _tone(900, 'sine', 0.04, 0.2);
+  }
+
+  function tick() {
+    if (!_ctx) return;
+    _tone(700, 'sine', 0.025, 0.2);
+  }
+
+  function plop() {
+    if (!_ctx) return;
+    _sweep(220, 55, 'sine', 0.18, 0.6);
+    _noise(0.05, 0.2, 0, 300);
+  }
+
+  function clash(pan = 0, vol = 1) {
+    if (!_ctx) return;
+    const v = vol * 0.7;
+    _noise(0.28, v * 0.8, pan, 5000);
+    _tone(380, 'sawtooth', 0.25, v * 0.5, pan);
+    _tone(190, 'square', 0.15, v * 0.3, pan);
+  }
+
+  function queenShriek(pan = 0, vol = 1) {
+    if (!_ctx) return;
+    const v = vol * 0.8;
+    _sweep(900, 3200, 'sine', 0.35, v * 0.6, pan);
+    _sweep(600, 2100, 'sawtooth', 0.3, v * 0.3, pan);
+  }
+
+  function levelUp() {
+    if (!_ctx) return;
+    // ta-da-da-da ascending: A4 C5 E5 A5
+    const notes = [440, 523.25, 659.25, 880];
+    const step = 0.11;
+    notes.forEach((f, i) => {
+      _tone(f, 'square', step * 0.9, 0.45, 0, i * step);
+      _tone(f * 2, 'sine', step * 0.9, 0.1, 0, i * step);
+    });
+  }
+
+  function ziu(pan = 0, vol = 1) {
+    if (!_ctx) return;
+    _sweep(1400, 220, 'sawtooth', 0.13, vol * 0.5, pan);
+  }
+
+  function armorClank(pan = 0, vol = 1) {
+    if (!_ctx) return;
+    const v = vol * 0.65;
+    _noise(0.18, v * 0.7, pan, 800);
+    _tone(180, 'sawtooth', 0.15, v * 0.4, pan);
+    _tone(90, 'sine', 0.12, v * 0.3, pan);
+  }
+
+  function fleshHit(pan = 0, vol = 1) {
+    if (!_ctx) return;
+    const v = vol * 0.65;
+    _noise(0.18, v * 0.8, pan, 400);
+    _sweep(120, 60, 'sine', 0.18, v * 0.4, pan);
+  }
+
+  /* ---- background music ---- */
+  function startBGM() {
+    _ensureCtx();
+    if (_bgmSrc) return; // already running
+    const sr = _ctx.sampleRate;
+    const bpm = 96, spb = 60 / bpm;   // seconds per beat
+    // 16-step A-minor-pentatonic melody (A3=220, C4=261.6, E4=329.6, G4=392, A4=440)
+    const scale = [220, 261.63, 329.63, 392, 440, 523.25, 659.25];
+    const seq   = [0, 2, 4, 2, 3, 1, 3, 0, 0, 4, 2, 5, 4, 2, 0, null];
+    const dur   = spb * 0.85;
+    const loopLen = seq.length * spb;
+    const totalSamples = Math.round(sr * loopLen);
+    const buf = _ctx.createBuffer(2, totalSamples, sr);
+    const L = buf.getChannelData(0), R = buf.getChannelData(1);
+    for (let si = 0; si < seq.length; si++) {
+      if (seq[si] === null) continue;
+      const freq = scale[seq[si]];
+      const noteStart = Math.round(si * spb * sr);
+      const noteSamples = Math.round(dur * sr);
+      for (let i = 0; i < noteSamples && noteStart + i < totalSamples; i++) {
+        const t = i / sr;
+        const env = Math.min(1, i / (sr * 0.01)) * Math.max(0, 1 - i / (sr * dur * 0.9));
+        // Square + triangle blend for chiptune warmth
+        const phase = (t * freq) % 1;
+        const sq = phase < 0.5 ? 0.18 : -0.18;
+        const tri = (phase < 0.5 ? phase * 4 - 1 : 3 - phase * 4) * 0.08;
+        // Quiet bass harmony an octave below
+        const ph2 = (t * freq * 0.5) % 1;
+        const bass = (ph2 < 0.5 ? ph2 * 2 - 0.5 : 1.5 - ph2 * 2) * 0.04;
+        const s = (sq + tri + bass) * env * 0.12;
+        L[noteStart + i] += s;
+        R[noteStart + i] += s * 0.85 + Math.sin(t * 3.7) * 0.005; // slight stereo wobble
+      }
+    }
+    _bgmSrc = _ctx.createBufferSource();
+    _bgmSrc.buffer = buf;
+    _bgmSrc.loop = true;
+    const bgmGain = _ctx.createGain();
+    bgmGain.gain.value = 0.18;
+    _bgmSrc.connect(bgmGain);
+    bgmGain.connect(_master);
+    _bgmSrc.start();
+  }
+
+  return { init, setMute, startBGM, click, tick, plop, clash, queenShriek, levelUp, ziu, armorClank, fleshHit };
+})();
+
+/* ===================================================================
+   WEBSOCKET
+   =================================================================== */
+function connect() {
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host);
+  ws.onopen=()=>{
+    $('dot').className='dot ok'; $('cstat').textContent='CONNECTED';
+    const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
+    if (u&&p) {
+      $('li-u').value=u; $('li-p').value=p;
+      if (!me && reconnecting) { send({t:'login',username:u,password:p}); } // auto re-auth on reconnect only
+    }
+  };
+  ws.onclose=()=>{ $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true; setTimeout(connect,1500); };
+  ws.onerror=()=>{ $('cstat').textContent='ERROR'; };
+  ws.onmessage=e=>handle(JSON.parse(e.data));
+}
+function send(o) { if (ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+function handle(msg) {
+  switch (msg.t) {
+    case 'admin-player-list': admBuildPlayerTable(msg.players||[]); break;
+    case 'admin-pause': {
+      admPaused = !!msg.paused;
+      const pb=$('adm-pause-btn');
+      if (pb) { pb.textContent=admPaused?'▶ PAUSED':'⏸ PAUSE'; pb.style.background=admPaused?'var(--yel)':''; pb.style.color=admPaused?'var(--ink)':''; }
+      break;
+    }
+    case 'err':
+      toast(msg.msg); $('li-err').textContent=msg.msg; $('r-err').textContent=msg.msg;
+      if (mode==='place-queen') {
+        _queenPlaceCooldown = false;
+        const card=$('ss-card');
+        card.className='bad'; card.style.display='block';
+        card.style.left='50%'; card.style.top='120px'; card.style.transform='translateX(-50%)';
+        $('ss-card-title').textContent='✕ BLOCKED';
+        $('ss-card-sub').textContent=msg.msg;
+        setTimeout(()=>{ card.style.display='none'; card.style.transform=''; }, 2500);
+      }
+      break;
+    case 'event': toast(msg.msg); admPushLog(msg.msg); break;
+    case 'logged-in':
+      me=msg.me;
+      if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
+      WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
+      if (me.colorChosen === false) { showStep('admin-color'); return; }
+      $('auth-modal').style.display='none';
+      $('pname').textContent=me.username;
+      $('pfp').textContent=me.username[0];
+      $('pfp').style.color=me.color;
+      palette[me.id]=me.color;
+      $('lvl-cap').textContent=me.cfg?.LEVEL_CAP||100;
+      // Admin gating
+      const tog=$('admin-tog'), chk=$('admin-chk');
+      if (me.isAdmin) {
+        tog.classList.add('vis');
+        chk.checked=true;
+        document.body.classList.add('admin-on');
+        $('admin-badge').style.display='inline-block';
+      } else {
+        tog.classList.remove('vis');
+        document.body.classList.remove('admin-on');
+      }
+      if (me.queen && !me.queen.dead) {
+        view.x=me.queen.x+1; view.y=me.queen.y+1; panLocked=false;
+        view.zoom=zoomTarget=1.0;
+        $('btn-ant').disabled=me.antsAvail<=0;
+      } else {
+        view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+        view.zoom=zoomTarget=0.22;
+        setTimeout(()=>{
+          mode='place-queen'; cvs.classList.add('placing');
+          hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+        },300);
+      }
+      clampView();
+      pushView();
+      AudioEngine.startBGM();
+      break;
+    case 'me':
+      me={...me,...msg};
+      updateHUD();
+      if ($('adm-tps')&&me.tickRate) $('adm-tps').textContent=me.tickRate;
+      if ($('adm-tick')&&me.tick!=null) $('adm-tick').textContent=me.tick;
+      break;
+    case 'view': {
+      const tBin=atob(msg.tiles),tBuf=new Uint8Array(tBin.length);
+      for (let i=0;i<tBin.length;i++) tBuf[i]=tBin.charCodeAt(i);
+      msg.tiles=new Uint16Array(tBuf.buffer);
+      const fBin=atob(msg.fog),fBuf=new Uint8Array(fBin.length);
+      for (let i=0;i<fBin.length;i++) fBuf[i]=fBin.charCodeAt(i);
+      msg.fog=fBuf;
+      if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
+      lastVwAt=performance.now();
+      vw=msg; palette=msg.palette;
+      if (me?.color) palette[me.id]=me.color;
+      break; }
+    case 'forbidden-zones':
+      forbiddenZones = msg.zones || [];
+      if (mode==='place-queen') updateSpawnStatus();
+      break;
+    case 'cfg': applyCfgSlider(msg.key, msg.value); break;
+    case 'queen-placed':
+      _queenPlaceCooldown = false;
+      mode='idle'; cvs.classList.remove('placing');
+      stopForbiddenPoll(); hideSpawnScreen();
+      panLocked=false; view.x=msg.x+1; view.y=msg.y+1;
+      zoomTarget=1.0;
+      lastPushAt=0; lastViewKey=null; pushView();
+      break;
+    case 'queen-dead':
+      AudioEngine.queenShriek(0, 1);
+      toast('YOUR QUEEN HAS FALLEN — RETURNING TO SPAWN');
+      stopForbiddenPoll(); hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
+      setTimeout(()=>{
+        view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+        mode='place-queen'; cvs.classList.add('placing');
+        hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+      },2000);
+      break;
+    case 'world-wiped':
+      toast('[ADMIN] WORLD WIPED');
+      me={...me, queen:null, stats:{tiles:0,secs:0,kills:0,score:0}, antsAvail:5};
+      view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+      stopForbiddenPoll();
+      if (!me.isAdmin) {
+        mode='place-queen'; cvs.classList.add('placing');
+        hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+      }
+      vw=null;
+      break;
+    case 'ant-placed':
+      AudioEngine.plop(); break;
+    case 'clash': {
+      const s=spatialFromWorld(msg.x, msg.y);
+      AudioEngine.clash(s.pan, s.vol); break;
+    }
+    case 'queen-killed': {
+      const s=spatialFromWorld(msg.x, msg.y);
+      AudioEngine.queenShriek(s.pan, s.vol); break;
+    }
+    case 'level-up':
+      AudioEngine.levelUp(); break;
+    case 'xp-gain': {
+      const s=spatialFromWorld(msg.x, msg.y);
+      AudioEngine.ziu(s.pan, s.vol);
+      spawnFloatingText('+'+Math.round(msg.amount)+' XP', msg.x, msg.y, '#ffb800'); break;
+    }
+    case 'damage-dealt': {
+      const s=spatialFromWorld(msg.tx, msg.ty);
+      AudioEngine.armorClank(s.pan, s.vol);
+      spawnFloatingText('-1', msg.tx, msg.ty, '#00b86b'); break;
+    }
+    case 'damage-taken': {
+      const s=spatialFromWorld(msg.sx, msg.sy);
+      AudioEngine.fleshHit(s.pan, s.vol);
+      spawnFloatingText('-1', msg.sx, msg.sy, '#ff2e3f'); break;
+    }
+    case 'leaderboard': {
+      const el=$('lb-body'); if (!el) break;
+      const entries=msg.entries||[], newPrev={};
+      let html='<div class="lb-table">';
+      const top=Math.min(entries.length,10);
+      if (top===0) {
+        html+='<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;color:var(--dim);padding:10px 0;text-align:center;">NO QUEENS YET</div>';
+      }
+      for (let i=0;i<top;i++) {
+        const e=entries[i];
+        newPrev[e.id]=e.tiles;
+        const isMe=me && e.id===me.id;
+        const prevT=lbPrevTiles[e.id];
+        let trend=`<span style="color:var(--dim)">—</span>`;
+        if (prevT!==undefined) {
+          if (e.tiles>prevT) trend='<span class="lb-trend up">▲</span>';
+          else if (e.tiles<prevT) trend='<span class="lb-trend dn">▼</span>';
+        }
+        const name=e.name.length>9?e.name.slice(0,8)+'…':e.name;
+        html+=`<div class="lb-row${isMe?' lb-me':''}">
+          <span class="lb-rank">#${i+1}</span>
+          <div class="lb-name">
+            <span class="lb-swatch" style="background:${e.color}"></span>
+            <span class="lb-name-text">${name}</span>
+          </div>
+          <span class="lb-tiles">${fmtLbTiles(e.tiles)}</span>
+          ${trend}
+        </div>`;
+      }
+      html+='</div>';
+      el.innerHTML=html;
+      lbPrevTiles=newPrev;
+      break;
+    }
+  }
+}
+
+function fmtTime(s) { return `${(s/60)|0}:${String(s%60).padStart(2,'0')}`; }
+function updateHUD() {
+  if (!me) return;
+  const q=me.queen, st=me.stats||{};
+  const tiles=st.tiles||0, secs=st.secs||0, kills=st.kills||0, score=st.score||0;
+  $('hdr-tick').textContent=me.tick;
+  $('hdr-ants').textContent=me.army||0;
+  $('hdr-score').textContent=score.toLocaleString();
+  $('score-big').textContent=score.toLocaleString();
+  $('sc-tiles').textContent=tiles.toLocaleString();
+  $('sc-time').textContent=fmtTime(secs);
+  $('sc-kills').textContent=kills;
+  $('s-life').textContent=fmtTime(secs);
+  $('s-tiles').textContent=tiles.toLocaleString();
+  $('s-army').textContent=me.army||0;
+  $('s-kills').textContent=kills;
+  $('d-army').textContent=me.army||0;
+  if (q) {
+    $('hp-cur').textContent=q.hp|0;
+    $('hp-max').textContent=q.maxHp;
+    $('hp-fill').style.width=(q.hp/q.maxHp*100)+'%';
+    $('lvl').textContent=q.level;
+    const into = q.xpIntoLevel||0, span = q.xpLevelSpan||1;
+    const pct = (into / span * 100);
+    $('xp-fill').style.width=pct+'%';
+    $('xp-val').textContent=into.toLocaleString()+'/'+span.toLocaleString();
+    $('btn-ant').disabled=me.antsAvail<=0 || q.dead;
+    // If we ran out of ants while in sticky place mode, exit it
+    if (me.antsAvail<=0 && (mode==='place-ant-down' || mode==='place-ant-drag')) {
+      exitPlaceMode();
+      toast('OUT OF ANTS — PLACE MODE OFF');
+    }
+  }
+  $('ants-avail').textContent=me.antsAvail;
+  const total=me.nextRefillMs||0;
+  const rh=(total/3600000)|0, rm=((total%3600000)/60000)|0, rs=((total%60000)/1000)|0;
+  $('refill-timer').textContent=`${String(rh).padStart(2,'0')}:${String(rm).padStart(2,'0')}:${String(rs).padStart(2,'0')}`;
+}
+
+/* CANVAS */
+const cvs=$('map');
+const ctx=cvs.getContext('2d',{alpha:false});
+const CELL=4;
+function resize() { const r=cvs.getBoundingClientRect(); cvs.width=r.width; cvs.height=r.height; }
+function clampView() {
+  // Min zoom: viewport must not exceed world bounds
+  const minZoomW = cvs.width  / (CELL * WORLD.w);
+  const minZoomH = cvs.height / (CELL * WORLD.h);
+  const minZoom = Math.max(minZoomW, minZoomH, 0.22);
+  view.zoom = clamp(view.zoom, minZoom, 16);
+  zoomTarget = clamp(zoomTarget, minZoom, 16);
+  // Clamp position: keep view center inside world
+  const cp = CELL * view.zoom;
+  const halfW = cvs.width / (2*cp);
+  const halfH = cvs.height / (2*cp);
+  view.x = clamp(view.x, halfW, WORLD.w - halfW);
+  view.y = clamp(view.y, halfH, WORLD.h - halfH);
+}
+window.addEventListener('resize', () => { resize(); clampView(); });
+resize();
+
+let lastViewKey=null;
+function pushView() {
+  const now=performance.now();
+  if (now-lastPushAt<40) return; // debounce: max 25 msg/s
+  const cp=CELL*view.zoom;
+  const W=cvs.width, H=cvs.height;
+  const tx=Math.ceil(W/cp)+4, ty=Math.ceil(H/cp)+4;
+  const PAD=4; // prefetch extra tiles on all sides for edge-pan smoothness
+  const x0=Math.floor(view.x-tx/2)-PAD, y0=Math.floor(view.y-ty/2)-PAD;
+  const x1=x0+tx+PAD*2, y1=y0+ty+PAD*2;
+  const key=`${x0},${y0},${x1},${y1}`;
+  if (key===lastViewKey) return;
+  lastViewKey=key; lastPushAt=now;
+  send({t:'view-set', x0, y0, x1, y1});
+}
+
+function clearInspect() {
+  selectedTarget = null;
+  $('inspect-box').style.display = 'none';
+  admClearTarget();
+}
+
+function showInspectBox() {
+  const t = selectedTarget;
+  if (!t) return;
+  const box = $('inspect-box');
+  const hdr = $('inspect-type');
+  const rows = $('inspect-rows');
+
+  let typeLabel = '', rowsHtml = '';
+
+  if (t.type === 'queen') {
+    const q = t.data;
+    const col = (vw?.palette||palette)[q.id] || '#888';
+    typeLabel = 'QUEEN';
+    rowsHtml = `
+      <div class="inspect-row"><span class="inspect-swatch" style="background:${col}"></span><span>${q.username||'???'}</span></div>
+      <div class="inspect-row"><span>HP</span><span style="margin-left:auto">${q.hp}/${q.maxHp}</span></div>
+      <div class="inspect-row"><span>LEVEL</span><span style="margin-left:auto">${q.level||1}</span></div>
+      <div class="inspect-row"><span>ANTS</span><span style="margin-left:auto">${q.antCount||0}</span></div>
+      <div class="inspect-row"><span>XP</span><span style="margin-left:auto">${q.xp||0}</span></div>
+    `;
+    if (me?.isAdmin) {
+      const col = (vw?.palette||palette)[q.id] || '#888';
+      admSetTarget(q.id, q.username||'???', col, q.level||1, q.hp||0, q.maxHp||1, q.tiles||0, 0);
+      if ($('admin-chk')?.checked) admTab(null, 'target');
+    }
+  } else if (t.type === 'ant') {
+    const a = t.data;
+    typeLabel = 'ANT';
+    rowsHtml = `
+      <div class="inspect-row"><span class="inspect-swatch" style="background:${a.color}"></span><span>${a.username}</span></div>
+      <div class="inspect-row"><span>POS</span><span style="margin-left:auto">(${a.x},${a.y})</span></div>
+    `;
+  } else if (t.type === 'tile') {
+    const tl = t.data;
+    typeLabel = tl.owner ? 'TERRITORY' : 'UNCLAIMED';
+    rowsHtml = tl.owner
+      ? `<div class="inspect-row"><span class="inspect-swatch" style="background:${tl.color}"></span><span>${tl.username||'???'}</span></div>
+         <div class="inspect-row"><span>POS</span><span style="margin-left:auto">(${tl.x},${tl.y})</span></div>`
+      : `<div class="inspect-row"><span>POS</span><span style="margin-left:auto">(${tl.x},${tl.y})</span></div>`;
+  }
+
+  hdr.textContent = typeLabel;
+  rows.innerHTML = rowsHtml;
+  box.style.display = 'block';
+}
+
+function inspectAtTile(tile) {
+  if (!vw) { clearInspect(); return; }
+  for (const q of vw.queens) {
+    if (tile.x >= q.x && tile.x < q.x+q.size && tile.y >= q.y && tile.y < q.y+q.size) {
+      selectedTarget = {type:'queen', data:q};
+      showInspectBox(); return;
+    }
+  }
+  const ant = vw.ants.find(([,ax,ay]) => ax===tile.x && ay===tile.y);
+  if (ant) {
+    const [,ax,ay,adx,ady,owner] = ant;
+    const color = (vw.palette||palette)[owner] || '#888';
+    const ownerQ = vw.queens.find(q => q.id===owner);
+    selectedTarget = {type:'ant', data:{x:ax,y:ay,dx:adx,dy:ady,owner,color,username:ownerQ?.username||'???'}};
+    showInspectBox(); return;
+  }
+  const idx = (tile.y-vw.y0)*vw.w + (tile.x-vw.x0);
+  if (idx >= 0 && idx < vw.tiles.length) {
+    const owner = vw.tiles[idx];
+    const color = (vw.palette||palette)[owner] || '#888';
+    const ownerQ = owner ? vw.queens.find(q => q.id===owner) : null;
+    selectedTarget = {type:'tile', data:{x:tile.x,y:tile.y,owner,color,username:ownerQ?.username||(owner?'???':null)}};
+    showInspectBox();
+  } else {
+    clearInspect();
+  }
+}
+
+/* ===================================================================
+   OSM TILE SYSTEM — fetch/cache/draw OpenStreetMap tiles directly on canvas
+   =================================================================== */
+function getOsmTile(z, x, y) {
+  const key=`${z}/${x}/${y}`;
+  if (osmCache.has(key)) return osmCache.get(key);
+  const img=new Image();
+  const e={img, loaded:false};
+  img.src=`https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  img.onload=()=>{ e.loaded=true; };
+  img.onerror=()=>{ osmCache.delete(key); };
+  osmCache.set(key, e);
+  // LRU eviction: keep cache under 512 tiles to prevent unbounded memory growth
+  if (osmCache.size > 512) osmCache.delete(osmCache.keys().next().value);
+  return e;
+}
+
+function gameToOsmTile(tx, ty, n, geo, cosLat) {
+  const lat=geo.capitolLat+(WORLD.spawnY-ty)*geo.tileMeters/111111;
+  const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cosLat);
+  const lr=lat*Math.PI/180;
+  return {
+    x:Math.max(0,Math.min(n-1, Math.floor(((lon+180)/360)*n))),
+    y:Math.max(0,Math.min(n-1, Math.floor((1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*n)))
+  };
+}
+
+function osmTileCorner(ox, oy, n, geo, cosLat) {
+  const lon=ox/n*360-180;
+  const lat=Math.atan(Math.sinh(Math.PI*(1-2*oy/n)))*180/Math.PI;
+  return {
+    tx: WORLD.spawnX+(lon-geo.capitolLon)*111111*cosLat/geo.tileMeters,
+    ty: WORLD.spawnY-(lat-geo.capitolLat)*111111/geo.tileMeters
+  };
+}
+
+function drawOsmTiles(offX, offY, cp, vx0, vy0, canvasW, canvasH) {
+  if (!WORLD.geo) return;
+  const geo=WORLD.geo;
+  const cosLat=Math.cos(geo.capitolLat*Math.PI/180);
+  const osmZ=Math.max(1,Math.min(18,Math.round(Math.log2(cp*40075016.686*cosLat/(geo.tileMeters*256)))));
+  const n=Math.pow(2,osmZ);
+  const tl=gameToOsmTile(vx0,            vy0,            n, geo, cosLat);
+  const br=gameToOsmTile(vx0+canvasW/cp, vy0+canvasH/cp, n, geo, cosLat);
+  for (let ox=tl.x-1; ox<=br.x+1; ox++) {
+    for (let oy=tl.y-1; oy<=br.y+1; oy++) {
+      if (ox<0||oy<0||ox>=n||oy>=n) continue;
+      const e=getOsmTile(osmZ, ox, oy);
+      if (!e.loaded) continue;
+      const {tx:x0,ty:y0}=osmTileCorner(ox,   oy,   n, geo, cosLat);
+      const {tx:x1,ty:y1}=osmTileCorner(ox+1, oy+1, n, geo, cosLat);
+      const px=(offX+(x0-vx0)*cp)|0, py=(offY+(y0-vy0)*cp)|0;
+      const pw=((offX+(x1-vx0)*cp)|0)-px, ph=((offY+(y1-vy0)*cp)|0)-py;
+      if (pw>0&&ph>0) ctx.drawImage(e.img, px, py, pw, ph);
+    }
+  }
+}
+
+function render() {
+  const cp=CELL*view.zoom;
+  const W=cvs.width, H=cvs.height;
+  ctx.imageSmoothingEnabled=false;
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+
+  // Compute viewport: either from vw (tile payload) or just from view center
+  let vx0, vy0;
+  if (vw) {
+    vx0 = vw.x0;
+    vy0 = vw.y0;
+  } else {
+    vx0 = Math.floor(view.x - W/(2*cp));
+    vy0 = Math.floor(view.y - H/(2*cp));
+  }
+
+  const offX = W/2 - (view.x - vx0)*cp;
+  const offY = H/2 - (view.y - vy0)*cp;
+
+  // 1) OSM map layer — drawn directly on canvas, synced to game coordinate space
+  drawOsmTiles(offX, offY, cp, vx0, vy0, W, H);
+
+  if (!vw) {
+    return;
+  }
+
+  const v = vw;
+  const placingMode = mode==='place-queen';
+  const myId = me?.id || 0;
+
+  // 2) Tile layer — blit 1px-per-tile cache scaled to cp
+  if (tileCacheVw !== v || tileCachePlacing !== placingMode) buildTileCache(v, myId, placingMode);
+  const drawW=Math.round(v.w*cp), drawH=Math.round(v.h*cp);
+  if (drawW > 0 && drawH > 0 && drawW <= cvs.width*8 && drawH <= cvs.height*8) {
+    ctx.drawImage(tileCanvas, Math.round(offX), Math.round(offY), drawW, drawH);
+  }
+  $('d-tiles').textContent = v.w * v.h;
+
+  // Debug grid — coarse 64-tile chunks always visible, fine 1-tile grid when zoomed in
+  {
+    const COARSE = 64;
+    ctx.save();
+    ctx.lineWidth = 1;
+
+    // Coarse grid (every 64 tiles)
+    const cx0 = Math.floor(v.x0 / COARSE) * COARSE;
+    const cy0 = Math.floor(v.y0 / COARSE) * COARSE;
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.beginPath();
+    for (let wx = cx0; wx <= v.x0 + v.w + COARSE; wx += COARSE) {
+      const sx = offX + (wx - v.x0) * cp;
+      if (sx < -1 || sx > W + 1) continue;
+      ctx.moveTo(sx, 0); ctx.lineTo(sx, H);
+    }
+    for (let wy = cy0; wy <= v.y0 + v.h + COARSE; wy += COARSE) {
+      const sy = offY + (wy - v.y0) * cp;
+      if (sy < -1 || sy > H + 1) continue;
+      ctx.moveTo(0, sy); ctx.lineTo(W, sy);
+    }
+    ctx.stroke();
+
+    // Coarse grid labels
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    for (let wx = cx0; wx <= v.x0 + v.w + COARSE; wx += COARSE) {
+      for (let wy = cy0; wy <= v.y0 + v.h + COARSE; wy += COARSE) {
+        const sx = offX + (wx - v.x0) * cp + 3;
+        const sy = offY + (wy - v.y0) * cp + 2;
+        if (sx < 0 || sx > W || sy < 0 || sy > H) continue;
+        ctx.fillText(`${wx},${wy}`, sx, sy);
+      }
+    }
+
+    // Fine 1-tile grid — only when cell pixel size >= 6
+    if (cp >= 6) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath();
+      for (let tx = 0; tx <= v.w; tx++) {
+        const sx = offX + tx * cp;
+        if (sx < -1 || sx > W + 1) continue;
+        ctx.moveTo(sx, 0); ctx.lineTo(sx, H);
+      }
+      for (let ty = 0; ty <= v.h; ty++) {
+        const sy = offY + ty * cp;
+        if (sy < -1 || sy > H + 1) continue;
+        ctx.moveTo(0, sy); ctx.lineTo(W, sy);
+      }
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  // Placement mode: forbidden zone tint overlay (discrete — cell is in or out)
+  if (placingMode && forbiddenZones.length) {
+    ctx.fillStyle='rgba(255,46,63,0.28)';
+    for (let ty=0; ty<v.h; ty++) {
+      for (let tx=0; tx<v.w; tx++) {
+        const px=(offX+tx*cp)|0, py=(offY+ty*cp)|0;
+        if (px+cp<0||px>W||py+cp<0||py>H) continue;
+        const wx=v.x0+tx, wy=v.y0+ty;
+        let inside=false;
+        for (const z of forbiddenZones) {
+          const ddx=wx-z.x, ddy=wy-z.y;
+          if (ddx*ddx+ddy*ddy < z.r*z.r) { inside=true; break; }
+        }
+        if (inside) ctx.fillRect(px,py,(cp+.5)|0,(cp+.5)|0);
+      }
+    }
+  }
+
+  // Placement mode hover: glowing queen sprite
+  if (placingMode && hover) {
+    const blocked = forbiddenZones.some(z => tileInZone(hover, z));
+    const hx = hover.x - v.x0, hy = hover.y - v.y0;
+    const QSZ = 2;
+    const px = offX + hx * cp, py = offY + hy * cp;
+    const qw = QSZ * cp;
+    const pulse = 0.72 + 0.28 * Math.sin(performance.now() / 220);
+    const color   = blocked ? '#ff2e3f' : '#00b86b';
+    const glowCol = blocked ? '#ff2e3f' : '#00b86b';
+    ctx.save();
+    ctx.globalAlpha = 0.9 * pulse;
+    ctx.shadowColor = glowCol; ctx.shadowBlur = 20 * pulse;
+    ctx.fillStyle = color;
+    if (qw >= 6) {
+      ctx.font = `bold ${(qw * 0.82)|0}px serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('♛', px + qw / 2, py + qw / 2);
+      ctx.fillText('♛', px + qw / 2, py + qw / 2);
+    } else {
+      ctx.fillRect(px, py, qw, qw);
+    }
+    ctx.restore();
+  }
+
+
+  // 5) Queens
+  for (const q of v.queens) {
+    const px=offX+(q.x-v.x0)*cp, py=offY+(q.y-v.y0)*cp;
+    const qi=Math.max(0,(q.y-v.y0))*v.w+Math.max(0,(q.x-v.x0));
+    const f=(qi<v.fog.length)?v.fog[qi]:0;
+    const tint=(q.id===me?.id)?0:f/100;
+    ctx.fillStyle=fogBlend(q.color, tint);
+    ctx.fillRect(px,py,cp*q.size,cp*q.size);
+    ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
+    ctx.strokeRect(px,py,cp*q.size,cp*q.size);
+    if (cp*q.size>=12) {
+      ctx.fillStyle='#0d0d0d';
+      ctx.font=`${cp*q.size*.5}px serif`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('♛', px+cp*q.size/2, py+cp*q.size/2);
+    }
+    if (cp>=4) {
+      const bw=cp*q.size;
+      ctx.fillStyle='#0d0d0d'; ctx.fillRect(px,py-5,bw,3);
+      ctx.fillStyle='#ff2e3f';  ctx.fillRect(px,py-5,bw*(q.hp/q.maxHp),3);
+    }
+  }
+
+  // 6) Bubble outlines — only visible if server included bubbleR (own queen
+  //    or admin viewing). Others' bubbles are server-hidden.
+  for (const q of v.queens) {
+    if (!q.bubbleR) continue;
+    const cx2=offX+(q.x+q.size/2-v.x0)*cp;
+    const cy2=offY+(q.y+q.size/2-v.y0)*cp;
+    ctx.strokeStyle=q.color+'cc'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.arc(cx2,cy2,q.bubbleR*cp,0,Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // 7) Ants — dark colony-color square + 2 eyes facing direction (with position lerp)
+  const tickInterval = 1000 / (me?.tickRate || 20);
+  const lerpT = Math.min(1, (performance.now() - lastVwAt) / tickInterval);
+  for (const a of v.ants) {
+    const [aid,ax,ay,adx,ady,owner]=a;
+    const idx=(ay-v.y0)*v.w+(ax-v.x0);
+    const f=(idx>=0&&idx<v.fog.length)?v.fog[idx]:100;
+    if (f>=100 && owner!==me?.id) continue;
+    // Interpolate position between previous and current tick
+    const prev=prevAntPos.get(aid);
+    const lx = prev ? prev.x+(ax-prev.x)*lerpT : ax;
+    const ly = prev ? prev.y+(ay-prev.y)*lerpT : ay;
+    const px=offX+(lx-v.x0)*cp, py=offY+(ly-v.y0)*cp;
+    const ownerColor = palette[owner] || '#9b3027';
+    const [rr,gg,bb] = toRGB(ownerColor);
+    let bodyR = (rr*0.45)|0, bodyG = (gg*0.45)|0, bodyB = (bb*0.45)|0;
+    if (f > 0) {
+      const ft = f/100;
+      bodyR = (bodyR*(1-ft) + 158*ft)|0;
+      bodyG = (bodyG*(1-ft) + 158*ft)|0;
+      bodyB = (bodyB*(1-ft) + 158*ft)|0;
+    }
+    ctx.fillStyle = `rgb(${bodyR},${bodyG},${bodyB})`;
+    const inset = Math.max(0, cp*0.08);
+    ctx.fillRect((px+inset)|0, (py+inset)|0, (cp-inset*2)|0, (cp-inset*2)|0);
+    // Eyes
+    if (cp >= 4) {
+      const eyeR = Math.max(0.8, cp*0.12);
+      const eyeOffFwd = cp * 0.22;
+      const eyeOffSide = cp * 0.18;
+      const ecx = px + cp/2 + adx * eyeOffFwd;
+      const ecy = py + cp/2 + ady * eyeOffFwd;
+      const pdx = -ady, pdy = adx;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(ecx + pdx*eyeOffSide, ecy + pdy*eyeOffSide, eyeR, 0, Math.PI*2);
+      ctx.arc(ecx - pdx*eyeOffSide, ecy - pdy*eyeOffSide, eyeR, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // 8) Floating texts (+XP, damage numbers)
+  if (vw && floatingTexts.length) {
+    const now = performance.now();
+    for (let i = floatingTexts.length - 1; i >= 0; i--) {
+      const ft = floatingTexts[i];
+      const age = (now - ft.born) / 1200;
+      if (age >= 1) { floatingTexts.splice(i, 1); continue; }
+      const alpha = 1 - age;
+      const sx = offX + (ft.wx - vw.x0) * cp;
+      const sy = offY + (ft.wy - vw.y0) * cp - age * 38;
+      if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) continue;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = Math.max(8, (cp * 1.4) | 0) + 'px "Press Start 2P",monospace';
+      ctx.fillStyle = ft.color;
+      ctx.shadowColor = '#000000';
+      ctx.shadowBlur = 4;
+      ctx.fillText(ft.text, sx, sy);
+      ctx.restore();
+    }
+  }
+
+  // 9) Hover preview (ant placement only — queen placement handled above)
+  if (hover && mode==='place-ant-down') {
+    const px=offX+(hover.x-v.x0)*cp, py=offY+(hover.y-v.y0)*cp;
+    ctx.strokeStyle=me?.color||'#0d0d0d'; ctx.lineWidth=3;
+    ctx.strokeRect(px,py,cp,cp);
+  }
+
+  // 10) Selected target highlight
+  if (selectedTarget) {
+    const st = selectedTarget;
+    let hx, hy, hw=1, hh=1;
+    if (st.type === 'queen') {
+      hx=st.data.x; hy=st.data.y; hw=st.data.size||2; hh=hw;
+    } else if (st.type === 'ant') {
+      hx=st.data.x; hy=st.data.y;
+    } else {
+      hx=st.data.x; hy=st.data.y;
+    }
+    const px=(offX+(hx-v.x0)*cp)|0, py=(offY+(hy-v.y0)*cp)|0;
+    const pw=(cp*hw)|0, ph=(cp*hh)|0;
+    const t2=performance.now();
+    const pulse=0.55+0.45*Math.sin(t2/200);
+    ctx.save();
+    ctx.strokeStyle=`rgba(255,184,0,${pulse.toFixed(2)})`;
+    ctx.lineWidth=Math.max(2,cp*0.15);
+    ctx.setLineDash([Math.max(3,cp*0.4), Math.max(2,cp*0.25)]);
+    ctx.strokeRect(px-1, py-1, pw+2, ph+2);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // 11) Coords (capitol-relative)
+  const disp = toDisplayXY(view.x, view.y);
+  const cdx = Math.round(disp.x), cdy = Math.round(disp.y);
+  $('ovr-coord').textContent = `(${cdx>=0?'+':''}${cdx}, ${cdy>=0?'+':''}${cdy})`;
+  $('ovr-zoom').textContent=view.zoom.toFixed(2)+'X';
+  $('ovr-cell').textContent=cp.toFixed(0)+'PX';
+  $('ovr-hz').textContent=($('s-tr')?parseFloat($('s-tr').value):20).toFixed(0);
+  $('ovr-tick').textContent=me?.tick||0;
+  // Hover tile info (Q5)
+  const ti=$('ovr-tile');
+  if (hover && vw) {
+    const hIdx=(hover.y-vw.y0)*vw.w+(hover.x-vw.x0);
+    if (hIdx>=0 && hIdx<vw.tiles.length) {
+      const ht=vw.tiles[hIdx];
+      const hd=toDisplayXY(hover.x,hover.y);
+      const hx=Math.round(hd.x),hy=Math.round(hd.y);
+      let owner='UNCLAIMED';
+      if (ht) {
+        if (ht===me?.id) { owner=`YOU · LV${me.queen?.level||1}`; }
+        else {
+          const qInfo=vw.queens?.find(q=>q.id===ht);
+          owner = qInfo ? `ENEMY LV${qInfo.level}` : 'ENEMY';
+        }
+      }
+      ti.style.display='block';
+      ti.textContent=`(${hx>=0?'+':''}${hx},${hy>=0?'+':''}${hy}) ${owner}`;
+    } else { ti.style.display='none'; }
+  } else { ti.style.display='none'; }
+}
+
+function loop(t) {
+  frameCount++;
+  // Keep canvas pixel buffer in sync with its CSS layout size
+  const _r=cvs.getBoundingClientRect();
+  if (cvs.width!==(_r.width|0) || cvs.height!==(_r.height|0)) { resize(); clampView(); }
+  if (t-fpsT>500) {
+    $('d-fps').textContent=((frameCount*1000/(t-fpsT))|0);
+    frameCount=0; fpsT=t;
+  }
+  // Smooth zoom lerp
+  if (Math.abs(zoomTarget-view.zoom)>0.0002) {
+    view.zoom += (zoomTarget-view.zoom)*0.15;
+    clampView();
+  } else if (view.zoom !== zoomTarget) {
+    view.zoom = zoomTarget; clampView();
+  }
+  // Smooth pan lerp
+  if (panTarget) {
+    const dx=panTarget.x-view.x, dy=panTarget.y-view.y;
+    if (Math.abs(dx)<0.05 && Math.abs(dy)<0.05) {
+      view.x=panTarget.x; view.y=panTarget.y; panTarget=null;
+    } else {
+      view.x+=dx*0.12; view.y+=dy*0.12;
+    }
+    clampView();
+  }
+  pushView(); render();
+  requestAnimationFrame(loop);
+}
+
+/* INPUT — click & drag ant placement */
+let dragging=false, dragFrom=null, dragViewStart=null;
+let forbiddenZones = []; // [{x, y, r}] - rendered as red gradients during placement
+function screenToTile(sx,sy) {
+  const r=cvs.getBoundingClientRect();
+  const cp=CELL*view.zoom;
+  return {x:(view.x+(sx-r.left-r.width/2)/cp)|0, y:(view.y+(sy-r.top-r.height/2)/cp)|0};
+}
+function snapDir(dx,dy) {
+  if (Math.abs(dx)>=Math.abs(dy)) return dx>0?[1,0]:[-1,0];
+  return dy>0?[0,1]:[0,-1];
+}
+function showDirArrow(ox, oy, cx_, cy_) {
+  const ov=$('dir-overlay');
+  const dx=cx_-ox, dy=cy_-oy;
+  if (Math.sqrt(dx*dx+dy*dy)<10) { ov.style.display='none'; return; }
+  const ang=Math.atan2(dy,dx)*180/Math.PI+90;
+  ov.style.display='block';
+  ov.style.left=(ox-24)+'px'; ov.style.top=(oy-24)+'px';
+  ov.style.transform=`rotate(${ang}deg)`;
+}
+
+cvs.addEventListener('mousedown', e => {
+  AudioEngine.init();
+  const r=cvs.getBoundingClientRect();
+  const tile=screenToTile(e.clientX, e.clientY);
+  if (mode==='place-ant-down') {
+    mode='place-ant-drag';
+    dragFrom={px:e.clientX-r.left, py:e.clientY-r.top, raw:{x:e.clientX,y:e.clientY}};
+    antPlaceOrigin=tile; antPlaceDir=[0,-1];
+  } else if (mode==='place-queen') {
+    if (!tile || _queenPlaceCooldown) return;
+    _queenPlaceCooldown = true;
+    setTimeout(() => { _queenPlaceCooldown = false; }, 600);
+    send({t:'place-queen', x:tile.x, y:tile.y});
+  } else if (mode==='admin-move') {
+    if (adminMoveTargetId !== null)
+      send({t:'admin-target', action:'move-queen', targetId:adminMoveTargetId, x:tile.x, y:tile.y});
+    mode='idle'; cvs.style.cursor=''; adminMoveTargetId=null;
+  } else {
+    mouseDownAt={x:e.clientX, y:e.clientY};
+    dragViewStart={...view};
+  }
+});
+
+window.addEventListener('mousemove', e => {
+  hover=screenToTile(e.clientX, e.clientY);
+  // Spawn card follows cursor during queen placement
+  if (mode==='place-queen') {
+    const card=$('ss-card');
+    if (hover) {
+      card.style.display='block';
+      card.style.left=(e.clientX+18)+'px';
+      card.style.top=Math.max(10,e.clientY-58)+'px';
+      const blocked = forbiddenZones.some(z=>tileInZone(hover,z));
+      if (blocked) {
+        card.className='bad';
+        $('ss-card-title').textContent='✕ BLOCKED';
+        $('ss-card-sub').textContent='Enemy queen nearby';
+      } else {
+        card.className='ok';
+        $('ss-card-title').textContent=`SPAWN (${hover.x}, ${hover.y})`;
+        $('ss-card-sub').textContent='Tap to place your queen';
+      }
+    } else {
+      card.style.display='none';
+    }
+  }
+  if (mode==='place-ant-drag' && dragFrom) {
+    const r=cvs.getBoundingClientRect();
+    const cx_=e.clientX-r.left, cy_=e.clientY-r.top;
+    const dx=cx_-dragFrom.px, dy=cy_-dragFrom.py;
+    antPlaceDir=snapDir(dx, dy);
+    showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
+  } else if (dragging && dragFrom) {
+    const cp=CELL*view.zoom;
+    let nx=dragViewStart.x-(e.clientX-dragFrom.px)/cp;
+    let ny=dragViewStart.y-(e.clientY-dragFrom.py)/cp;
+    view.x=nx; view.y=ny;
+    clampView();
+  } else if (mouseDownAt) {
+    if (Math.hypot(e.clientX-mouseDownAt.x, e.clientY-mouseDownAt.y) > 5) {
+      dragging=true;
+      dragFrom={px:mouseDownAt.x, py:mouseDownAt.y};
+      mouseDownAt=null;
+      cvs.classList.add('dragging');
+    }
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  if (mode==='place-ant-drag' && dragFrom) {
+    $('dir-overlay').style.display='none';
+    send({t:'place-ant', x:antPlaceOrigin.x, y:antPlaceOrigin.y,
+      dx:antPlaceDir[0], dy:antPlaceDir[1]});
+    // Sticky mode: return to place-ant-down so the next click+drag works too.
+    // If the player runs out of ants, exitPlaceMode() is called on the next 'me' update.
+    mode='place-ant-down';
+    dragFrom = null;
+  }
+  if (dragging) { dragging=false; cvs.classList.remove('dragging'); dragFrom=null; }
+  if (mouseDownAt) {
+    // Was a click (never became a drag) — inspect what was clicked
+    inspectAtTile(screenToTile(mouseDownAt.x, mouseDownAt.y));
+    mouseDownAt=null;
+  }
+});
+
+cvs.addEventListener('contextmenu',e=>e.preventDefault());
+cvs.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f=e.deltaY<0?1.15:1/1.15;
+  zoomTarget = clamp(zoomTarget*f, 0.22, 16);
+}, {passive:false});
+
+/* ===================================================================
+   TOUCH CONTROLS — 1-finger pan, 2-finger pinch-zoom, tap to place
+   =================================================================== */
+let _tpFrom=null, _tpViewStart=null; // 1-finger pan state
+let _tpTapStart=null;                // {x,y,time} for tap detection
+let _pinch=null;                     // 2-finger pinch state
+
+const TOUCH_TAP_PX=14, TOUCH_TAP_MS=300;
+
+function _midpoint(t1,t2){ return {x:(t1.clientX+t2.clientX)/2, y:(t1.clientY+t2.clientY)/2}; }
+
+cvs.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  AudioEngine.init();
+  panTarget=null; // cancel any smooth-lerp so it doesn't fight the finger
+
+  if (e.touches.length===1) {
+    const t=e.touches[0];
+    const r=cvs.getBoundingClientRect();
+    _tpTapStart={x:t.clientX,y:t.clientY,time:performance.now()};
+    _pinch=null;
+
+    if (mode==='place-ant-down') {
+      // Begin ant drag (same flow as mousedown)
+      mode='place-ant-drag';
+      dragFrom={px:t.clientX-r.left, py:t.clientY-r.top, raw:{x:t.clientX,y:t.clientY}};
+      antPlaceOrigin=screenToTile(t.clientX,t.clientY);
+      antPlaceDir=[0,-1];
+    } else {
+      // Begin map pan
+      _tpFrom={px:t.clientX,py:t.clientY};
+      _tpViewStart={...view};
+    }
+
+  } else if (e.touches.length===2) {
+    // Cancel any 1-finger ant drag or pan
+    if (mode==='place-ant-drag') {
+      $('dir-overlay').style.display='none';
+      mode='place-ant-down'; dragFrom=null;
+    }
+    _tpFrom=null; _tpTapStart=null;
+    const t1=e.touches[0], t2=e.touches[1];
+    const mid=_midpoint(t1,t2);
+    _pinch={
+      dist: Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY),
+      zoom: view.zoom,
+      midX: mid.x, midY: mid.y,
+      viewX: view.x, viewY: view.y,
+    };
+  }
+},{passive:false});
+
+cvs.addEventListener('touchmove', e=>{
+  e.preventDefault();
+  const W=cvs.width, H=cvs.height;
+
+  if (e.touches.length===2 && _pinch) {
+    const t1=e.touches[0], t2=e.touches[1];
+    const mid=_midpoint(t1,t2);
+    const dist=Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY);
+    const newZoom=clamp(_pinch.zoom*(dist/_pinch.dist), 0.12, 8);
+    // Keep the world point under the initial pinch midpoint fixed
+    const cp0=CELL*_pinch.zoom, cp1=CELL*newZoom;
+    const anchorWX=_pinch.viewX+(_pinch.midX-W/2)/cp0;
+    const anchorWY=_pinch.viewY+(_pinch.midY-H/2)/cp0;
+    view.zoom=newZoom; zoomTarget=newZoom;
+    view.x=anchorWX-(mid.x-W/2)/cp1;
+    view.y=anchorWY-(mid.y-H/2)/cp1;
+    clampView();
+
+  } else if (e.touches.length===1) {
+    const t=e.touches[0];
+
+    if (mode==='place-ant-drag' && dragFrom) {
+      const r=cvs.getBoundingClientRect();
+      const cx_=t.clientX-r.left, cy_=t.clientY-r.top;
+      antPlaceDir=snapDir(cx_-dragFrom.px, cy_-dragFrom.py);
+      showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
+
+    } else if (_tpFrom) {
+      const cp=CELL*view.zoom;
+      let nx=_tpViewStart.x-(t.clientX-_tpFrom.px)/cp;
+      let ny=_tpViewStart.y-(t.clientY-_tpFrom.py)/cp;
+      view.x=nx; view.y=ny; clampView();
+      // Invalidate tap if finger moved too far
+      if (_tpTapStart && Math.hypot(t.clientX-_tpTapStart.x, t.clientY-_tpTapStart.y)>TOUCH_TAP_PX)
+        _tpTapStart=null;
+    }
+  }
+},{passive:false});
+
+function _onTouchEnd(e){
+  e.preventDefault();
+
+  if (mode==='place-ant-drag') {
+    // Finalize ant placement (same as mouseup)
+    $('dir-overlay').style.display='none';
+    send({t:'place-ant',x:antPlaceOrigin.x,y:antPlaceOrigin.y,dx:antPlaceDir[0],dy:antPlaceDir[1]});
+    mode='place-ant-down'; dragFrom=null;
+
+  } else if (_tpTapStart && e.changedTouches.length>=1) {
+    const t=e.changedTouches[0];
+    const dist=Math.hypot(t.clientX-_tpTapStart.x, t.clientY-_tpTapStart.y);
+    const elapsed=performance.now()-_tpTapStart.time;
+    if (dist<=TOUCH_TAP_PX && elapsed<=TOUCH_TAP_MS) {
+      if (mode==='place-queen') {
+        const tile=screenToTile(t.clientX,t.clientY);
+        send({t:'place-queen',x:tile.x,y:tile.y});
+      }
+    }
+  }
+
+  // Reset 1-finger state after all fingers lift, or restart pan if one finger remains
+  if (e.touches.length===0) {
+    _tpFrom=null; _tpViewStart=null; _tpTapStart=null; _pinch=null;
+  } else if (e.touches.length===1 && _pinch) {
+    // Dropped from pinch to single finger — seamlessly restart pan
+    _pinch=null; _tpTapStart=null;
+    const t=e.touches[0];
+    _tpFrom={px:t.clientX,py:t.clientY};
+    _tpViewStart={...view};
+  }
+}
+cvs.addEventListener('touchend',   _onTouchEnd, {passive:false});
+cvs.addEventListener('touchcancel',_onTouchEnd, {passive:false});
+
+function enterPlaceMode() {
+  mode='place-ant-down'; cvs.classList.add('placing');
+  $('prompt').style.display='block'; $('prompt').textContent='CLICK & DRAG TO PLACE · CLICK BUTTON AGAIN TO STOP';
+  $('drag-hint').style.display='block';
+  $('btn-ant').classList.add('active');
+  $('btn-ant').textContent='■ STOP PLACING';
+}
+function exitPlaceMode() {
+  if (mode==='place-ant-down' || mode==='place-ant-drag') {
+    mode='idle'; cvs.classList.remove('placing');
+    $('prompt').style.display='none'; $('drag-hint').style.display='none';
+    $('btn-ant').classList.remove('active');
+    $('btn-ant').textContent='+ DEPLOY WORKER';
+    $('dir-overlay').style.display='none';
+  }
+}
+function spawnDist(tile) {
+  const dx=tile.x-WORLD.spawnX, dy=tile.y-WORLD.spawnY;
+  return Math.sqrt(dx*dx+dy*dy);
+}
+function tileInZone(tile, z) {
+  const dx=tile.x-z.x, dy=tile.y-z.y;
+  return dx*dx+dy*dy < z.r*z.r;
+}
+function showSpawnScreen() {
+  $('spawn-screen').classList.add('vis');
+  updateSpawnStatus();
+}
+function hideSpawnScreen() {
+  $('spawn-screen').classList.remove('vis');
+  $('ss-card').style.display='none';
+}
+function updateSpawnStatus() {
+  $('ss-queen-count').textContent = forbiddenZones.length;
+  if (me) {
+    $('ss-color').style.background = me.color;
+    $('ss-name').textContent = me.username;
+    $('ss-pswatch').style.background = me.color;
+    $('ss-pname').textContent = me.username;
+  }
+}
+let forbiddenPollId = null;
+
+function startForbiddenPoll() {
+  if (forbiddenPollId) return;
+  send({ t: 'get-forbidden-zones' });
+  forbiddenPollId = setInterval(() => send({ t: 'get-forbidden-zones' }), 1500);
+}
+function stopForbiddenPoll() {
+  if (forbiddenPollId) { clearInterval(forbiddenPollId); forbiddenPollId = null; }
+  forbiddenZones = [];
+}
+
+$('btn-ant').onclick=()=>{
+  AudioEngine.click();
+  if (mode==='place-ant-down' || mode==='place-ant-drag') {
+    exitPlaceMode();
+    return;
+  }
+  if (!me||me.antsAvail<=0) return toast('NO ANTS LEFT');
+  enterPlaceMode();
+};
+$('admin-chk').onchange=e=>{
+  AudioEngine.tick();
+  document.body.classList.toggle('admin-on',e.target.checked);
+};
+$('btn-recenter').onclick=()=>{ AudioEngine.click(); if (me?.queen) panTarget={x:me.queen.x+1,y:me.queen.y+1}; };
+$('btn-logout').onclick=()=>{
+  AudioEngine.click();
+  localStorage.removeItem('hive-u'); localStorage.removeItem('hive-p'); location.reload();
+};
+
+/* AUTH */
+function showStep(n) {
+  document.querySelectorAll('.step').forEach(s=>s.classList.toggle('active',s.dataset.step===n));
+}
+function doLogin() {
+  AudioEngine.click();
+  const u=$('li-u').value.trim().toUpperCase(), p=$('li-p').value;
+  if (!u||!p) { $('li-err').textContent='FILL BOTH FIELDS'; return; }
+  localStorage.setItem('hive-u',u); localStorage.setItem('hive-p',p);
+  send({t:'login', username:u, password:p});
+}
+function doRegister() {
+  AudioEngine.click();
+  const u=$('r-u').value.trim().toUpperCase(), p=$('r-p').value;
+  if (!u||u.length<3) { $('r-err').textContent='USERNAME TOO SHORT'; return; }
+  if (!p||p.length<4) { $('r-err').textContent='PASSWORD TOO SHORT'; return; }
+  const sel=document.querySelector('.hue-sw.sel');
+  if (!sel) { $('r-err').textContent='PICK A HUE'; return; }
+  const idx=+sel.dataset.idx;
+  localStorage.setItem('hive-u',u); localStorage.setItem('hive-p',p);
+  send({t:'register', username:u, password:p, color:HUES[idx], hueIdx:idx});
+}
+HUES.forEach((c,i)=>{
+  const el=document.createElement('div');
+  el.className='hue-sw'; el.style.background=c; el.dataset.idx=i;
+  el.onclick=()=>{ document.querySelectorAll('#hue-picker .hue-sw').forEach(s=>s.classList.remove('sel')); el.classList.add('sel'); };
+  $('hue-picker').appendChild(el);
+});
+HUES.forEach((c,i)=>{
+  const el=document.createElement('div');
+  el.className='hue-sw'; el.style.background=c; el.dataset.idx=i;
+  el.onclick=()=>{ document.querySelectorAll('#admin-hue-picker .hue-sw').forEach(s=>s.classList.remove('sel')); el.classList.add('sel'); };
+  $('admin-hue-picker').appendChild(el);
+});
+function doSetAdminColor() {
+  AudioEngine.click();
+  const sel=document.querySelector('#admin-hue-picker .hue-sw.sel');
+  if (!sel) { $('admin-err').textContent='PICK A COLOR'; return; }
+  const idx=+sel.dataset.idx;
+  send({t:'set-color', color:HUES[idx], hueIdx:idx});
+}
+
+/* ===================================================================
+   ADMIN PANEL v2 — 5-tab system
+   =================================================================== */
+let admCurrentTab='status', admPaused=false, admPlayerListInterval=null;
+let admTargetId=null, admPlayers=[];
+
+function admTab(btn, tab) {
+  document.querySelectorAll('.adm-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.adm-pane').forEach(p=>p.classList.remove('active'));
+  const tb=btn||document.querySelector(`.adm-tab[data-tab="${tab}"]`);
+  if (tb) tb.classList.add('active');
+  const pane=$('atab-'+tab); if (pane) pane.classList.add('active');
+  admCurrentTab=tab;
+  if (tab==='players') {
+    admRefreshPlayers();
+    if (!admPlayerListInterval) admPlayerListInterval=setInterval(admRefreshPlayers,3000);
+  } else {
+    if (admPlayerListInterval) { clearInterval(admPlayerListInterval); admPlayerListInterval=null; }
+  }
+}
+
+function admPushLog(msg) {
+  const log=$('adm-log'); if (!log) return;
+  const t=new Date().toTimeString().slice(0,8);
+  const el=document.createElement('div');
+  el.className='adm-log-entry';
+  el.textContent=`[${t}] ${msg}`;
+  log.insertBefore(el,log.firstChild);
+  while (log.children.length>50) log.removeChild(log.lastChild);
+}
+
+function admRefreshPlayers() {
+  if (!me?.isAdmin) return;
+  send({t:'admin-player-list'});
+}
+
+function admBuildPlayerTable(players) {
+  admPlayers=players;
+  admFilterPlayers();
+}
+
+function admFilterPlayers() {
+  const filter=($('adm-filter')?.value||'').toUpperCase();
+  const table=$('adm-ptable'); if (!table) return;
+  const filtered=admPlayers.filter(p=>!filter||p.username.toUpperCase().includes(filter));
+  if (!filtered.length) {
+    table.innerHTML='<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;color:var(--dim);text-align:center;padding:20px 0;">NO PLAYERS</div>';
+    return;
+  }
+  let html='<div class="adm-ptable-hdr"><span>NAME</span><span>LV</span><span>TILES</span><span>●</span></div>';
+  for (const p of filtered) {
+    const col=(vw?.palette||palette)[p.id]||'#888';
+    const dot=p.online?'<span style="color:var(--grn)">●</span>':'<span style="color:var(--dim)">○</span>';
+    const tiles=p.tiles>=1000?(p.tiles/1000).toFixed(1)+'K':p.tiles;
+    html+=`<div class="adm-ptable-row" onclick="admSelectPlayer(${p.id})">
+      <span style="display:flex;align-items:center;gap:4px;">
+        <span style="width:6px;height:6px;background:${col};border:1px solid var(--ink);flex-shrink:0;display:inline-block;"></span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.username}</span>
+      </span>
+      <span>${p.level}</span><span>${tiles}</span><span>${dot}</span>
+    </div>`;
+  }
+  table.innerHTML=html;
+}
+
+function admSelectPlayer(pid) {
+  const p=admPlayers.find(x=>x.id===pid); if (!p) return;
+  const col=(vw?.palette||palette)[pid]||'#888';
+  admSetTarget(pid,p.username,col,p.level,p.hp,p.maxHp,p.tiles,p.ants);
+  admTab(null,'target');
+}
+
+function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants) {
+  admTargetId=pid;
+  $('adm-no-tgt').style.display='none';
+  $('adm-tgt').style.display='block';
+  const nm=$('adm-tgt-name');
+  nm.textContent=String(username).toUpperCase();
+  nm.style.background=color; nm.style.color=admIsLight(color)?'#000':'#fff';
+  $('adm-tgt-meta').textContent=`LV${level} · ${tiles>=1000?(tiles/1000).toFixed(1)+'K':tiles} TILES · ${ants} ANTS`;
+  const pct=maxHp>0?hp/maxHp*100:0;
+  $('adm-tgt-hp-fill').style.width=pct+'%';
+  $('adm-tgt-hp-text').textContent=`${hp}/${maxHp} HP`;
+  if ($('atgt-setlvl')) $('atgt-setlvl').value=level;
+  if ($('atgt-setants')) $('atgt-setants').value=ants;
+}
+
+function admClearTarget() {
+  admTargetId=null;
+  if ($('adm-no-tgt')) $('adm-no-tgt').style.display='';
+  if ($('adm-tgt')) $('adm-tgt').style.display='none';
+}
+
+function admIsLight(hex) {
+  const h=hex.replace('#','');
+  const r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16);
+  return (r*299+g*587+b*114)/1000>128;
+}
+
+/* Target quick actions */
+$('atgt-heal').onclick=()=>{
+  if (admTargetId==null) return; AudioEngine.click();
+  send({t:'admin-action',action:'heal-queen',target:admTargetId}); toast('QUEEN HEALED');
+};
+$('atgt-ants').onclick=()=>{
+  if (admTargetId==null) return; AudioEngine.click();
+  send({t:'admin-action',action:'add-ants',target:admTargetId}); toast('+10 ANTS');
+};
+$('atgt-lvlu').onclick=()=>{
+  if (admTargetId==null) return; AudioEngine.click();
+  send({t:'admin-action',action:'level-up',target:admTargetId}); toast('LEVEL UP');
+};
+$('atgt-lvld').onclick=()=>{
+  if (admTargetId==null) return; AudioEngine.click();
+  send({t:'admin-action',action:'level-down',target:admTargetId}); toast('LEVEL DOWN');
+};
+$('atgt-move').onclick=()=>{
+  if (admTargetId==null) return; AudioEngine.click();
+  adminMoveTargetId=admTargetId; mode='admin-move'; cvs.style.cursor='crosshair';
+  toast('CLICK MAP TO MOVE QUEEN');
+};
+$('atgt-del').onclick=()=>{
+  if (admTargetId==null) return;
+  if (!confirm('Delete this queen?')) return;
+  AudioEngine.click();
+  send({t:'admin-target',action:'delete-queen',targetId:admTargetId});
+  clearInspect(); toast('QUEEN DELETED');
+};
+$('atgt-kick').onclick=()=>{
+  if (admTargetId==null) return;
+  if (!confirm('Kick this player?')) return;
+  AudioEngine.click();
+  send({t:'admin-kick',targetId:admTargetId}); toast('PLAYER KICKED');
+};
+$('atgt-ban').onclick=()=>{
+  if (admTargetId==null) return;
+  if (!confirm('Ban this player?')) return;
+  AudioEngine.click();
+  send({t:'admin-target',action:'ban-player',targetId:admTargetId});
+  clearInspect(); toast('PLAYER BANNED');
+};
+
+/* Exact-value target actions */
+function admSetLevel() {
+  const lvl=parseInt($('atgt-setlvl')?.value);
+  if (admTargetId==null||isNaN(lvl)||lvl<1||lvl>100) return;
+  AudioEngine.click(); send({t:'admin-set-level',targetId:admTargetId,level:lvl}); toast('LVL→'+lvl);
+}
+function admGiveXp() {
+  const xp=parseFloat($('atgt-givexp')?.value);
+  if (admTargetId==null||isNaN(xp)||xp<=0) return;
+  AudioEngine.click(); send({t:'admin-give-xp',targetId:admTargetId,xp}); toast('+'+xp.toLocaleString()+' XP');
+}
+function admSetAnts() {
+  const n=parseInt($('atgt-setants')?.value);
+  if (admTargetId==null||isNaN(n)||n<0) return;
+  AudioEngine.click(); send({t:'admin-set-ants',targetId:admTargetId,count:n}); toast('ANTS→'+n);
+}
+
+/* Sandbox */
+function admTogglePause() {
+  admPaused=!admPaused; AudioEngine.click();
+  send({t:'admin-pause',paused:admPaused});
+  const b=$('adm-pause-btn');
+  if (b) { b.textContent=admPaused?'▶ PAUSED':'⏸ PAUSE'; b.style.background=admPaused?'var(--yel)':''; b.style.color=admPaused?'var(--ink)':''; }
+  toast(admPaused?'SIM PAUSED':'SIM RESUMED');
+}
+function admSandboxRecenter() { AudioEngine.click(); if (me?.queen) panTarget={x:me.queen.x+1,y:me.queen.y+1}; }
+function admSetSpeed(hz) {
+  AudioEngine.click(); send({t:'admin',key:'TICK_RATE',value:hz});
+  document.querySelectorAll('.adm-speed').forEach(b=>b.classList.toggle('active-speed',parseInt(b.dataset.hz)===hz));
+  if ($('s-tr')) { $('s-tr').value=hz; if ($('v-tr')) $('v-tr').textContent=hz; }
+}
+function admSpawnN() {
+  const n=Math.min(50,Math.max(1,parseInt($('adm-npc-count')?.value)||1));
+  AudioEngine.click(); send({t:'admin-spawn-n',count:n}); toast('SPAWNING '+n+' NPCs');
+}
+function admWipeStart() {
+  $('adm-wipe-normal').style.display='none';
+  $('adm-wipe-confirm').style.display='block';
+  $('adm-wipe-input').value=''; $('adm-wipe-input').focus();
+}
+function admWipeCancel() {
+  $('adm-wipe-normal').style.display='block';
+  $('adm-wipe-confirm').style.display='none';
+}
+function admWipeConfirm() {
+  if (($('adm-wipe-input')?.value||'').trim().toUpperCase()!=='WIPE') { toast('TYPE "WIPE" TO CONFIRM'); return; }
+  AudioEngine.click(); send({t:'admin-action',action:'wipe-world'}); admWipeCancel();
+}
+function admTeleport() {
+  const x=parseInt($('adm-tp-x')?.value), y=parseInt($('adm-tp-y')?.value);
+  if (isNaN(x)||isNaN(y)) { toast('ENTER X,Y COORDS'); return; }
+  if (!me?.id) return;
+  AudioEngine.click(); send({t:'admin-target',action:'move-queen',targetId:me.id,x,y});
+  toast('TELEPORTING TO ('+x+','+y+')');
+}
+function admBroadcast() {
+  const msg=($('adm-bcast')?.value||'').trim(); if (!msg) return;
+  AudioEngine.click(); send({t:'admin-broadcast',msg}); $('adm-bcast').value=''; toast('BROADCAST SENT');
+}
+
+/* TUNE sliders */
+function bindSlider(sid, key, valId, scale=1, fmt=null) {
+  const s=$(sid), v=$(valId); if (!s) return;
+  s.addEventListener('input', () => {
+    AudioEngine.tick();
+    if (v) v.textContent = fmt ? fmt(parseFloat(s.value)) : s.value;
+    send({t:'admin', key, value: parseFloat(s.value)*scale});
+    updateXpPreview();
+  });
+}
+bindSlider('s-tr','TICK_RATE','v-tr');
+bindSlider('s-ls','LIFESPAN','v-ls', 1, fmtTicks);
+bindSlider('s-br','BUBBLE_R','v-br');
+bindSlider('s-hp','HP_BASE','v-hp');
+bindSlider('s-sp','SPAWN_PAN','v-sp');
+bindSlider('s-xpb','XP_BASE','v-xpb');
+bindSlider('s-xpe','XP_EXP','v-xpe');
+bindSlider('s-xpk','XP_KILL','v-xpk');
+bindSlider('s-xpc','XP_CONVERT','v-xpc');
+bindSlider('s-tm','XP_TILE_MILESTONE','v-tm');
+bindSlider('s-xptm','XP_TILE_AWARD','v-xptm');
+bindSlider('s-ag','LEVELUP_ANT_GRANT','v-ag');
+bindSlider('s-da','DAILY_ANTS','v-da');
+$('s-cp').addEventListener('input',()=>{
+  if ($('v-cp')) $('v-cp').textContent=$('s-cp').value;
+  send({t:'admin',key:'CONVERT_PCT',value:parseFloat($('s-cp').value)/100});
+  updateXpPreview();
+});
+
+function updateXpPreview() {
+  const base=parseFloat($('s-xpb')?.value||500);
+  const exp=parseFloat($('s-xpe')?.value||2.2);
+  const tm=Math.max(1,parseFloat($('s-tm')?.value||500));
+  const xptm=Math.max(1,parseFloat($('s-xptm')?.value||25));
+  const l100=Math.floor(base*Math.pow(99,exp));
+  const tiles=Math.round((l100/xptm)*tm);
+  const el=$('adm-xp-preview');
+  if (el) el.textContent=`L100: ${l100.toLocaleString()} XP ≈ ${tiles.toLocaleString()} TILES`;
+}
+updateXpPreview();
+
+/* Presets (localStorage) */
+const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','SPAWN_PAN','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_MILESTONE','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
+function admSavePreset(slot) {
+  const p={};
+  for (const k of ADM_PRESET_KEYS) {
+    const m=CFG_SLIDER_MAP[k]; if (!m) continue;
+    const s=$(m.sid); if (s) p[k]=parseFloat(s.value)*(m.scale||1);
+  }
+  localStorage.setItem('hive-preset-'+slot,JSON.stringify(p)); toast('PRESET '+slot+' SAVED');
+}
+function admLoadPreset(slot) {
+  const raw=localStorage.getItem('hive-preset-'+slot);
+  if (!raw) { toast('NO PRESET '+slot); return; }
+  try {
+    const p=JSON.parse(raw);
+    for (const [k,v] of Object.entries(p)) {
+      const m=CFG_SLIDER_MAP[k]; if (!m) continue;
+      const s=$(m.sid),vEl=$(m.vid);
+      const disp=m.scale?v/m.scale:v;
+      if (s) s.value=disp;
+      if (vEl) vEl.textContent=m.fmt?m.fmt(disp):disp;
+      send({t:'admin',key:k,value:v});
+    }
+    updateXpPreview(); toast('PRESET '+slot+' LOADED');
+  } catch { toast('PRESET '+slot+' CORRUPT'); }
+}
+function admCfgReset() {
+  AudioEngine.click(); send({t:'admin-cfg-reset'}); toast('CFG RESET TO DEFAULTS');
+}
+
+/* legacy compat — keep old target-panel functions working for canvas click path */
+function atpTargetId() {
+  if (admTargetId!=null) return admTargetId;
+  if (!selectedTarget) return null;
+  return selectedTarget.data.id??selectedTarget.data.owner??null;
+}
+/* old wipe/npc/recenter buttons removed — handled by SANDBOX tab */
+};
+
+/* TOAST */
+function toast(msg) {
+  const el=$('toast'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTmr);
+  toastTmr=setTimeout(()=>el.classList.remove('show'), 2800);
+}
+
+setInterval(async()=>{
+  try {
+    const j=await fetch('/health').then(r=>r.json());
+    $('hdr-players').textContent=j.players;
+    if ($('adm-online')) $('adm-online').textContent=j.players;
+    if ($('adm-queens')) $('adm-queens').textContent=j.queens;
+    if ($('adm-ants'))   $('adm-ants').textContent=j.ants;
+    if ($('adm-tick'))   $('adm-tick').textContent=j.tick;
+    if ($('adm-uptime')) {
+      const u=(j.uptimeMs/1000)|0, h=(u/3600)|0, m=((u%3600)/60)|0, s=u%60;
+      $('adm-uptime').textContent=`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+  } catch{}
+},2000);
+
+/* Init audio context on first user interaction */
+document.addEventListener('click', () => AudioEngine.init(), { once: true });
+
+/* ===================================================================
+   ENTER KEY — AUTH FORMS
+   =================================================================== */
+$('li-u').addEventListener('keydown', e=>{ if(e.key==='Enter') { e.preventDefault(); $('li-p').focus(); } });
+$('li-p').addEventListener('keydown', e=>{ if(e.key==='Enter') { e.preventDefault(); doLogin(); } });
+$('r-u').addEventListener('keydown',  e=>{ if(e.key==='Enter') { e.preventDefault(); $('r-p').focus(); } });
+$('r-p').addEventListener('keydown',  e=>{ if(e.key==='Enter') { e.preventDefault(); showStep('reg2'); } });
+
+/* ===================================================================
+   KEYBOARD SHORTCUTS
+   =================================================================== */
+document.addEventListener('keydown', e => {
+  // Skip if user is typing in an input
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  const panStep = () => (cvs.height / (CELL * view.zoom)) * 0.2;
+  switch (e.key) {
+    case 'w': case 'W': case 'ArrowUp':    view.y -= panStep(); clampView(); panTarget=null; break;
+    case 's': case 'S': case 'ArrowDown':  view.y += panStep(); clampView(); panTarget=null; break;
+    case 'a': case 'A': case 'ArrowLeft':  view.x -= panStep(); clampView(); panTarget=null; break;
+    case 'd': case 'D': case 'ArrowRight': view.x += panStep(); clampView(); panTarget=null; break;
+    case 'r': case 'R':
+      if (me?.queen && !me.queen.dead) { panTarget={x:me.queen.x+1,y:me.queen.y+1}; AudioEngine.click(); }
+      break;
+    case 'e': case 'E':
+      if (!me) break;
+      AudioEngine.click();
+      if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
+      else if (me.antsAvail>0 && me.queen && !me.queen.dead) enterPlaceMode();
+      break;
+    case 'Escape':
+      AudioEngine.click();
+      if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
+      break;
+    case '+': case '=':
+      zoomTarget = clamp(zoomTarget*1.15, 0.22, 16); break;
+    case '-': case '_':
+      zoomTarget = clamp(zoomTarget/1.15, 0.22, 16); break;
+  }
+});
+
+/* Mute toggle */
+let _muteState = localStorage.getItem('hive-muted') === '1';
+if (_muteState) { AudioEngine.setMute(true); $('btn-mute').textContent = '♪̶'; $('btn-mute').style.opacity = '0.4'; }
+$('btn-mute').onclick = () => {
+  _muteState = !_muteState;
+  AudioEngine.setMute(_muteState);
+  AudioEngine.click();
+  $('btn-mute').textContent = _muteState ? '♪̶' : '♪';
+  $('btn-mute').style.opacity = _muteState ? '0.4' : '1';
+  localStorage.setItem('hive-muted', _muteState ? '1' : '0');
+};
+
+connect();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
