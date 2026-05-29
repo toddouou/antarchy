@@ -846,6 +846,7 @@ let WORLD={w:2048, h:2048, geo:null, spawnX:1024, spawnY:1024, spawnPan:100};
 let mode='idle';
 let hover=null;
 let panLocked=true;
+let initialGeolocate=false;
 let antPlaceOrigin=null, antPlaceDir=[0,-1];
 let toastTmr=null, frameCount=0, fpsT=performance.now();
 const floatingTexts=[];
@@ -855,6 +856,7 @@ let prevAntPos=new Map(), lastVwAt=0;
 const tileCanvas=document.createElement('canvas');
 const tileCtx=tileCanvas.getContext('2d',{alpha:true});
 let tileCacheVw=null, tileCachePlacing=false, tileCacheMapVis=true;
+let tileCacheDirty=false;
 let mapVisible=true;
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
@@ -950,6 +952,7 @@ function buildTileCache(v, myId=0, placing=false, showMap=true) {
   tileCacheVw = v;
   tileCachePlacing = placing;
   tileCacheMapVis = showMap;
+  tileCacheDirty = false;
 }
 
 /* ===================================================================
@@ -1235,7 +1238,7 @@ function handle(msg) {
         $('btn-ant').disabled=me.antsAvail<=0;
       } else {
         view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
-        view.zoom=zoomTarget=0.001;
+        view.zoom=zoomTarget=1.0;
         setTimeout(()=>{
           mode='place-queen'; cvs.classList.add('placing');
           hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
@@ -1261,6 +1264,7 @@ function handle(msg) {
       if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
       lastVwAt=performance.now();
       vw=msg; palette=msg.palette;
+      tileCacheDirty=true;
       if (me?.color) palette[me.id]=me.color;
       break; }
     case 'forbidden-zones':
@@ -1282,6 +1286,7 @@ function handle(msg) {
       stopForbiddenPoll(); hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
       setTimeout(()=>{
         view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+        view.zoom=zoomTarget=1.0;
         mode='place-queen'; cvs.classList.add('placing');
         hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
       },2000);
@@ -1290,6 +1295,7 @@ function handle(msg) {
       toast('[ADMIN] WORLD WIPED');
       me={...me, queen:null, stats:{tiles:0,secs:0,kills:0,score:0}, antsAvail:5};
       view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+      view.zoom=zoomTarget=1.0;
       stopForbiddenPoll();
       if (!me.isAdmin) {
         mode='place-queen'; cvs.classList.add('placing');
@@ -1636,8 +1642,14 @@ function doGeolocate() {
     if (!coords) return toast('GEO: WORLD NOT READY');
     coords.x = Math.max(0, Math.min(WORLD.w - 1, coords.x));
     coords.y = Math.max(0, Math.min(WORLD.h - 1, coords.y));
-    panTarget = { x: coords.x, y: coords.y };
-    toast('NAVIGATING TO YOUR LOCATION');
+    if (initialGeolocate) {
+      view.x = coords.x; view.y = coords.y;
+      initialGeolocate = false;
+      toast('LOCATION FOUND');
+    } else {
+      panTarget = { x: coords.x, y: coords.y };
+      toast('NAVIGATING TO YOUR LOCATION');
+    }
   }, () => toast('GEO: PERMISSION DENIED'), { timeout: 8000 });
 }
 
@@ -1706,7 +1718,10 @@ function render() {
   const myId = me?.id || 0;
 
   // 2) Tile layer — blit 1px-per-tile cache scaled to cp
-  if (tileCacheVw !== v || tileCachePlacing !== placingMode || tileCacheMapVis !== mapVisible) buildTileCache(v, myId, placingMode, mapVisible);
+  if (tileCacheDirty || tileCachePlacing !== placingMode || tileCacheMapVis !== mapVisible) {
+    buildTileCache(v, myId, placingMode, mapVisible);
+    tileCacheDirty = false;
+  }
   const drawW=Math.round(v.w*cp), drawH=Math.round(v.h*cp);
   if (drawW > 0 && drawH > 0 && drawW <= cvs.width*8 && drawH <= cvs.height*8) {
     ctx.drawImage(tileCanvas, Math.round(offX), Math.round(offY), drawW, drawH);
@@ -2276,7 +2291,8 @@ function tileInZone(tile, z) {
 function showSpawnScreen() {
   $('spawn-screen').classList.add('vis');
   updateSpawnStatus();
-  setTimeout(() => { if (mode === 'place-queen') doGeolocate(); }, 1200);
+  initialGeolocate = true;
+  setTimeout(() => { if (mode === 'place-queen') doGeolocate(); }, 50);
 }
 function hideSpawnScreen() {
   $('spawn-screen').classList.remove('vis');
