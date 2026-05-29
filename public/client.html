@@ -935,8 +935,6 @@ let cacheOriX=0, cacheOriY=0; // world coord of cache[0,0]
 let mapVisible=true;
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
-// pushView debounce
-let lastPushAt=0;
 // Leaderboard
 let lbPrevTiles={};
 function fmtLbTiles(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(0)+'K';return String(n);}
@@ -1389,7 +1387,7 @@ function handle(msg) {
       stopForbiddenPoll(); hideSpawnScreen();
       panLocked=false; view.x=msg.x+1; view.y=msg.y+1;
       zoomTarget=1.0;
-      lastPushAt=0; lastViewKey=null; pushView();
+      lastViewKey=null; pendingViewKey=null; pushView(true);
       break;
     case 'queen-dead':
       AudioEngine.queenShriek(0, 1);
@@ -1541,24 +1539,37 @@ function clampView() {
 window.addEventListener('resize', () => { resize(); clampView(); });
 resize();
 
-let lastViewKey=null;
+let lastViewKey=null, pendingViewKey=null, viewSendTimer=null;
 const SERVER_MAX_DIM=800; // must match MAX_DIM in network.rs
-function pushView() {
-  const now=performance.now();
-  if (now-lastPushAt<40) return;
-  const cp=CELL*view.zoom;
-  if (cp<0.5) return; // tiles sub-pixel — nothing to show
+function _computeViewBox() {
+  const cp=CELL*view.zoom; if (cp<0.5) return null;
   const W=cvs.width, H=cvs.height;
-  // Cap request to what the server will actually send
   const tx=Math.min(Math.ceil(W/cp)+4, SERVER_MAX_DIM);
   const ty=Math.min(Math.ceil(H/cp)+4, SERVER_MAX_DIM);
   const PAD=Math.min(4, Math.floor((SERVER_MAX_DIM-tx)/2), Math.floor((SERVER_MAX_DIM-ty)/2));
   const x0=Math.floor(view.x-tx/2)-PAD, y0=Math.floor(view.y-ty/2)-PAD;
-  const x1=x0+tx+PAD*2, y1=y0+ty+PAD*2;
-  const key=`${x0},${y0},${x1},${y1}`;
+  return {x0, y0, x1:x0+tx+PAD*2, y1:y0+ty+PAD*2};
+}
+function _flushView() {
+  viewSendTimer=null; pendingViewKey=null;
+  const b=_computeViewBox(); if (!b) return;
+  const key=`${b.x0},${b.y0},${b.x1},${b.y1}`;
   if (key===lastViewKey) return;
-  lastViewKey=key; lastPushAt=now;
-  send({t:'view-set', x0, y0, x1, y1});
+  lastViewKey=key; send({t:'view-set', x0:b.x0, y0:b.y0, x1:b.x1, y1:b.y1});
+}
+// immediate=true bypasses debounce (use after teleport/queen-placed)
+function pushView(immediate=false) {
+  const b=_computeViewBox(); if (!b) return;
+  const key=`${b.x0},${b.y0},${b.x1},${b.y1}`;
+  if (key===lastViewKey || key===pendingViewKey) return; // already sent or already queued
+  if (viewSendTimer) clearTimeout(viewSendTimer);
+  if (immediate) {
+    viewSendTimer=null; pendingViewKey=null;
+    lastViewKey=key; send({t:'view-set', x0:b.x0, y0:b.y0, x1:b.x1, y1:b.y1});
+  } else {
+    pendingViewKey=key;
+    viewSendTimer=setTimeout(_flushView, 150);
+  }
 }
 
 function clearInspect() {
