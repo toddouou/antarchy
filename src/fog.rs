@@ -4,7 +4,7 @@ const FOG_CLEAR_DIST: f32 = 20.0;
 const FOG_GRAD_DIST:  f32 = 30.0;
 const PAD: i32 = 30;  // == FOG_GRAD_DIST as i32
 
-/// Two-pass Chebyshev distance transform: identical algorithm to simulation.js.
+/// Two-pass Chebyshev distance transform over the viewport's owned tiles.
 /// Returns a Uint8 fog array for the viewport [x0,y0, w×h].
 /// 0 = fully clear, 100 = fully fogged.
 /// Admin players receive all-zeros (no fog).
