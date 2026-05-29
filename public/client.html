@@ -1655,15 +1655,22 @@ function inspectAtTile(tile) {
 /* ===================================================================
    OSM TILE SYSTEM — fetch/cache/draw OpenStreetMap tiles directly on canvas
    =================================================================== */
+const OSM_RETRY_MS = 30000; // don't re-request a failed tile more than once per 30s
 function getOsmTile(z, x, y) {
   const key=`${z}/${x}/${y}`;
-  if (osmCache.has(key)) return osmCache.get(key);
+  const cached = osmCache.get(key);
+  if (cached) {
+    // Loaded or still-pending tiles are returned as-is. A previously-failed tile is
+    // re-requested only after a backoff window — otherwise a single 4xx would retry
+    // every frame, hammering (and getting IP-blocked by) the tile server.
+    if (!(cached.failed && performance.now() - cached.failedAt > OSM_RETRY_MS)) return cached;
+  }
   const img=new Image();
-  const e={img, loaded:false};
+  const e={img, loaded:false, failed:false, failedAt:0};
   img.crossOrigin='anonymous';
   img.src=`https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
-  img.onload=()=>{ e.loaded=true; };
-  img.onerror=()=>{ osmCache.delete(key); };
+  img.onload=()=>{ e.loaded=true; e.failed=false; };
+  img.onerror=()=>{ e.loaded=false; e.failed=true; e.failedAt=performance.now(); };
   osmCache.set(key, e);
   // LRU eviction: keep cache under 512 tiles to prevent unbounded memory growth
   if (osmCache.size > 512) osmCache.delete(osmCache.keys().next().value);
@@ -1697,14 +1704,20 @@ function osmTileCorner(ox, oy, n, geo, cosLat) {
   };
 }
 
-function drawOsmTiles(offX, offY, cp, vx0, vy0, canvasW, canvasH) {
+// Drawn purely from the live camera (view.x/view.y/cp) — independent of the server
+// viewport `vw`. This keeps the base map tracking pan/zoom in real time, even when
+// zoomed out far enough that the server tile overlay (and thus `vw`) is suppressed.
+function drawOsmTiles(cp, canvasW, canvasH) {
   if (!WORLD.geo) return;
   const geo=WORLD.geo;
-  const cosLat=Math.cos(geo.capitolLat*Math.PI/180);
+  const cosLat=Math.cos(geo.capitolLat*Math.PI/180) || 1;
   const osmZ=Math.max(1,Math.min(18,Math.round(Math.log2(cp*40075016.686*cosLat/(geo.tileMeters*256)))));
   const n=Math.pow(2,osmZ);
-  const tl=gameToOsmTile(vx0,            vy0,            n, geo, cosLat);
-  const br=gameToOsmTile(vx0+canvasW/cp, vy0+canvasH/cp, n, geo, cosLat);
+  // Visible viewport in game coordinates, anchored to the camera.
+  const gx0=view.x-canvasW/(2*cp), gy0=view.y-canvasH/(2*cp);
+  const gx1=view.x+canvasW/(2*cp), gy1=view.y+canvasH/(2*cp);
+  const tl=gameToOsmTile(gx0, gy0, n, geo, cosLat);
+  const br=gameToOsmTile(gx1, gy1, n, geo, cosLat);
   for (let ox=tl.x-1; ox<=br.x+1; ox++) {
     for (let oy=tl.y-1; oy<=br.y+1; oy++) {
       if (ox<0||oy<0||ox>=n||oy>=n) continue;
@@ -1712,8 +1725,9 @@ function drawOsmTiles(offX, offY, cp, vx0, vy0, canvasW, canvasH) {
       if (!e.loaded) continue;
       const {tx:x0,ty:y0}=osmTileCorner(ox,   oy,   n, geo, cosLat);
       const {tx:x1,ty:y1}=osmTileCorner(ox+1, oy+1, n, geo, cosLat);
-      const px=(offX+(x0-vx0)*cp)|0, py=(offY+(y0-vy0)*cp)|0;
-      const pw=((offX+(x1-vx0)*cp)|0)-px, ph=((offY+(y1-vy0)*cp)|0)-py;
+      // screen px for a game-x of gx is canvasW/2 + (gx - view.x)*cp
+      const px=(canvasW/2+(x0-view.x)*cp)|0, py=(canvasH/2+(y0-view.y)*cp)|0;
+      const pw=((canvasW/2+(x1-view.x)*cp)|0)-px, ph=((canvasH/2+(y1-view.y)*cp)|0)-py;
       if (pw>0&&ph>0) ctx.drawImage(e.img, px, py, pw, ph);
     }
   }
@@ -1827,7 +1841,7 @@ function render() {
   // 1) Background + OSM map layer
   if (mapVisible) {
     ctx.fillStyle='#c8d8e8'; ctx.fillRect(0,0,W,H);
-    drawOsmTiles(offX, offY, cp, vx0, vy0, W, H);
+    drawOsmTiles(cp, W, H);
   } else {
     ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
   }
