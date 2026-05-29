@@ -40,6 +40,7 @@ pub struct Config {
     pub xp_heal: f64,
     pub xp_highway_tick: f64,
     pub levelup_ant_grant: i32,
+    pub ant_damage: f64,
 }
 
 impl Default for Config {
@@ -54,7 +55,7 @@ impl Default for Config {
             tick_rate:         50,
             lifespan:   4_320_000,
             bubble_r:          30.0,
-            hp_base:           30,
+            hp_base:           100,
             convert_pct:       0.65,
             daily_ants:        5,
             save_file: "world.snapshot".to_string(),
@@ -71,6 +72,7 @@ impl Default for Config {
             xp_heal:           1.0,
             xp_highway_tick:   1.0,
             levelup_ant_grant: 1,
+            ant_damage:        1.0,
         }
     }
 }
@@ -104,6 +106,7 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("xp_tile_award",     0.0,    10_000.0),
     ("levelup_ant_grant", 0.0,       100.0),
     ("spawn_pan",        10.0,    10_000.0),
+    ("ant_damage",        0.1,        50.0),
 ];
 
 /// Returns the clamped value, or None if key is unknown.
@@ -128,6 +131,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "xp_tile_award"     => c.xp_tile_award      = v,
         "levelup_ant_grant" => c.levelup_ant_grant  = v as i32,
         "spawn_pan"         => c.spawn_pan          = v,
+        "ant_damage"        => c.ant_damage         = v,
         _ => return None,
     }
     Some(v)
@@ -150,6 +154,7 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
         ("xp_tile_award",     d.xp_tile_award),
         ("levelup_ant_grant", d.levelup_ant_grant as f64),
         ("spawn_pan",         d.spawn_pan),
+        ("ant_damage",        d.ant_damage),
     ];
     let mut out = Vec::with_capacity(vals.len());
     let mut c = cfg_write();
@@ -167,6 +172,7 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     c.xp_tile_award      = d.xp_tile_award;
     c.levelup_ant_grant  = d.levelup_ant_grant;
     c.spawn_pan          = d.spawn_pan;
+    c.ant_damage         = d.ant_damage;
     drop(c);
     for &(k, v) in vals { out.push((k, v)); }
     out

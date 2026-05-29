@@ -145,10 +145,6 @@ pub fn handle_message(
         if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 {
             let _ = tx.send(err("Out of bounds")); return;
         }
-        let sdx = x - c.spawn_x as i32; let sdy = y - c.spawn_y as i32;
-        if ((sdx*sdx + sdy*sdy) as f64).sqrt() > c.spawn_pan {
-            let _ = tx.send(err("Place within starting area")); return;
-        }
         for (_, q) in world.queens.iter().filter(|(_, q)| !q.dead) {
             let ddx = q.x + q.size as i32 / 2 - x;
             let ddy = q.y + q.size as i32 / 2 - y;

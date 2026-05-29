@@ -185,7 +185,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .adm-cl { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
   .adm-cv { font-family:'Press Start 2P',monospace; font-size:10px; margin-top:3px; color:var(--red); }
   .adm-subsec { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--blu);
-    margin:10px 0 5px; padding-bottom:3px; border-bottom:1px solid var(--line); letter-spacing:.05em; }
+    margin:16px 0 6px; padding-bottom:3px; border-bottom:1px solid var(--line); letter-spacing:.05em; }
+  .adm-subsec:first-of-type { margin-top:6px; }
   .adm-log { max-height:220px; overflow-y:auto; }
   .adm-log-entry { font-family:'IBM Plex Mono',monospace; font-size:9px; color:var(--dim);
     padding:2px 0; border-bottom:1px solid var(--grid); line-height:1.3; }
@@ -215,10 +216,21 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .adm-speed.active-speed { background:var(--blu); color:#fff; }
   .adm-xp-preview { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
     padding:6px; background:var(--bg); border:1px dashed var(--line); margin-bottom:8px; line-height:1.8; }
-  .slider-g { margin-bottom:10px; }
-  .slider-l { display:flex; justify-content:space-between;
+  .slider-g { margin-bottom:12px; }
+  .slider-l { display:flex; justify-content:space-between; align-items:center;
     font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-bottom:3px; }
   .slider-l .v { color:var(--red); }
+  .sinfo { display:inline-flex; align-items:center; justify-content:center;
+    width:11px; height:11px; border:1px solid var(--dim); border-radius:50%;
+    font-family:'IBM Plex Mono',monospace; font-size:7px; cursor:help;
+    color:var(--dim); margin-left:3px; position:relative; flex-shrink:0; vertical-align:middle; }
+  .sinfo::after { content:attr(data-tip); position:absolute;
+    bottom:calc(100% + 5px); left:50%; transform:translateX(-50%);
+    background:var(--ink); color:var(--bg2); padding:6px 9px; width:210px;
+    font-family:'IBM Plex Mono',monospace; font-size:9px; line-height:1.7;
+    white-space:normal; pointer-events:none; opacity:0;
+    transition:opacity .15s; z-index:300; border:1px solid rgba(255,255,255,.15); }
+  .sinfo:hover::after { opacity:1; }
   input[type="range"] { width:100%; -webkit-appearance:none; appearance:none;
     height:6px; background:var(--bg); border:1px solid var(--ink); outline:none; }
   input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none;
@@ -618,66 +630,122 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <button class="btn-sm" onclick="admLoadPreset('C')" title="Load preset C">LD C</button>
     </div>
     <div class="adm-xp-preview" id="adm-xp-preview">L100 NEEDS: —</div>
+
     <div class="adm-subsec">CORE</div>
     <div class="slider-g">
-      <div class="slider-l"><span>TICK RATE</span><span class="v"><span id="v-tr">50</span>HZ</span></div>
-      <input type="range" id="s-tr" min="1" max="200" step="1" value="50">
+      <div class="slider-l">
+        <span>TICK RATE <span class="sinfo" data-tip="Simulation steps per second. Higher = faster world, more CPU. 50 is normal play speed.">?</span></span>
+        <span class="v"><span id="v-tr">50</span> HZ</span>
+      </div>
+      <input type="range" id="s-tr" min="5" max="120" step="1" value="50">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>ANT LIFESPAN</span><span class="v"><span id="v-ls">24h</span></span></div>
-      <input type="range" id="s-ls" min="1000" max="8640000" step="1000" value="4320000">
+      <div class="slider-l">
+        <span>ANT LIFESPAN <span class="sinfo" data-tip="How long an ant survives before expiring. 4.32M ticks = 24h at 50Hz. Lower = faster turnover.">?</span></span>
+        <span class="v"><span id="v-ls">24h</span></span>
+      </div>
+      <input type="range" id="s-ls" min="10000" max="4320000" step="10000" value="4320000">
     </div>
+
     <div class="adm-subsec">QUEEN</div>
     <div class="slider-g">
-      <div class="slider-l"><span>BUBBLE R</span><span class="v"><span id="v-br">30</span></span></div>
-      <input type="range" id="s-br" min="5" max="5000" step="5" value="30">
+      <div class="slider-l">
+        <span>BUBBLE RADIUS <span class="sinfo" data-tip="Exclusion zone around each queen (tiles). Enemy queens cannot be placed within this radius.">?</span></span>
+        <span class="v"><span id="v-br">30</span></span>
+      </div>
+      <input type="range" id="s-br" min="5" max="500" step="5" value="30">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>HP/LEVEL</span><span class="v"><span id="v-hp">30</span></span></div>
-      <input type="range" id="s-hp" min="1" max="1000000" step="1" value="30">
+      <div class="slider-l">
+        <span>HP PER LEVEL <span class="sinfo" data-tip="Queen max HP = this value × queen level. A level 1 queen has exactly this many HP. Higher = harder to kill.">?</span></span>
+        <span class="v"><span id="v-hp">100</span></span>
+      </div>
+      <input type="range" id="s-hp" min="10" max="2000" step="10" value="100">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>SPAWN PAN</span><span class="v"><span id="v-sp">200</span></span></div>
-      <input type="range" id="s-sp" min="10" max="10000" step="10" value="200">
+      <div class="slider-l">
+        <span>SPAWN PAN <span class="sinfo" data-tip="Camera pan radius (tiles) shown when a player first places their queen. Larger = wider initial view.">?</span></span>
+        <span class="v"><span id="v-sp">200</span></span>
+      </div>
+      <input type="range" id="s-sp" min="25" max="2000" step="25" value="200">
     </div>
+
     <div class="adm-subsec">COMBAT</div>
     <div class="slider-g">
-      <div class="slider-l"><span>CONVERT %</span><span class="v"><span id="v-cp">65</span></span></div>
-      <input type="range" id="s-cp" min="10" max="100" step="1" value="65">
+      <div class="slider-l">
+        <span>ANT DAMAGE <span class="sinfo" data-tip="HP dealt to an enemy queen per ant touch per tick. Lower = queens survive longer. Default 1 means ~100 hits to kill a fresh level 1 queen.">?</span></span>
+        <span class="v"><span id="v-ad">1</span></span>
+      </div>
+      <input type="range" id="s-ad" min="0.1" max="20" step="0.1" value="1">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>DAILY ANTS</span><span class="v"><span id="v-da">5</span></span></div>
-      <input type="range" id="s-da" min="0" max="1000" step="1" value="5">
+      <div class="slider-l">
+        <span>CONVERT % <span class="sinfo" data-tip="Majority threshold for ant clash resolution. When 65% of ants on a tile are the same owner, minority ants are converted.">?</span></span>
+        <span class="v"><span id="v-cp">65</span>%</span>
+      </div>
+      <input type="range" id="s-cp" min="51" max="100" step="1" value="65">
     </div>
+    <div class="slider-g">
+      <div class="slider-l">
+        <span>DAILY ANTS <span class="sinfo" data-tip="Ants each player receives per 24-hour refill. More ants = more expansion potential per day.">?</span></span>
+        <span class="v"><span id="v-da">5</span></span>
+      </div>
+      <input type="range" id="s-da" min="0" max="50" step="1" value="5">
+    </div>
+
     <div class="adm-subsec">XP CURVE</div>
     <div class="slider-g">
-      <div class="slider-l"><span>XP BASE</span><span class="v"><span id="v-xpb">500</span></span></div>
-      <input type="range" id="s-xpb" min="1" max="1000000" step="1" value="500">
+      <div class="slider-l">
+        <span>XP BASE <span class="sinfo" data-tip="Base XP cost for the level curve. Level 2 costs XP_BASE × 1^exp. Higher = slower overall progression.">?</span></span>
+        <span class="v"><span id="v-xpb">500</span></span>
+      </div>
+      <input type="range" id="s-xpb" min="50" max="20000" step="50" value="500">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>XP EXP</span><span class="v"><span id="v-xpe">2.2</span></span></div>
-      <input type="range" id="s-xpe" min="0.5" max="5.0" step="0.05" value="2.2">
+      <div class="slider-l">
+        <span>CURVE POWER <span class="sinfo" data-tip="Exponent of the XP level curve. Higher = steeper late-game grind. 2.2 gives a natural power-law curve.">?</span></span>
+        <span class="v"><span id="v-xpe">2.2</span></span>
+      </div>
+      <input type="range" id="s-xpe" min="1.0" max="4.0" step="0.05" value="2.2">
     </div>
+
     <div class="adm-subsec">REWARDS</div>
     <div class="slider-g">
-      <div class="slider-l"><span>XP/KILL</span><span class="v"><span id="v-xpk">5000</span></span></div>
-      <input type="range" id="s-xpk" min="0" max="1000000" step="100" value="5000">
+      <div class="slider-l">
+        <span>KILL XP <span class="sinfo" data-tip="XP awarded to a player when they destroy an enemy queen. Large reward to incentivize combat.">?</span></span>
+        <span class="v"><span id="v-xpk">5000</span></span>
+      </div>
+      <input type="range" id="s-xpk" min="0" max="50000" step="100" value="5000">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>XP/CONVERT</span><span class="v"><span id="v-xpc">5</span></span></div>
-      <input type="range" id="s-xpc" min="0" max="10000" step="1" value="5">
+      <div class="slider-l">
+        <span>CONVERT XP <span class="sinfo" data-tip="XP per enemy tile painted over. Rewards aggressive expansion into enemy territory.">?</span></span>
+        <span class="v"><span id="v-xpc">5</span></span>
+      </div>
+      <input type="range" id="s-xpc" min="0" max="100" step="1" value="5">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>TILE MILESTONE</span><span class="v"><span id="v-tm">500</span></span></div>
-      <input type="range" id="s-tm" min="1" max="100000" step="10" value="500">
+      <div class="slider-l">
+        <span>LEVELUP ANTS <span class="sinfo" data-tip="Bonus ants granted each time a player levels up. Rewards progression with extra placement capacity.">?</span></span>
+        <span class="v"><span id="v-ag">1</span></span>
+      </div>
+      <input type="range" id="s-ag" min="0" max="10" step="1" value="1">
+    </div>
+
+    <div class="adm-subsec">MILESTONES</div>
+    <div class="slider-g">
+      <div class="slider-l">
+        <span>TILE GOAL <span class="sinfo" data-tip="Tiles owned threshold that triggers a milestone XP award. Triggers every N tiles (not just once).">?</span></span>
+        <span class="v"><span id="v-tm">500</span></span>
+      </div>
+      <input type="range" id="s-tm" min="50" max="5000" step="50" value="500">
     </div>
     <div class="slider-g">
-      <div class="slider-l"><span>XP/MILESTONE</span><span class="v"><span id="v-xptm">25</span></span></div>
-      <input type="range" id="s-xptm" min="0" max="10000" step="1" value="25">
-    </div>
-    <div class="slider-g">
-      <div class="slider-l"><span>ANT/LEVEL</span><span class="v"><span id="v-ag">1</span></span></div>
-      <input type="range" id="s-ag" min="0" max="100" step="1" value="1">
+      <div class="slider-l">
+        <span>MILESTONE XP <span class="sinfo" data-tip="XP awarded each time a player crosses a tile goal milestone. Set to 0 to disable milestone rewards.">?</span></span>
+        <span class="v"><span id="v-xptm">25</span></span>
+      </div>
+      <input type="range" id="s-xptm" min="0" max="500" step="5" value="25">
     </div>
   </div>
 </aside>
@@ -826,6 +894,7 @@ const CFG_SLIDER_MAP = {
   LEVELUP_ANT_GRANT: { sid:'s-ag',   vid:'v-ag'   },
   CONVERT_PCT:       { sid:'s-cp',   vid:'v-cp',  scale:100 }, // server 0-1 → slider 0-100
   DAILY_ANTS:        { sid:'s-da',   vid:'v-da'   },
+  ANT_DAMAGE:        { sid:'s-ad',   vid:'v-ad'   },
 };
 function applyCfgSlider(key, val) {
   const m = CFG_SLIDER_MAP[key]; if (!m) return;
@@ -858,9 +927,11 @@ const tileCtx=tileCanvas.getContext('2d',{alpha:true});
 let tileCacheVw=null, tileCachePlacing=false, tileCacheMapVis=true;
 let tileCacheDirty=false;
 let tileCacheCamX=-1, tileCacheCamY=-1;
-// World-space tile data — persists across viewport shifts, enables blank-free panning
-let worldTileData=null; // Uint16Array(WORLD.w * WORLD.h)
-let worldFogData=null;  // Uint8Array(WORLD.w  * WORLD.h)
+// Fixed-size sliding tile cache — covers a 2048×2048 tile window, shifts when view moves beyond it
+const TILE_CACHE_W=2048, TILE_CACHE_H=2048;
+let tileCache=null;  // Uint16Array(TILE_CACHE_W*TILE_CACHE_H), allocated after login
+let fogCache=null;   // Uint8Array(...)
+let cacheOriX=0, cacheOriY=0; // world coord of cache[0,0]
 let mapVisible=true;
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
@@ -871,6 +942,10 @@ let lbPrevTiles={};
 function fmtLbTiles(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(0)+'K';return String(n);}
 // OSM tile cache
 const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
+// 1×1 canvas for reading water color from OSM tiles
+const _waterSampleCanvas=document.createElement('canvas');
+_waterSampleCanvas.width=_waterSampleCanvas.height=1;
+const _waterSampleCtx=_waterSampleCanvas.getContext('2d',{willReadFrequently:true});
 // Water-spawn check cache: `${tx},${ty}` → boolean (true = water, no queen)
 const waterCache=new Map();
 let hoverIsWater=false, _waterCheckTile=null;
@@ -932,14 +1007,18 @@ function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap
   for (let row=0; row<camH; row++) {
     const wy = camY0 + row;
     if (wy < 0 || wy >= WORLD.h) continue;
-    const wBase = wy * WORLD.w;
+    const dy = wy - cacheOriY;
+    if (dy < 0 || dy >= TILE_CACHE_H) continue;
+    const cRow = dy * TILE_CACHE_W;
     for (let col=0; col<camW; col++) {
       const wx = camX0 + col;
       if (wx < 0 || wx >= WORLD.w) continue;
-      const wIdx = wBase + wx;
-      const t = worldTileData[wIdx];
+      const dx = wx - cacheOriX;
+      if (dx < 0 || dx >= TILE_CACHE_W) continue;
+      const ci = cRow + dx;
+      const t = tileCache[ci];
       if (t === 0) continue;
-      const fog = worldFogData[wIdx];
+      const fog = fogCache[ci];
       if (fog >= 100) continue;
       const o = (row*camW+col)*4;
       const [r,g,b] = toRGB(palette[t]||'#9b3027');
@@ -1223,8 +1302,10 @@ function handle(msg) {
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
       waterCache.clear();
-      worldTileData=new Uint16Array(WORLD.w*WORLD.h);
-      worldFogData=new Uint8Array(WORLD.w*WORLD.h);
+      tileCache=new Uint16Array(TILE_CACHE_W*TILE_CACHE_H);
+      fogCache=new Uint8Array(TILE_CACHE_W*TILE_CACHE_H).fill(100);
+      cacheOriX=Math.max(0,(WORLD.spawnX||0)-(TILE_CACHE_W>>1));
+      cacheOriY=Math.max(0,(WORLD.spawnY||0)-(TILE_CACHE_H>>1));
       tileCacheCamX=tileCacheCamY=-1;
       if (me.colorChosen === false) { showStep('admin-color'); return; }
       $('auth-modal').style.display='none';
@@ -1277,12 +1358,22 @@ function handle(msg) {
       lastVwAt=performance.now();
       vw=msg; palette=msg.palette;
       tileCacheDirty=true;
-      if (worldTileData) {
+      if (tileCache) {
         const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=msg;
+        // Shift the cache origin if this viewport falls outside the current window
+        if (_vx < cacheOriX || _vx+_vw > cacheOriX+TILE_CACHE_W ||
+            _vy < cacheOriY || _vy+_vh > cacheOriY+TILE_CACHE_H) {
+          cacheOriX = Math.max(0, _vx - ((TILE_CACHE_W-_vw)>>1));
+          cacheOriY = Math.max(0, _vy - ((TILE_CACHE_H-_vh)>>1));
+          tileCache.fill(0);
+          fogCache.fill(100);
+        }
         for (let r=0;r<_vh;r++) {
-          const wRow=(_vy+r)*WORLD.w+_vx;
-          worldTileData.set(_vt.subarray(r*_vw,(r+1)*_vw), wRow);
-          worldFogData.set(_vf.subarray(r*_vw,(r+1)*_vw), wRow);
+          const dy=(_vy+r)-cacheOriY;
+          if (dy<0||dy>=TILE_CACHE_H) continue;
+          const dx=_vx-cacheOriX;
+          tileCache.set(_vt.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
+          fogCache.set(_vf.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
         }
       }
       if (me?.color) palette[me.id]=me.color;
@@ -1322,7 +1413,7 @@ function handle(msg) {
         hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
       }
       vw=null;
-      if (worldTileData){worldTileData.fill(0);worldFogData.fill(0);}
+      if (tileCache){tileCache.fill(0);fogCache.fill(100);}
       tileCacheCamX=tileCacheCamY=-1;
       break;
     case 'ant-placed':
@@ -1451,13 +1542,17 @@ window.addEventListener('resize', () => { resize(); clampView(); });
 resize();
 
 let lastViewKey=null;
+const SERVER_MAX_DIM=800; // must match MAX_DIM in network.rs
 function pushView() {
   const now=performance.now();
-  if (now-lastPushAt<40) return; // debounce: max 25 msg/s
+  if (now-lastPushAt<40) return;
   const cp=CELL*view.zoom;
+  if (cp<0.5) return; // tiles sub-pixel — nothing to show
   const W=cvs.width, H=cvs.height;
-  const tx=Math.ceil(W/cp)+4, ty=Math.ceil(H/cp)+4;
-  const PAD=4; // prefetch extra tiles on all sides for edge-pan smoothness
+  // Cap request to what the server will actually send
+  const tx=Math.min(Math.ceil(W/cp)+4, SERVER_MAX_DIM);
+  const ty=Math.min(Math.ceil(H/cp)+4, SERVER_MAX_DIM);
+  const PAD=Math.min(4, Math.floor((SERVER_MAX_DIM-tx)/2), Math.floor((SERVER_MAX_DIM-ty)/2));
   const x0=Math.floor(view.x-tx/2)-PAD, y0=Math.floor(view.y-ty/2)-PAD;
   const x1=x0+tx+PAD*2, y1=y0+ty+PAD*2;
   const key=`${x0},${y0},${x1},${y1}`;
@@ -1554,6 +1649,7 @@ function getOsmTile(z, x, y) {
   if (osmCache.has(key)) return osmCache.get(key);
   const img=new Image();
   const e={img, loaded:false};
+  img.crossOrigin='anonymous';
   img.src=`https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
   img.onload=()=>{ e.loaded=true; };
   img.onerror=()=>{ osmCache.delete(key); };
@@ -1571,6 +1667,13 @@ function gameToOsmTile(tx, ty, n, geo, cosLat) {
     x:Math.max(0,Math.min(n-1, Math.floor(((lon+180)/360)*n))),
     y:Math.max(0,Math.min(n-1, Math.floor((1-mY/Math.PI)*n/2)))
   };
+}
+
+function gameToOsmFrac(tx, ty, n, geo, cosLat) {
+  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
+  const mY=mY0+(WORLD.spawnY-ty)*geo.tileMeters/(111111*(180/Math.PI)*cosLat);
+  const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cosLat);
+  return {fx:((lon+180)/360)*n, fy:(1-mY/Math.PI)*n/2};
 }
 
 function osmTileCorner(ox, oy, n, geo, cosLat) {
@@ -1637,24 +1740,33 @@ function gameToLatLon(tx, ty) {
   return { lat, lon };
 }
 
-function scheduleWaterCheck(tx, ty) {
+function sampleTileWater(tx, ty) {
   const key = `${tx},${ty}`;
   if (_waterCheckTile === key) return;
   _waterCheckTile = key;
   if (waterCache.has(key)) { hoverIsWater = waterCache.get(key); return; }
-  hoverIsWater = false; // fail-open while waiting
-  const ll = gameToLatLon(tx, ty);
-  if (!ll || !WORLD.geo) return;
-  const {lat, lon} = ll;
-  const q = `[out:json][timeout:8];is_in(${lat.toFixed(5)},${lon.toFixed(5)})->.a;(rel(pivot.a)[place=ocean];rel(pivot.a)[place=sea];rel(pivot.a)[natural=water][type=multipolygon];);out count;`;
-  fetch('https://overpass-api.de/api/interpreter', {method:'POST', body:q})
-    .then(r => r.json())
-    .then(data => {
-      const isWater = parseInt(data.elements?.[0]?.tags?.total) > 0;
-      waterCache.set(key, isWater);
-      if (_waterCheckTile === key) hoverIsWater = isWater;
-    })
-    .catch(() => {});
+  if (!WORLD.geo) { hoverIsWater = false; return; }
+  const geo = WORLD.geo;
+  const cosLat = Math.cos(geo.capitolLat * Math.PI / 180) || 1;
+  const osmZ = Math.max(1, Math.min(18, Math.round(
+    Math.log2((CELL * view.zoom) * 40075016.686 * cosLat / (geo.tileMeters * 256))
+  )));
+  const n = Math.pow(2, osmZ);
+  const {fx, fy} = gameToOsmFrac(tx, ty, n, geo, cosLat);
+  const tileX = Math.floor(fx), tileY = Math.floor(fy);
+  const entry = osmCache.get(`${osmZ}/${tileX}/${tileY}`);
+  if (!entry || !entry.loaded) { hoverIsWater = false; return; }
+  const px = Math.min(255, Math.max(0, Math.floor((fx - tileX) * 256)));
+  const py = Math.min(255, Math.max(0, Math.floor((fy - tileY) * 256)));
+  try {
+    _waterSampleCtx.drawImage(entry.img, px, py, 1, 1, 0, 0, 1, 1);
+    const [r, g, b, a] = _waterSampleCtx.getImageData(0, 0, 1, 1).data;
+    const isWater = a > 128 && b > 160 && b > r + 20 && g > 130;
+    waterCache.set(key, isWater);
+    hoverIsWater = isWater;
+  } catch (_) {
+    hoverIsWater = false; // CORS read blocked — fail-open
+  }
 }
 
 function doGeolocate() {
@@ -1717,15 +1829,14 @@ function render() {
   const placingMode = mode==='place-queen';
   const myId = me?.id || 0;
 
-  // 2) Tile layer — camera-based world array cache (no blank edges on pan/zoom)
-  if (worldTileData) {
-    const MAX_CACHE = 600; // cap tile cache dimensions so it stays fast at any zoom
-    const camW = Math.min(MAX_CACHE, Math.ceil(W/cp) + 6);
-    const camH = Math.min(MAX_CACHE, Math.ceil(H/cp) + 6);
+  // 2) Tile layer — chunk-cached: 2048×2048 sliding window, 1px-per-tile offscreen canvas
+  if (tileCache && cp >= 0.5) {
+    const MAX_CAM = 600;
+    const camW = Math.min(MAX_CAM, Math.ceil(W/cp) + 6);
+    const camH = Math.min(MAX_CAM, Math.ceil(H/cp) + 6);
     const camX0 = Math.round(view.x - camW/2);
     const camY0 = Math.round(view.y - camH/2);
-    // Only rebuild on camera-move when tiles are at least 0.5px (above that, world cache helps)
-    const camMoved = cp >= 0.5 && (tileCacheCamX!==camX0 || tileCacheCamY!==camY0);
+    const camMoved = tileCacheCamX!==camX0 || tileCacheCamY!==camY0;
     if (tileCacheDirty || camMoved || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible) {
       buildTileCache(camX0, camY0, camW, camH, myId, placingMode, mapVisible);
       tileCacheCamX=camX0; tileCacheCamY=camY0;
@@ -1736,24 +1847,15 @@ function render() {
     const drawW = Math.round(camW*cp), drawH = Math.round(camH*cp);
     if (drawW>0 && drawH>0) ctx.drawImage(tileCanvas, offX_tile, offY_tile, drawW, drawH);
     if ($('d-tiles')) $('d-tiles').textContent = camW * camH;
-  } else if (v) {
-    // Fallback before world arrays are ready
-    if (tileCacheDirty || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible) {
-      buildTileCache(v.x0, v.y0, v.w, v.h, myId, placingMode, mapVisible);
-      tileCacheDirty=false;
-    }
-    const drawW=Math.round(v.w*cp), drawH=Math.round(v.h*cp);
-    if (drawW>0 && drawH>0 && drawW<=cvs.width*8 && drawH<=cvs.height*8)
-      ctx.drawImage(tileCanvas, Math.round(offX), Math.round(offY), drawW, drawH);
   }
 
-  // Debug grid — coarse 64-tile chunks always visible, fine 1-tile grid when zoomed in
-  {
+  // Debug grid — levels of detail based on zoom
+  if (cp >= 0.5) {
     const COARSE = 64;
     ctx.save();
     ctx.lineWidth = 1;
 
-    // Coarse grid (every 64 tiles)
+    // Coarse grid (every 64 tiles) — visible once tiles are at least half a pixel
     const cx0 = Math.floor(v.x0 / COARSE) * COARSE;
     const cy0 = Math.floor(v.y0 / COARSE) * COARSE;
     ctx.strokeStyle = 'rgba(255,255,255,0.18)';
@@ -1770,16 +1872,18 @@ function render() {
     }
     ctx.stroke();
 
-    // Coarse grid labels
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    for (let wx = cx0; wx <= v.x0 + v.w + COARSE; wx += COARSE) {
-      for (let wy = cy0; wy <= v.y0 + v.h + COARSE; wy += COARSE) {
-        const sx = offX + (wx - v.x0) * cp + 3;
-        const sy = offY + (wy - v.y0) * cp + 2;
-        if (sx < 0 || sx > W || sy < 0 || sy > H) continue;
-        ctx.fillText(`${wx},${wy}`, sx, sy);
+    // Coarse grid labels — only when cells are big enough to read (≥1.5px/tile → 96px per label)
+    if (cp >= 1.5) {
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      for (let wx = cx0; wx <= v.x0 + v.w + COARSE; wx += COARSE) {
+        for (let wy = cy0; wy <= v.y0 + v.h + COARSE; wy += COARSE) {
+          const sx = offX + (wx - v.x0) * cp + 3;
+          const sy = offY + (wy - v.y0) * cp + 2;
+          if (sx < 0 || sx > W || sy < 0 || sy > H) continue;
+          ctx.fillText(`${wx},${wy}`, sx, sy);
+        }
       }
     }
 
@@ -2087,7 +2191,7 @@ window.addEventListener('mousemove', e => {
   if (mode==='place-queen') {
     const card=$('ss-card');
     if (hover) {
-      scheduleWaterCheck(hover.x, hover.y);
+      sampleTileWater(hover.x, hover.y);
       card.style.display='block';
       card.style.left=(e.clientX+18)+'px';
       card.style.top=Math.max(10,e.clientY-58)+'px';
@@ -2618,6 +2722,7 @@ bindSlider('s-ls','LIFESPAN','v-ls', 1, fmtTicks);
 bindSlider('s-br','BUBBLE_R','v-br');
 bindSlider('s-hp','HP_BASE','v-hp');
 bindSlider('s-sp','SPAWN_PAN','v-sp');
+bindSlider('s-ad','ANT_DAMAGE','v-ad');
 bindSlider('s-xpb','XP_BASE','v-xpb');
 bindSlider('s-xpe','XP_EXP','v-xpe');
 bindSlider('s-xpk','XP_KILL','v-xpk');
@@ -2645,7 +2750,7 @@ function updateXpPreview() {
 updateXpPreview();
 
 /* Presets (localStorage) */
-const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','SPAWN_PAN','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_MILESTONE','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
+const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','SPAWN_PAN','ANT_DAMAGE','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_MILESTONE','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
 function admSavePreset(slot) {
   const p={};
   for (const k of ADM_PRESET_KEYS) {

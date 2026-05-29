@@ -279,7 +279,7 @@ pub fn tick_world(world: &mut World) {
 
     // Apply hits: batch damage per queen + heal touches
     let heal_xp = c.xp_heal;
-    let mut damage_map: FxHashMap<u32, i32> = FxHashMap::default();
+    let mut damage_map: FxHashMap<u32, f64> = FxHashMap::default();
     let mut last_attacker_map: FxHashMap<u32, u32> = FxHashMap::default();
 
     for hit in &hits {
@@ -291,10 +291,7 @@ pub fn tick_world(world: &mut World) {
             }
             world.xp_queue.push(XpGrant { player_id: hit.attacker, amount: heal_xp, reason: "heal", x: 0, y: 0 });
         } else {
-            // Damage scales with attacker HP
-            let attacker_hp = world.queens.get(&hit.attacker)
-                .filter(|q| !q.dead).map(|q| q.hp).unwrap_or(1);
-            *damage_map.entry(hit.queen_id).or_insert(0) += attacker_hp;
+            *damage_map.entry(hit.queen_id).or_insert(0.0) += c.ant_damage;
             last_attacker_map.insert(hit.queen_id, hit.attacker);
         }
     }
@@ -304,7 +301,7 @@ pub fn tick_world(world: &mut World) {
         let (qx, qy) = {
             let Some(q) = world.queens.get_mut(&queen_id) else { continue };
             if q.dead { continue; }
-            q.hp = (q.hp - total_dmg).max(0);
+            q.hp = (q.hp as f64 - total_dmg).max(0.0) as i32;
             q.last_attacker = last_attacker_map.get(&queen_id).copied();
             (q.x, q.y)
         };
