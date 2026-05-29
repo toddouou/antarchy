@@ -857,6 +857,10 @@ const tileCanvas=document.createElement('canvas');
 const tileCtx=tileCanvas.getContext('2d',{alpha:true});
 let tileCacheVw=null, tileCachePlacing=false, tileCacheMapVis=true;
 let tileCacheDirty=false;
+let tileCacheCamX=-1, tileCacheCamY=-1;
+// World-space tile data — persists across viewport shifts, enables blank-free panning
+let worldTileData=null; // Uint16Array(WORLD.w * WORLD.h)
+let worldFogData=null;  // Uint8Array(WORLD.w  * WORLD.h)
 let mapVisible=true;
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
@@ -919,37 +923,41 @@ function getNearColored(v) {
   return nc;
 }
 
-function buildTileCache(v, myId=0, placing=false, showMap=true) {
-  if (tileCanvas.width !== v.w || tileCanvas.height !== v.h) {
-    tileCanvas.width = v.w; tileCanvas.height = v.h;
+function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap=true) {
+  if (tileCanvas.width !== camW || tileCanvas.height !== camH) {
+    tileCanvas.width = camW; tileCanvas.height = camH;
   }
-  const img = tileCtx.createImageData(v.w, v.h);
+  const img = tileCtx.createImageData(camW, camH);
   const d = img.data;
-  // ImageData initializes to fully transparent — unclaimed tiles need no work
-  for (let i = 0; i < v.w * v.h; i++) {
-    const t = v.tiles[i];
-    if (t === 0) continue;
-    const fog = v.fog[i];
-    if (fog >= 100) continue;
-    const o = i * 4;
-    const [r,g,b] = toRGB(palette[t]||'#9b3027');
-    d[o]=r; d[o+1]=g; d[o+2]=b;
-    const isOwn = t === myId;
-    // Friendly tiles: fully opaque (255). Enemy tiles: 40% opaque (102).
-    // When map is hidden, enemies are also rendered fully opaque.
-    let baseAlpha;
-    if (placing) {
-      baseAlpha = isOwn ? 230 : 38;
-    } else if (isOwn) {
-      baseAlpha = 255;
-    } else {
-      baseAlpha = showMap ? 102 : 255;
+  for (let row=0; row<camH; row++) {
+    const wy = camY0 + row;
+    if (wy < 0 || wy >= WORLD.h) continue;
+    const wBase = wy * WORLD.w;
+    for (let col=0; col<camW; col++) {
+      const wx = camX0 + col;
+      if (wx < 0 || wx >= WORLD.w) continue;
+      const wIdx = wBase + wx;
+      const t = worldTileData[wIdx];
+      if (t === 0) continue;
+      const fog = worldFogData[wIdx];
+      if (fog >= 100) continue;
+      const o = (row*camW+col)*4;
+      const [r,g,b] = toRGB(palette[t]||'#9b3027');
+      d[o]=r; d[o+1]=g; d[o+2]=b;
+      const isOwn = t === myId;
+      let baseAlpha;
+      if (placing) {
+        baseAlpha = isOwn ? 230 : 38;
+      } else if (isOwn) {
+        baseAlpha = 255;
+      } else {
+        baseAlpha = showMap ? 102 : 255;
+      }
+      const fogFactor = fog === 0 ? 1.0 : Math.max(0, 1 - fog/100);
+      d[o+3] = Math.round(baseAlpha * fogFactor);
     }
-    const fogFactor = fog === 0 ? 1.0 : Math.max(0, 1 - fog / 100);
-    d[o+3] = Math.round(baseAlpha * fogFactor);
   }
   tileCtx.putImageData(img, 0, 0);
-  tileCacheVw = v;
   tileCachePlacing = placing;
   tileCacheMapVis = showMap;
   tileCacheDirty = false;
@@ -1214,6 +1222,10 @@ function handle(msg) {
       me=msg.me;
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
+      waterCache.clear();
+      worldTileData=new Uint16Array(WORLD.w*WORLD.h);
+      worldFogData=new Uint8Array(WORLD.w*WORLD.h);
+      tileCacheCamX=tileCacheCamY=-1;
       if (me.colorChosen === false) { showStep('admin-color'); return; }
       $('auth-modal').style.display='none';
       $('pname').textContent=me.username;
@@ -1265,6 +1277,14 @@ function handle(msg) {
       lastVwAt=performance.now();
       vw=msg; palette=msg.palette;
       tileCacheDirty=true;
+      if (worldTileData) {
+        const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=msg;
+        for (let r=0;r<_vh;r++) {
+          const wRow=(_vy+r)*WORLD.w+_vx;
+          worldTileData.set(_vt.subarray(r*_vw,(r+1)*_vw), wRow);
+          worldFogData.set(_vf.subarray(r*_vw,(r+1)*_vw), wRow);
+        }
+      }
       if (me?.color) palette[me.id]=me.color;
       break; }
     case 'forbidden-zones':
@@ -1302,6 +1322,8 @@ function handle(msg) {
         hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
       }
       vw=null;
+      if (worldTileData){worldTileData.fill(0);worldFogData.fill(0);}
+      tileCacheCamX=tileCacheCamY=-1;
       break;
     case 'ant-placed':
       AudioEngine.plop(); break;
@@ -1624,7 +1646,7 @@ function scheduleWaterCheck(tx, ty) {
   const ll = gameToLatLon(tx, ty);
   if (!ll || !WORLD.geo) return;
   const {lat, lon} = ll;
-  const q = `[out:json][timeout:8];is_in(${lat.toFixed(5)},${lon.toFixed(5)})->.a;(way(pivot.a)[natural=water];rel(pivot.a)[natural=water];rel(pivot.a)[place=ocean];rel(pivot.a)[place=sea];);out count;`;
+  const q = `[out:json][timeout:8];is_in(${lat.toFixed(5)},${lon.toFixed(5)})->.a;(rel(pivot.a)[place=ocean];rel(pivot.a)[place=sea];rel(pivot.a)[natural=water][type=multipolygon];);out count;`;
   fetch('https://overpass-api.de/api/interpreter', {method:'POST', body:q})
     .then(r => r.json())
     .then(data => {
@@ -1691,42 +1713,39 @@ function render() {
     return;
   }
 
-  // Zoom-adaptive: at low OSM zoom show banner + markers only
-  const _osmZoom = getCurrentOsmZoom();
-  if (_osmZoom < 14) {
-    ctx.save();
-    ctx.fillStyle='rgba(13,13,13,0.75)';
-    ctx.fillRect(W/2-210, 12, 420, 32);
-    ctx.fillStyle='#ffb800';
-    ctx.font='bold 11px monospace';
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('🔍 ZOOM IN TO SEE THE PIXEL GRID', W/2, 28);
-    ctx.restore();
-    // Draw queen position markers
-    for (const q of vw.queens) {
-      const px=offX+(q.x-vw.x0)*cp, py=offY+(q.y-vw.y0)*cp;
-      const r=Math.max(6, cp*4);
-      ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2);
-      ctx.fillStyle=q.color||'#ff2e3f'; ctx.fill();
-      ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=1.5; ctx.stroke();
-    }
-    return;
-  }
-
   const v = vw;
   const placingMode = mode==='place-queen';
   const myId = me?.id || 0;
 
-  // 2) Tile layer — blit 1px-per-tile cache scaled to cp
-  if (tileCacheDirty || tileCachePlacing !== placingMode || tileCacheMapVis !== mapVisible) {
-    buildTileCache(v, myId, placingMode, mapVisible);
-    tileCacheDirty = false;
+  // 2) Tile layer — camera-based world array cache (no blank edges on pan/zoom)
+  if (worldTileData) {
+    const MAX_CACHE = 600; // cap tile cache dimensions so it stays fast at any zoom
+    const camW = Math.min(MAX_CACHE, Math.ceil(W/cp) + 6);
+    const camH = Math.min(MAX_CACHE, Math.ceil(H/cp) + 6);
+    const camX0 = Math.round(view.x - camW/2);
+    const camY0 = Math.round(view.y - camH/2);
+    // Only rebuild on camera-move when tiles are at least 0.5px (above that, world cache helps)
+    const camMoved = cp >= 0.5 && (tileCacheCamX!==camX0 || tileCacheCamY!==camY0);
+    if (tileCacheDirty || camMoved || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible) {
+      buildTileCache(camX0, camY0, camW, camH, myId, placingMode, mapVisible);
+      tileCacheCamX=camX0; tileCacheCamY=camY0;
+      tileCacheDirty=false;
+    }
+    const offX_tile = Math.round(W/2 - (view.x - camX0)*cp);
+    const offY_tile = Math.round(H/2 - (view.y - camY0)*cp);
+    const drawW = Math.round(camW*cp), drawH = Math.round(camH*cp);
+    if (drawW>0 && drawH>0) ctx.drawImage(tileCanvas, offX_tile, offY_tile, drawW, drawH);
+    if ($('d-tiles')) $('d-tiles').textContent = camW * camH;
+  } else if (v) {
+    // Fallback before world arrays are ready
+    if (tileCacheDirty || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible) {
+      buildTileCache(v.x0, v.y0, v.w, v.h, myId, placingMode, mapVisible);
+      tileCacheDirty=false;
+    }
+    const drawW=Math.round(v.w*cp), drawH=Math.round(v.h*cp);
+    if (drawW>0 && drawH>0 && drawW<=cvs.width*8 && drawH<=cvs.height*8)
+      ctx.drawImage(tileCanvas, Math.round(offX), Math.round(offY), drawW, drawH);
   }
-  const drawW=Math.round(v.w*cp), drawH=Math.round(v.h*cp);
-  if (drawW > 0 && drawH > 0 && drawW <= cvs.width*8 && drawH <= cvs.height*8) {
-    ctx.drawImage(tileCanvas, Math.round(offX), Math.round(offY), drawW, drawH);
-  }
-  $('d-tiles').textContent = v.w * v.h;
 
   // Debug grid — coarse 64-tile chunks always visible, fine 1-tile grid when zoomed in
   {
