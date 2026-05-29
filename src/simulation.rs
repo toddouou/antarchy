@@ -211,6 +211,16 @@ pub fn tick_world(world: &mut World) {
         world.ants.dedup_by_key(|a| (a.owner, a.x, a.y, a.dx, a.dy));
     }
 
+    // --- Spatial sort every 50 ticks: group ants by 256×256 chunk for cache locality ---
+    if world.tick % 50 == 0 && !world.ants.is_empty() {
+        let chunk_w = world.world_w / 256 + 1;
+        world.ants.sort_unstable_by_key(|a| {
+            let cx = a.x as u32 / 256;
+            let cy = a.y as u32 / 256;
+            cy * chunk_w + cx
+        });
+    }
+
     // =========================================================================
     // Phase 1: Plan moves — Rayon parallel, no Mutex, fold/reduce for accumulation
     // =========================================================================

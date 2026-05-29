@@ -344,6 +344,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   #ss-card.ok { background:var(--ink); color:var(--yel); }
   #ss-card.bad { background:var(--red); color:#fff; }
   #ss-card.out { background:var(--bg2); color:var(--dim); border-color:var(--line); box-shadow:none; }
+  #ss-card.water { background:#1a6fa8; color:#e0f0ff; }
   #ss-card-title { font-size:8px; margin-bottom:4px; }
   #ss-card-sub { font-size:6px; opacity:.7; }
 
@@ -466,6 +467,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="zooml" id="ovr-tile" style="color:var(--yel);display:none;"></div>
   </div>
   <button id="btn-mute" style="position:absolute;bottom:14px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle audio">♪</button>
+  <button id="btn-map-toggle" style="position:absolute;bottom:48px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle map (M)">🗺</button>
   <div class="ovr tick-ind">
     <div class="pulse"></div>
     <span><span id="ovr-hz">20</span>HZ · T<span id="ovr-tick">0</span></span>
@@ -714,6 +716,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <hr class="ss-rule">
     <div class="ss-sub">HOW TO SPAWN</div>
     <div class="ss-step"><span class="ss-step-arrow">→</span><span>Click anywhere on the map to place your queen</span></div>
+    <button onclick="doGeolocate()" style="margin-top:10px;background:rgba(0,184,107,0.18);border:1px solid #00b86b;color:#00b86b;font-family:monospace;font-size:11px;cursor:pointer;padding:5px 12px;border-radius:3px;letter-spacing:1px;">⊕ FIND MY CITY</button>
     <div class="ss-step"><span class="ss-step-arrow">→</span><span>Avoid <b>RED ZONES</b> — enemy queens are too close</span></div>
     <div class="ss-step"><span class="ss-step-arrow">→</span><span>This is <b>permanent</b>. Your queen cannot move once placed.</span></div>
 
@@ -851,7 +854,8 @@ let prevAntPos=new Map(), lastVwAt=0;
 // Tile layer pixel cache (1px-per-tile offscreen canvas)
 const tileCanvas=document.createElement('canvas');
 const tileCtx=tileCanvas.getContext('2d',{alpha:true});
-let tileCacheVw=null, tileCachePlacing=false;
+let tileCacheVw=null, tileCachePlacing=false, tileCacheMapVis=true;
+let mapVisible=true;
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
 // pushView debounce
@@ -861,6 +865,9 @@ let lbPrevTiles={};
 function fmtLbTiles(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(0)+'K';return String(n);}
 // OSM tile cache
 const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
+// Water-spawn check cache: `${tx},${ty}` → boolean (true = water, no queen)
+const waterCache=new Map();
+let hoverIsWater=false, _waterCheckTile=null;
 // Inspect / admin-target
 let selectedTarget=null, adminMoveTargetId=null;
 // Click-vs-drag
@@ -910,12 +917,13 @@ function getNearColored(v) {
   return nc;
 }
 
-function buildTileCache(v, myId=0, placing=false) {
+function buildTileCache(v, myId=0, placing=false, showMap=true) {
   if (tileCanvas.width !== v.w || tileCanvas.height !== v.h) {
     tileCanvas.width = v.w; tileCanvas.height = v.h;
   }
   const img = tileCtx.createImageData(v.w, v.h);
   const d = img.data;
+  // ImageData initializes to fully transparent — unclaimed tiles need no work
   for (let i = 0; i < v.w * v.h; i++) {
     const t = v.tiles[i];
     if (t === 0) continue;
@@ -925,12 +933,23 @@ function buildTileCache(v, myId=0, placing=false) {
     const [r,g,b] = toRGB(palette[t]||'#9b3027');
     d[o]=r; d[o+1]=g; d[o+2]=b;
     const isOwn = t === myId;
-    const baseAlpha = placing ? (isOwn ? 230 : 38) : (isOwn ? 255 : 178);
-    d[o+3] = fog === 0 ? baseAlpha : Math.max(placing ? 8 : 40, (baseAlpha - fog * 1.5)|0);
+    // Friendly tiles: fully opaque (255). Enemy tiles: 40% opaque (102).
+    // When map is hidden, enemies are also rendered fully opaque.
+    let baseAlpha;
+    if (placing) {
+      baseAlpha = isOwn ? 230 : 38;
+    } else if (isOwn) {
+      baseAlpha = 255;
+    } else {
+      baseAlpha = showMap ? 102 : 255;
+    }
+    const fogFactor = fog === 0 ? 1.0 : Math.max(0, 1 - fog / 100);
+    d[o+3] = Math.round(baseAlpha * fogFactor);
   }
   tileCtx.putImageData(img, 0, 0);
   tileCacheVw = v;
   tileCachePlacing = placing;
+  tileCacheMapVis = showMap;
 }
 
 /* ===================================================================
@@ -1156,7 +1175,7 @@ function connect() {
     const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
     if (u&&p) {
       $('li-u').value=u; $('li-p').value=p;
-      if (!me && reconnecting) { send({t:'login',username:u,password:p}); } // auto re-auth on reconnect only
+      if (reconnecting) { send({t:'login',username:u,password:p}); }
     }
   };
   ws.onclose=()=>{ $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true; setTimeout(connect,1500); };
@@ -1176,6 +1195,7 @@ function handle(msg) {
     }
     case 'err':
       toast(msg.msg); $('li-err').textContent=msg.msg; $('r-err').textContent=msg.msg;
+      if (!me) { $('auth-modal').style.display=''; showStep('login'); }
       if (mode==='place-queen') {
         _queenPlaceCooldown = false;
         const card=$('ss-card');
@@ -1215,7 +1235,7 @@ function handle(msg) {
         $('btn-ant').disabled=me.antsAvail<=0;
       } else {
         view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
-        view.zoom=zoomTarget=0.22;
+        view.zoom=zoomTarget=0.001;
         setTimeout(()=>{
           mode='place-queen'; cvs.classList.add('placing');
           hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
@@ -1389,7 +1409,7 @@ function clampView() {
   // Min zoom: viewport must not exceed world bounds
   const minZoomW = cvs.width  / (CELL * WORLD.w);
   const minZoomH = cvs.height / (CELL * WORLD.h);
-  const minZoom = Math.max(minZoomW, minZoomH, 0.22);
+  const minZoom = Math.max(minZoomW, minZoomH, 0.0001);
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
   // Clamp position: keep view center inside world
@@ -1516,21 +1536,22 @@ function getOsmTile(z, x, y) {
 }
 
 function gameToOsmTile(tx, ty, n, geo, cosLat) {
-  const lat=geo.capitolLat+(WORLD.spawnY-ty)*geo.tileMeters/111111;
+  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
+  const mY=mY0+(WORLD.spawnY-ty)*geo.tileMeters/(111111*(180/Math.PI)*cosLat);
   const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cosLat);
-  const lr=lat*Math.PI/180;
   return {
     x:Math.max(0,Math.min(n-1, Math.floor(((lon+180)/360)*n))),
-    y:Math.max(0,Math.min(n-1, Math.floor((1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*n)))
+    y:Math.max(0,Math.min(n-1, Math.floor((1-mY/Math.PI)*n/2)))
   };
 }
 
 function osmTileCorner(ox, oy, n, geo, cosLat) {
   const lon=ox/n*360-180;
-  const lat=Math.atan(Math.sinh(Math.PI*(1-2*oy/n)))*180/Math.PI;
+  const mY=Math.PI*(1-2*oy/n);
+  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
   return {
     tx: WORLD.spawnX+(lon-geo.capitolLon)*111111*cosLat/geo.tileMeters,
-    ty: WORLD.spawnY-(lat-geo.capitolLat)*111111/geo.tileMeters
+    ty: WORLD.spawnY-(mY-mY0)*111111*(180/Math.PI)*cosLat/geo.tileMeters
   };
 }
 
@@ -1556,11 +1577,82 @@ function drawOsmTiles(offX, offY, cp, vx0, vy0, canvasW, canvasH) {
   }
 }
 
+function getCurrentOsmZoom() {
+  if (!WORLD.geo) return 10;
+  const cp = CELL * view.zoom;
+  const cosLat = Math.cos(WORLD.geo.capitolLat * Math.PI / 180) || 1;
+  return Math.max(1, Math.min(18, Math.round(
+    Math.log2(cp * 40075016.686 * cosLat / (WORLD.geo.tileMeters * 256))
+  )));
+}
+
+function latLonToGame(lat, lon) {
+  const geo = WORLD.geo;
+  if (!geo) return null;
+  const cosLat = Math.cos(geo.capitolLat * Math.PI / 180) || 1;
+  const mY=Math.log(Math.tan(lat*Math.PI/360+Math.PI/4));
+  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
+  return {
+    x: Math.round(WORLD.spawnX + (lon - geo.capitolLon) * 111111 * cosLat / geo.tileMeters),
+    y: Math.round(WORLD.spawnY - (mY - mY0) * 111111 * (180/Math.PI) * cosLat / geo.tileMeters),
+  };
+}
+
+function gameToLatLon(tx, ty) {
+  const geo = WORLD.geo;
+  if (!geo) return null;
+  const cosLat = Math.cos(geo.capitolLat * Math.PI / 180) || 1;
+  const mY0 = Math.log(Math.tan(geo.capitolLat * Math.PI / 360 + Math.PI / 4));
+  const mY = mY0 + (WORLD.spawnY - ty) * geo.tileMeters / (111111 * (180 / Math.PI) * cosLat);
+  const lat = (2 * Math.atan(Math.exp(mY)) - Math.PI / 2) * 180 / Math.PI;
+  const lon = geo.capitolLon + (tx - WORLD.spawnX) * geo.tileMeters / (111111 * cosLat);
+  return { lat, lon };
+}
+
+function scheduleWaterCheck(tx, ty) {
+  const key = `${tx},${ty}`;
+  if (_waterCheckTile === key) return;
+  _waterCheckTile = key;
+  if (waterCache.has(key)) { hoverIsWater = waterCache.get(key); return; }
+  hoverIsWater = false; // fail-open while waiting
+  const ll = gameToLatLon(tx, ty);
+  if (!ll || !WORLD.geo) return;
+  const {lat, lon} = ll;
+  const q = `[out:json][timeout:8];is_in(${lat.toFixed(5)},${lon.toFixed(5)})->.a;(way(pivot.a)[natural=water];rel(pivot.a)[natural=water];rel(pivot.a)[place=ocean];rel(pivot.a)[place=sea];);out count;`;
+  fetch('https://overpass-api.de/api/interpreter', {method:'POST', body:q})
+    .then(r => r.json())
+    .then(data => {
+      const isWater = parseInt(data.elements?.[0]?.tags?.total) > 0;
+      waterCache.set(key, isWater);
+      if (_waterCheckTile === key) hoverIsWater = isWater;
+    })
+    .catch(() => {});
+}
+
+function doGeolocate() {
+  if (!navigator.geolocation) return toast('GEOLOCATION NOT SUPPORTED');
+  navigator.geolocation.getCurrentPosition(pos => {
+    const coords = latLonToGame(pos.coords.latitude, pos.coords.longitude);
+    if (!coords) return toast('GEO: WORLD NOT READY');
+    coords.x = Math.max(0, Math.min(WORLD.w - 1, coords.x));
+    coords.y = Math.max(0, Math.min(WORLD.h - 1, coords.y));
+    panTarget = { x: coords.x, y: coords.y };
+    toast('NAVIGATING TO YOUR LOCATION');
+  }, () => toast('GEO: PERMISSION DENIED'), { timeout: 8000 });
+}
+
+function toggleMap() {
+  mapVisible = !mapVisible;
+  const btn = $('btn-map-toggle');
+  btn.style.background = mapVisible ? 'none' : 'rgba(255,184,0,0.3)';
+  btn.style.opacity = mapVisible ? '0.7' : '1';
+  tileCacheVw = null;
+}
+
 function render() {
   const cp=CELL*view.zoom;
   const W=cvs.width, H=cvs.height;
   ctx.imageSmoothingEnabled=false;
-  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
 
   // Compute viewport: either from vw (tile payload) or just from view center
   let vx0, vy0;
@@ -1575,10 +1667,37 @@ function render() {
   const offX = W/2 - (view.x - vx0)*cp;
   const offY = H/2 - (view.y - vy0)*cp;
 
-  // 1) OSM map layer — drawn directly on canvas, synced to game coordinate space
-  drawOsmTiles(offX, offY, cp, vx0, vy0, W, H);
+  // 1) Background + OSM map layer
+  if (mapVisible) {
+    ctx.fillStyle='#c8d8e8'; ctx.fillRect(0,0,W,H);
+    drawOsmTiles(offX, offY, cp, vx0, vy0, W, H);
+  } else {
+    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+  }
 
   if (!vw) {
+    return;
+  }
+
+  // Zoom-adaptive: at low OSM zoom show banner + markers only
+  const _osmZoom = getCurrentOsmZoom();
+  if (_osmZoom < 14) {
+    ctx.save();
+    ctx.fillStyle='rgba(13,13,13,0.75)';
+    ctx.fillRect(W/2-210, 12, 420, 32);
+    ctx.fillStyle='#ffb800';
+    ctx.font='bold 11px monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🔍 ZOOM IN TO SEE THE PIXEL GRID', W/2, 28);
+    ctx.restore();
+    // Draw queen position markers
+    for (const q of vw.queens) {
+      const px=offX+(q.x-vw.x0)*cp, py=offY+(q.y-vw.y0)*cp;
+      const r=Math.max(6, cp*4);
+      ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2);
+      ctx.fillStyle=q.color||'#ff2e3f'; ctx.fill();
+      ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=1.5; ctx.stroke();
+    }
     return;
   }
 
@@ -1587,7 +1706,7 @@ function render() {
   const myId = me?.id || 0;
 
   // 2) Tile layer — blit 1px-per-tile cache scaled to cp
-  if (tileCacheVw !== v || tileCachePlacing !== placingMode) buildTileCache(v, myId, placingMode);
+  if (tileCacheVw !== v || tileCachePlacing !== placingMode || tileCacheMapVis !== mapVisible) buildTileCache(v, myId, placingMode, mapVisible);
   const drawW=Math.round(v.w*cp), drawH=Math.round(v.h*cp);
   if (drawW > 0 && drawH > 0 && drawW <= cvs.width*8 && drawH <= cvs.height*8) {
     ctx.drawImage(tileCanvas, Math.round(offX), Math.round(offY), drawW, drawH);
@@ -1670,7 +1789,7 @@ function render() {
 
   // Placement mode hover: glowing queen sprite
   if (placingMode && hover) {
-    const blocked = forbiddenZones.some(z => tileInZone(hover, z));
+    const blocked = forbiddenZones.some(z => tileInZone(hover, z)) || hoverIsWater;
     const hx = hover.x - v.x0, hy = hover.y - v.y0;
     const QSZ = 2;
     const px = offX + hx * cp, py = offY + hy * cp;
@@ -1914,6 +2033,7 @@ cvs.addEventListener('mousedown', e => {
     antPlaceOrigin=tile; antPlaceDir=[0,-1];
   } else if (mode==='place-queen') {
     if (!tile || _queenPlaceCooldown) return;
+    if (hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); return; }
     _queenPlaceCooldown = true;
     setTimeout(() => { _queenPlaceCooldown = false; }, 600);
     send({t:'place-queen', x:tile.x, y:tile.y});
@@ -1933,6 +2053,7 @@ window.addEventListener('mousemove', e => {
   if (mode==='place-queen') {
     const card=$('ss-card');
     if (hover) {
+      scheduleWaterCheck(hover.x, hover.y);
       card.style.display='block';
       card.style.left=(e.clientX+18)+'px';
       card.style.top=Math.max(10,e.clientY-58)+'px';
@@ -1941,6 +2062,10 @@ window.addEventListener('mousemove', e => {
         card.className='bad';
         $('ss-card-title').textContent='✕ BLOCKED';
         $('ss-card-sub').textContent='Enemy queen nearby';
+      } else if (hoverIsWater) {
+        card.className='water';
+        $('ss-card-title').textContent='〰 OCEAN';
+        $('ss-card-sub').textContent='Queens cannot spawn in water';
       } else {
         card.className='ok';
         $('ss-card-title').textContent=`SPAWN (${hover.x}, ${hover.y})`;
@@ -1994,7 +2119,7 @@ cvs.addEventListener('contextmenu',e=>e.preventDefault());
 cvs.addEventListener('wheel', e => {
   e.preventDefault();
   const f=e.deltaY<0?1.15:1/1.15;
-  zoomTarget = clamp(zoomTarget*f, 0.22, 16);
+  zoomTarget = clamp(zoomTarget*f, 0.0001, 16);
 }, {passive:false});
 
 /* ===================================================================
@@ -2104,7 +2229,8 @@ function _onTouchEnd(e){
     if (dist<=TOUCH_TAP_PX && elapsed<=TOUCH_TAP_MS) {
       if (mode==='place-queen') {
         const tile=screenToTile(t.clientX,t.clientY);
-        send({t:'place-queen',x:tile.x,y:tile.y});
+        if (tile && hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); }
+        else if (tile) { send({t:'place-queen',x:tile.x,y:tile.y}); }
       }
     }
   }
@@ -2150,10 +2276,13 @@ function tileInZone(tile, z) {
 function showSpawnScreen() {
   $('spawn-screen').classList.add('vis');
   updateSpawnStatus();
+  setTimeout(() => { if (mode === 'place-queen') doGeolocate(); }, 1200);
 }
 function hideSpawnScreen() {
   $('spawn-screen').classList.remove('vis');
   $('ss-card').style.display='none';
+  hoverIsWater = false;
+  _waterCheckTile = null;
 }
 function updateSpawnStatus() {
   $('ss-queen-count').textContent = forbiddenZones.length;
@@ -2517,7 +2646,6 @@ function atpTargetId() {
   return selectedTarget.data.id??selectedTarget.data.owner??null;
 }
 /* old wipe/npc/recenter buttons removed — handled by SANDBOX tab */
-};
 
 /* TOAST */
 function toast(msg) {
@@ -2564,6 +2692,7 @@ document.addEventListener('keydown', e => {
     case 's': case 'S': case 'ArrowDown':  view.y += panStep(); clampView(); panTarget=null; break;
     case 'a': case 'A': case 'ArrowLeft':  view.x -= panStep(); clampView(); panTarget=null; break;
     case 'd': case 'D': case 'ArrowRight': view.x += panStep(); clampView(); panTarget=null; break;
+    case 'm': case 'M': toggleMap(); break;
     case 'r': case 'R':
       if (me?.queen && !me.queen.dead) { panTarget={x:me.queen.x+1,y:me.queen.y+1}; AudioEngine.click(); }
       break;
@@ -2578,15 +2707,16 @@ document.addEventListener('keydown', e => {
       if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
       break;
     case '+': case '=':
-      zoomTarget = clamp(zoomTarget*1.15, 0.22, 16); break;
+      zoomTarget = clamp(zoomTarget*1.15, 0.0001, 16); break;
     case '-': case '_':
-      zoomTarget = clamp(zoomTarget/1.15, 0.22, 16); break;
+      zoomTarget = clamp(zoomTarget/1.15, 0.0001, 16); break;
   }
 });
 
 /* Mute toggle */
 let _muteState = localStorage.getItem('hive-muted') === '1';
 if (_muteState) { AudioEngine.setMute(true); $('btn-mute').textContent = '♪̶'; $('btn-mute').style.opacity = '0.4'; }
+$('btn-map-toggle').onclick = toggleMap;
 $('btn-mute').onclick = () => {
   _muteState = !_muteState;
   AudioEngine.setMute(_muteState);

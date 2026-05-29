@@ -99,6 +99,11 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
         "spawnX": c.spawn_x,
         "spawnY": c.spawn_y,
         "spawnPan": c.spawn_pan,
+        "geo": {
+            "capitolLat": c.capitol_lat,
+            "capitolLon": c.capitol_lon,
+            "tileMeters":  c.tile_meters,
+        },
         "cfg": {
             "BUBBLE_R":   c.bubble_r,
             "DAILY_ANTS": c.daily_ants,

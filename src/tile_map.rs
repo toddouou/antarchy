@@ -93,11 +93,12 @@ impl TileMap {
         self.counts.clear();
     }
 
+    #[allow(dead_code)]
     pub fn total_tiles(&self) -> usize {
         self.chunks.values().map(|c| c.occupied as usize).sum()
     }
 
-    /// Iterate all non-zero tiles as (x, y, player_id).
+    #[allow(dead_code)]
     pub fn iter_tiles(&self) -> impl Iterator<Item = (u32, u32, u32)> + '_ {
         self.chunks.iter().flat_map(|(&ck, chunk)| {
             let cx = (ck & 0xFFFF_FFFF) as u32;

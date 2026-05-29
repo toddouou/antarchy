@@ -255,12 +255,27 @@ fn send_viewports(world: &World) {
 
 // ---- Server startup -------------------------------------------------------
 
+async fn world_info_handler() -> impl IntoResponse {
+    let c = cfg();
+    let body = serde_json::json!({
+        "worldW":     c.world_w,
+        "worldH":     c.world_h,
+        "spawnX":     c.spawn_x,
+        "spawnY":     c.spawn_y,
+        "capitolLat": c.capitol_lat,
+        "capitolLon": c.capitol_lon,
+        "tileMeters": c.tile_meters,
+    }).to_string();
+    (StatusCode::OK, [("Content-Type", "application/json")], body)
+}
+
 pub async fn run(world: WorldState, cmd_tx: CmdTx) {
     let port = cfg().port;
 
     let app = Router::new()
-        .route("/",       get(root_handler))
-        .route("/health", get(health_handler))
+        .route("/",           get(root_handler))
+        .route("/health",     get(health_handler))
+        .route("/world-info", get(world_info_handler))
         .with_state(AppState { world, cmd_tx });
 
     let addr = format!("0.0.0.0:{port}");

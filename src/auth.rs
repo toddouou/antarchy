@@ -58,6 +58,7 @@ impl Auth {
         }
     }
 
+    #[allow(dead_code)]
     pub fn load(path: &str) -> Self {
         let mut auth = Auth::default();
         let users_path = path.replace("world.snapshot", "users.json");
@@ -75,6 +76,7 @@ impl Auth {
         self.users.values().any(|u| u.id == id && u.is_admin)
     }
 
+    #[allow(dead_code)]
     pub fn next_id(&self) -> u32 {
         self.users.values().map(|u| u.id).max().unwrap_or(1) + 1
     }
