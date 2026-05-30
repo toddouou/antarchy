@@ -639,7 +639,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span>TICK RATE <span class="sinfo" data-tip="Simulation steps per second. Higher = faster world, more CPU. 50 is normal play speed.">?</span></span>
         <span class="v"><span id="v-tr">50</span> HZ</span>
       </div>
-      <input type="range" id="s-tr" min="5" max="120" step="1" value="50">
+      <input type="range" id="s-tr" min="1" max="500" step="1" value="50">
     </div>
     <div class="slider-g">
       <div class="slider-l">
@@ -904,6 +904,11 @@ function applyCfgSlider(key, val) {
   const display = m.scale ? +(val * m.scale).toFixed(2) : val;
   s.value = display;
   v.textContent = m.fmt ? m.fmt(display) : display;
+  if (key==='TICK_RATE') {
+    // Reflect the *applied* (server-clamped) rate on the speed buttons + TPS readout.
+    document.querySelectorAll('.adm-speed').forEach(b=>b.classList.toggle('active-speed', parseInt(b.dataset.hz)===display));
+    if ($('adm-tps')) $('adm-tps').textContent=display;
+  }
   updateXpPreview();
 }
 
@@ -922,7 +927,7 @@ let antPlaceOrigin=null, antPlaceDir=[0,-1];
 let toastTmr=null, frameCount=0, fpsT=performance.now();
 const floatingTexts=[];
 // Ant interpolation
-let prevAntPos=new Map(), lastVwAt=0;
+let prevAntPos=new Map(), lastVwAt=0, antFrameDt=0; // antFrameDt: smoothed ms between ant frames
 // Tile layer pixel cache (1px-per-tile offscreen canvas)
 const tileCanvas=document.createElement('canvas');
 const tileCtx=tileCanvas.getContext('2d',{alpha:true});
@@ -1351,6 +1356,15 @@ function handle(msg) {
       if ($('adm-tick')&&me.tick!=null) $('adm-tick').textContent=me.tick;
       break;
     case 'view': {
+      if (msg.tiles === undefined) {
+        // Ants-only frame: update ant positions without replacing tiles/fog.
+        if (vw) {
+          const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np;
+          vw.ants=msg.ants; vw.tick=msg.tick;
+          { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
+        }
+        break;
+      }
       const tBin=atob(msg.tiles),tBuf=new Uint8Array(tBin.length);
       for (let i=0;i<tBin.length;i++) tBuf[i]=tBin.charCodeAt(i);
       msg.tiles=new Uint16Array(tBuf.buffer);
@@ -1358,7 +1372,7 @@ function handle(msg) {
       for (let i=0;i<fBin.length;i++) fBuf[i]=fBin.charCodeAt(i);
       msg.fog=fBuf;
       if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
-      lastVwAt=performance.now();
+      { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
       vw=msg; palette=msg.palette;
       tileCacheDirty=true;
       if (tileCache) {
@@ -1393,8 +1407,10 @@ function handle(msg) {
           if (fresh) selectedTarget.data=fresh;
         } else if (selectedTarget.type==='tile') {
           const d=selectedTarget.data;
-          const idx=(d.y-vw.y0)*vw.w+(d.x-vw.x0);
-          if (idx>=0&&idx<vw.tiles.length) {
+          // Only refresh when the tile is actually inside this viewport — a linear
+          // bounds check alone would read a neighboring row's tile once it scrolls off.
+          if (d.x>=vw.x0 && d.x<vw.x0+vw.w && d.y>=vw.y0 && d.y<vw.y0+vw.h) {
+            const idx=(d.y-vw.y0)*vw.w+(d.x-vw.x0);
             const owner=vw.tiles[idx];
             const color=(vw.palette||palette)[owner]||'#888';
             const ownerQ=owner?vw.queens.find(q=>q.id===owner):null;
@@ -2048,7 +2064,9 @@ function render() {
   }
 
   // 7) Ants — dark colony-color square + 2 eyes facing direction (with position lerp)
-  const tickInterval = 1000 / (me?.tickRate || 20);
+  // Interpolate over the *measured* gap between ant frames so motion stays smooth
+  // regardless of tick rate or network jitter (falls back to tick-rate before first dt).
+  const tickInterval = antFrameDt || (1000 / (me?.tickRate || 50));
   const lerpT = Math.min(1, (performance.now() - lastVwAt) / tickInterval);
   for (const a of v.ants) {
     const [aid,ax,ay,adx,ady,owner]=a;
@@ -2147,7 +2165,7 @@ function render() {
   $('ovr-coord').textContent = `(${cdx>=0?'+':''}${cdx}, ${cdy>=0?'+':''}${cdy})`;
   $('ovr-zoom').textContent=view.zoom.toFixed(2)+'X';
   $('ovr-cell').textContent=cp.toFixed(0)+'PX';
-  $('ovr-hz').textContent=($('s-tr')?parseFloat($('s-tr').value):20).toFixed(0);
+  $('ovr-hz').textContent=(me?.tickRate||50).toFixed(0);
   $('ovr-tick').textContent=me?.tick||0;
   // Hover tile info (Q5)
   const ti=$('ovr-tile');
@@ -2757,9 +2775,9 @@ function admTogglePause() {
 }
 function admSandboxRecenter() { AudioEngine.click(); if (me?.queen) panTarget={x:me.queen.x+1,y:me.queen.y+1}; }
 function admSetSpeed(hz) {
+  // Send the request; the server's clamped `cfg` broadcast drives the slider/label/
+  // highlight via applyCfgSlider, so the UI always reflects the actually-applied rate.
   AudioEngine.click(); send({t:'admin',key:'TICK_RATE',value:hz});
-  document.querySelectorAll('.adm-speed').forEach(b=>b.classList.toggle('active-speed',parseInt(b.dataset.hz)===hz));
-  if ($('s-tr')) { $('s-tr').value=hz; if ($('v-tr')) $('v-tr').textContent=hz; }
 }
 function admToggleNpcPlace() {
   AudioEngine.click();

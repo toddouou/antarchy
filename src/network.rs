@@ -115,7 +115,7 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
     }).to_string()
 }
 
-pub fn build_view_update(world: &World, player_id: u32) -> Option<String> {
+pub fn build_view_update(world: &World, player_id: u32, include_tiles: bool) -> Option<String> {
     let p  = world.players.get(&player_id)?;
     let v  = p.view.as_ref()?;
     let ww = world.world_w as i32;
@@ -128,6 +128,21 @@ pub fn build_view_update(world: &World, player_id: u32) -> Option<String> {
     let x1 = x0 + w as i32;
     let y1 = y0 + h as i32;
     if w == 0 || h == 0 { return None; }
+
+    if !include_tiles {
+        // Ants-only frame: skip tile/fog computation.
+        // Client retains its cached fog for visibility decisions.
+        let ants: Vec<Value> = world.ants.iter()
+            .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
+            .map(|a| json!([a.id, a.x, a.y, a.dx, a.dy, a.owner]))
+            .collect();
+        return Some(json!({
+            "t": "view",
+            "x0": x0, "y0": y0, "w": w, "h": h,
+            "ants": ants,
+            "tick": world.tick,
+        }).to_string());
+    }
 
     // Build Uint16 tile snapshot
     let mut tile_u16 = vec![0u16; w * h];

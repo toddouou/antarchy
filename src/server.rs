@@ -278,25 +278,38 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
 }
 
 fn send_viewports(world: &World) {
-    // 10 Hz base rate — viewport data is large; deliver less often to cap bandwidth.
-    if world.tick % 5 != 0 { return; }
+    // Pace delivery by wall-clock, not tick count, so cadence is constant no matter
+    // how fast the sim runs (admin speed buttons drive tick_rate up to 500 Hz).
+    //   ant frames  ≤ ~60 Hz — each carries the latest ant positions (1 step at 50 Hz)
+    //   tile frames ≤ ~10 Hz — expensive base64 tile+fog snapshot, only when dirty
+    let tr = cfg().tick_rate.max(1) as u64;
+    let ant_every  = (tr / 60).max(1);
+    let tile_every = (tr / 10).max(1);
+    let include_tiles = world.tick % tile_every == 0 && world.dirty_tick + tile_every >= world.tick;
+    let send_ants     = world.tick % ant_every == 0;
 
-    // Skip the expensive tile+fog payload when nothing has changed.
-    // dirty_tick is set whenever tiles mutate (ants moving, queen placed, commands received).
-    // A 3-tick window ensures one or two extra frames after each change (panning, placement).
-    let send_tiles = world.dirty_tick + 3 >= world.tick;
+    // Skip per-player work when there is nothing to show (no tile update, and either
+    // it isn't an ant-frame tick or there are no ants to move).
+    if !include_tiles && (!send_ants || world.ants.is_empty()) {
+        if world.tick % 20 == 0 {
+            let lb = build_leaderboard(world);
+            world.broadcast(&lb);
+        }
+        return;
+    }
 
-    // Full me update once per second; HP/level sync from viewport queens handles the rest.
-    let send_me = world.tick % 50 == 0;
+    // Full me update once per second (wall-clock); HP/level sync from viewport queens
+    // handles the rest.
+    let send_me = world.tick % tr == 0;
 
     let pids: Vec<u32> = world.players.iter()
         .filter(|(_, p)| !p.npc && (p.tx.is_some() || p.view_tx.is_some()))
         .map(|(&id, _)| id)
         .collect();
 
-    // Build viewport updates in parallel — only run fog+tile computation when dirty.
+    // Build viewport updates in parallel.
     let views: Vec<(u32, Option<String>)> = pids.par_iter()
-        .map(|&pid| (pid, if send_tiles { build_view_update(world, pid) } else { None }))
+        .map(|&pid| (pid, build_view_update(world, pid, include_tiles)))
         .collect();
 
     for (pid, view) in views {

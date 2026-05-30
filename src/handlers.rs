@@ -493,18 +493,6 @@ pub fn handle_message(
         return;
     }
 
-    // ---- Admin spawn N NPCs ----
-    if t == "admin-spawn-n" {
-        if !is_admin { let _ = tx.send(err("Admin only")); return; }
-        let count = msg["count"].as_u64().unwrap_or(1).min(50) as u32;
-        for _ in 0..count {
-            spawn_npc(world, pid, None, None);
-        }
-        let ev = json!({"t":"event","msg":format!("[ADMIN] SPAWNED {count} NPCs")}).to_string();
-        world.broadcast(&ev);
-        return;
-    }
-
     // ---- Admin spawn NPC at position ----
     if t == "admin-spawn-at" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }

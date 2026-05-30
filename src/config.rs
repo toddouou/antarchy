@@ -92,7 +92,7 @@ pub fn cfg_write() -> RwLockWriteGuard<'static, Config> {
 }
 
 const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
-    ("tick_rate",         1.0,       200.0),
+    ("tick_rate",         1.0,       500.0),
     ("lifespan",       1000.0, 8_640_000.0),
     ("bubble_r",          5.0,     5_000.0),
     ("hp_base",           1.0, 1_000_000.0),
