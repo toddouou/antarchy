@@ -191,10 +191,10 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .adm-log-entry { font-family:'IBM Plex Mono',monospace; font-size:9px; color:var(--dim);
     padding:2px 0; border-bottom:1px solid var(--grid); line-height:1.3; }
   .adm-log-entry:last-child { border-bottom:none; }
-  .adm-ptable-hdr { display:grid; grid-template-columns:1fr 28px 48px 16px;
+  .adm-ptable-hdr { display:grid; grid-template-columns:1fr 22px 28px 48px 16px;
     gap:4px; padding:4px 6px; background:var(--ink); color:var(--yel);
     font-family:'Press Start 2P',monospace; font-size:6px; margin-bottom:2px; }
-  .adm-ptable-row { display:grid; grid-template-columns:1fr 28px 48px 16px;
+  .adm-ptable-row { display:grid; grid-template-columns:1fr 22px 28px 48px 16px;
     gap:4px; padding:5px 6px; border-bottom:1px solid var(--line);
     font-family:'Press Start 2P',monospace; font-size:6px; cursor:pointer; align-items:center; }
   .adm-ptable-row:hover { background:var(--yel); }
@@ -442,6 +442,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div class="stat-cell"><div class="l">TILES</div><div class="v" id="s-tiles">0</div></div>
       <div class="stat-cell"><div class="l">ARMY</div><div class="v b" id="s-army">0</div></div>
       <div class="stat-cell"><div class="l">KILLS</div><div class="v r" id="s-kills">0</div></div>
+      <div class="stat-cell"><div class="l">PRESTIGE</div><div class="v" id="s-prestige" style="color:var(--yel)">P0</div></div>
+      <div class="stat-cell"><div class="l">CREDITS</div><div class="v" id="s-credits" style="color:var(--grn)">0</div></div>
     </div>
   </div>
 
@@ -558,6 +560,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       </div>
       <div class="adm-subsec">ACTIONS</div>
       <div class="btn-row" style="margin-bottom:4px;">
+        <button class="btn-sm" id="atgt-center">⊙ CENTER</button>
         <button class="btn-sm" id="atgt-move">⊕ MOVE</button>
         <button class="btn-sm r" id="atgt-del">✕ DELETE</button>
       </div>
@@ -584,9 +587,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <button class="btn-sm adm-speed" data-hz="500" onclick="admSetSpeed(500)">10×</button>
     </div>
     <div class="adm-subsec">SPAWN NPCs</div>
-    <div class="adm-input-row" style="margin-bottom:8px;">
-      <input class="adm-in-sm" id="adm-npc-count" type="number" min="1" max="50" value="1" style="width:60px;">
-      <button class="btn-sm" style="flex:1;" onclick="admSpawnN()">⊕ SPAWN N</button>
+    <div style="margin-bottom:8px;">
+      <button class="btn-sm" id="adm-npc-place-btn" style="width:100%;" onclick="admToggleNpcPlace()">⊕ PLACE NPC MODE</button>
     </div>
     <div class="adm-subsec">WORLD</div>
     <div id="adm-wipe-normal">
@@ -949,6 +951,7 @@ const waterCache=new Map();
 let hoverIsWater=false, _waterCheckTile=null;
 // Inspect / admin-target
 let selectedTarget=null, adminMoveTargetId=null;
+let admTargetQueenX=null, admTargetQueenY=null;
 // Click-vs-drag
 let mouseDownAt=null;
 
@@ -1263,7 +1266,7 @@ function connect() {
     const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
     if (u&&p) {
       $('li-u').value=u; $('li-p').value=p;
-      if (reconnecting) { send({t:'login',username:u,password:p}); }
+      if (reconnecting||sessionStorage.getItem('hive-active')) { send({t:'login',username:u,password:p}); }
     }
   };
   ws.onclose=()=>{ $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true; setTimeout(connect,1500); };
@@ -1297,6 +1300,7 @@ function handle(msg) {
     case 'event': toast(msg.msg); admPushLog(msg.msg); break;
     case 'logged-in':
       me=msg.me;
+      sessionStorage.setItem('hive-active','1');
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
       waterCache.clear();
@@ -1333,6 +1337,7 @@ function handle(msg) {
         setTimeout(()=>{
           mode='place-queen'; cvs.classList.add('placing');
           hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+          doGeolocate();
         },300);
       }
       clampView();
@@ -1375,6 +1380,29 @@ function handle(msg) {
         }
       }
       if (me?.color) palette[me.id]=me.color;
+      // Sync HP/level into me.queen from viewport queens so HUD stays accurate
+      // even though full me updates are now sent at 1 Hz instead of 25 Hz.
+      if (me?.queen && vw?.queens) {
+        const myQ=vw.queens.find(q=>q.id===me.id);
+        if (myQ) { me.queen.hp=myQ.hp; me.queen.maxHp=myQ.maxHp; me.queen.level=myQ.level; updateHUD(); }
+      }
+      // Refresh inspect panel with live data from this viewport update
+      if (selectedTarget) {
+        if (selectedTarget.type==='queen') {
+          const fresh=vw.queens.find(q=>q.id===selectedTarget.data.id);
+          if (fresh) selectedTarget.data=fresh;
+        } else if (selectedTarget.type==='tile') {
+          const d=selectedTarget.data;
+          const idx=(d.y-vw.y0)*vw.w+(d.x-vw.x0);
+          if (idx>=0&&idx<vw.tiles.length) {
+            const owner=vw.tiles[idx];
+            const color=(vw.palette||palette)[owner]||'#888';
+            const ownerQ=owner?vw.queens.find(q=>q.id===owner):null;
+            selectedTarget.data={...d,owner,color,username:ownerQ?.username||(owner?'???':null)};
+          }
+        }
+        showInspectBox();
+      }
       break; }
     case 'forbidden-zones':
       forbiddenZones = msg.zones || [];
@@ -1386,7 +1414,7 @@ function handle(msg) {
       mode='idle'; cvs.classList.remove('placing');
       stopForbiddenPoll(); hideSpawnScreen();
       panLocked=false; view.x=msg.x+1; view.y=msg.y+1;
-      zoomTarget=1.0;
+      view.zoom=zoomTarget=1.0;
       lastViewKey=null; pendingViewKey=null; pushView(true);
       break;
     case 'queen-dead':
@@ -1398,6 +1426,7 @@ function handle(msg) {
         view.zoom=zoomTarget=1.0;
         mode='place-queen'; cvs.classList.add('placing');
         hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+        doGeolocate();
       },2000);
       break;
     case 'world-wiped':
@@ -1409,6 +1438,7 @@ function handle(msg) {
       if (!me.isAdmin) {
         mode='place-queen'; cvs.classList.add('placing');
         hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+        doGeolocate();
       }
       vw=null;
       if (tileCache){tileCache.fill(0);fogCache.fill(100);}
@@ -1460,11 +1490,12 @@ function handle(msg) {
           else if (e.tiles<prevT) trend='<span class="lb-trend dn">▼</span>';
         }
         const name=e.name.length>9?e.name.slice(0,8)+'…':e.name;
+        const pbadge=e.prestige>0?`<span style="color:var(--yel);font-size:5px;margin-left:2px">P${e.prestige}</span>`:'';
         html+=`<div class="lb-row${isMe?' lb-me':''}">
           <span class="lb-rank">#${i+1}</span>
           <div class="lb-name">
             <span class="lb-swatch" style="background:${e.color}"></span>
-            <span class="lb-name-text">${name}</span>
+            <span class="lb-name-text">${name}</span>${pbadge}
           </div>
           <span class="lb-tiles">${fmtLbTiles(e.tiles)}</span>
           ${trend}
@@ -1494,6 +1525,8 @@ function updateHUD() {
   $('s-tiles').textContent=tiles.toLocaleString();
   $('s-army').textContent=me.army||0;
   $('s-kills').textContent=kills;
+  $('s-prestige').textContent='P'+(me.prestige||0);
+  $('s-credits').textContent=(me.credits||0).toLocaleString();
   $('d-army').textContent=me.army||0;
   if (q) {
     $('hp-cur').textContent=q.hp|0;
@@ -1591,16 +1624,20 @@ function showInspectBox() {
     const q = t.data;
     const col = (vw?.palette||palette)[q.id] || '#888';
     typeLabel = 'QUEEN';
+    const prestigeRow = q.prestige > 0 ? `<div class="inspect-row"><span>PRESTIGE</span><span style="margin-left:auto;color:var(--yel)">P${q.prestige}</span></div>` : '';
+    const creditsRow = q.id===me?.id ? `<div class="inspect-row"><span>CREDITS</span><span style="margin-left:auto;color:var(--grn)">${(me.credits||0).toLocaleString()}</span></div>` : '';
     rowsHtml = `
       <div class="inspect-row"><span class="inspect-swatch" style="background:${col}"></span><span>${q.username||'???'}</span></div>
       <div class="inspect-row"><span>HP</span><span style="margin-left:auto">${q.hp}/${q.maxHp}</span></div>
       <div class="inspect-row"><span>LEVEL</span><span style="margin-left:auto">${q.level||1}</span></div>
+      ${prestigeRow}
       <div class="inspect-row"><span>ANTS</span><span style="margin-left:auto">${q.antCount||0}</span></div>
       <div class="inspect-row"><span>XP</span><span style="margin-left:auto">${q.xp||0}</span></div>
+      ${creditsRow}
     `;
     if (me?.isAdmin) {
       const col = (vw?.palette||palette)[q.id] || '#888';
-      admSetTarget(q.id, q.username||'???', col, q.level||1, q.hp||0, q.maxHp||1, q.tiles||0, 0);
+      admSetTarget(q.id, q.username||'???', col, q.level||1, q.hp||0, q.maxHp||1, q.tiles||0, 0, q.x, q.y);
       if ($('admin-chk')?.checked) admTab(null, 'target');
     }
   } else if (t.type === 'ant') {
@@ -2204,6 +2241,12 @@ cvs.addEventListener('mousedown', e => {
     if (adminMoveTargetId !== null)
       send({t:'admin-target', action:'move-queen', targetId:adminMoveTargetId, x:tile.x, y:tile.y});
     mode='idle'; cvs.style.cursor=''; adminMoveTargetId=null;
+  } else if (mode==='admin-place-npc') {
+    if (!tile) return;
+    send({t:'admin-spawn-at', x:tile.x, y:tile.y});
+    toast(`NPC PLACED AT (${tile.x}, ${tile.y})`);
+    // stay in mode — each click places another NPC
+    return;
   } else {
     mouseDownAt={x:e.clientX, y:e.clientY};
     dragViewStart={...view};
@@ -2462,7 +2505,7 @@ let forbiddenPollId = null;
 function startForbiddenPoll() {
   if (forbiddenPollId) return;
   send({ t: 'get-forbidden-zones' });
-  forbiddenPollId = setInterval(() => send({ t: 'get-forbidden-zones' }), 1500);
+  forbiddenPollId = setInterval(() => { if (me&&ws&&ws.readyState===1) send({ t: 'get-forbidden-zones' }); }, 1500);
 }
 function stopForbiddenPoll() {
   if (forbiddenPollId) { clearInterval(forbiddenPollId); forbiddenPollId = null; }
@@ -2579,17 +2622,18 @@ function admFilterPlayers() {
     table.innerHTML='<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;color:var(--dim);text-align:center;padding:20px 0;">NO PLAYERS</div>';
     return;
   }
-  let html='<div class="adm-ptable-hdr"><span>NAME</span><span>LV</span><span>TILES</span><span>●</span></div>';
+  let html='<div class="adm-ptable-hdr"><span>NAME</span><span style="color:var(--yel)">P</span><span>LV</span><span>TILES</span><span>●</span></div>';
   for (const p of filtered) {
     const col=(vw?.palette||palette)[p.id]||'#888';
     const dot=p.online?'<span style="color:var(--grn)">●</span>':'<span style="color:var(--dim)">○</span>';
     const tiles=p.tiles>=1000?(p.tiles/1000).toFixed(1)+'K':p.tiles;
+    const pb=p.prestige>0?`<span style="color:var(--yel)">P${p.prestige}</span>`:`<span style="color:var(--dim)">—</span>`;
     html+=`<div class="adm-ptable-row" onclick="admSelectPlayer(${p.id})">
       <span style="display:flex;align-items:center;gap:4px;">
         <span style="width:6px;height:6px;background:${col};border:1px solid var(--ink);flex-shrink:0;display:inline-block;"></span>
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.username}</span>
       </span>
-      <span>${p.level}</span><span>${tiles}</span><span>${dot}</span>
+      ${pb}<span>${p.level}</span><span>${tiles}</span><span>${dot}</span>
     </div>`;
   }
   table.innerHTML=html;
@@ -2598,12 +2642,14 @@ function admFilterPlayers() {
 function admSelectPlayer(pid) {
   const p=admPlayers.find(x=>x.id===pid); if (!p) return;
   const col=(vw?.palette||palette)[pid]||'#888';
-  admSetTarget(pid,p.username,col,p.level,p.hp,p.maxHp,p.tiles,p.ants);
+  admSetTarget(pid,p.username,col,p.level,p.hp,p.maxHp,p.tiles,p.ants,p.qx,p.qy);
   admTab(null,'target');
 }
 
-function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants) {
+function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants, qx, qy) {
   admTargetId=pid;
+  admTargetQueenX = (qx != null && qx >= 0) ? qx : null;
+  admTargetQueenY = (qy != null && qy >= 0) ? qy : null;
   $('adm-no-tgt').style.display='none';
   $('adm-tgt').style.display='block';
   const nm=$('adm-tgt-name');
@@ -2618,7 +2664,7 @@ function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants) {
 }
 
 function admClearTarget() {
-  admTargetId=null;
+  admTargetId=null; admTargetQueenX=null; admTargetQueenY=null;
   if ($('adm-no-tgt')) $('adm-no-tgt').style.display='';
   if ($('adm-tgt')) $('adm-tgt').style.display='none';
 }
@@ -2645,6 +2691,18 @@ $('atgt-lvlu').onclick=()=>{
 $('atgt-lvld').onclick=()=>{
   if (admTargetId==null) return; AudioEngine.click();
   send({t:'admin-action',action:'level-down',target:admTargetId}); toast('LEVEL DOWN');
+};
+$('atgt-center').onclick=()=>{
+  if (admTargetId==null) return; AudioEngine.click();
+  // Look up queen position: prefer stored coords, fall back to vw.queens
+  let qx=admTargetQueenX, qy=admTargetQueenY;
+  if (qx==null || qy==null) {
+    const qInfo=vw?.queens?.find(q=>q.id===admTargetId);
+    if (qInfo) { qx=qInfo.x; qy=qInfo.y; }
+  }
+  if (qx==null || qy==null) { toast('QUEEN POSITION UNKNOWN'); return; }
+  panTarget={x:qx+1, y:qy+1};
+  toast('CENTERING ON QUEEN');
 };
 $('atgt-move').onclick=()=>{
   if (admTargetId==null) return; AudioEngine.click();
@@ -2703,9 +2761,19 @@ function admSetSpeed(hz) {
   document.querySelectorAll('.adm-speed').forEach(b=>b.classList.toggle('active-speed',parseInt(b.dataset.hz)===hz));
   if ($('s-tr')) { $('s-tr').value=hz; if ($('v-tr')) $('v-tr').textContent=hz; }
 }
-function admSpawnN() {
-  const n=Math.min(50,Math.max(1,parseInt($('adm-npc-count')?.value)||1));
-  AudioEngine.click(); send({t:'admin-spawn-n',count:n}); toast('SPAWNING '+n+' NPCs');
+function admToggleNpcPlace() {
+  AudioEngine.click();
+  if (mode==='admin-place-npc') {
+    mode='idle'; cvs.style.cursor='';
+    const b=$('adm-npc-place-btn');
+    if (b) { b.textContent='⊕ PLACE NPC MODE'; b.style.background=''; b.style.color=''; }
+    toast('NPC PLACEMENT OFF');
+  } else {
+    mode='admin-place-npc'; cvs.style.cursor='crosshair';
+    const b=$('adm-npc-place-btn');
+    if (b) { b.textContent='✕ STOP PLACING'; b.style.background='var(--red)'; b.style.color='#fff'; }
+    toast('CLICK MAP TO PLACE NPCs · CLICK BUTTON TO STOP');
+  }
 }
 function admWipeStart() {
   $('adm-wipe-normal').style.display='none';
@@ -2870,6 +2938,8 @@ document.addEventListener('keydown', e => {
     case 'Escape':
       AudioEngine.click();
       if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
+      else if (mode==='admin-place-npc') admToggleNpcPlace();
+      else if (mode==='admin-move') { mode='idle'; cvs.style.cursor=''; adminMoveTargetId=null; }
       break;
     case '+': case '=':
       zoomTarget = clamp(zoomTarget*1.15, 0.0001, 16); break;

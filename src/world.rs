@@ -1,6 +1,7 @@
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 use crate::auth::Auth;
 use crate::tile_map::TileMap;
@@ -70,9 +71,11 @@ pub struct Player {
     pub npc:             bool,
     pub view:            Option<PlayerView>,
     pub tx:              Option<UnboundedSender<String>>,
+    pub view_tx:         Option<watch::Sender<Option<String>>>,
     pub conn_gen:        u64,
     pub prestige:        u32,
     pub credits:         u64,
+    pub last_sent_dirty: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +125,8 @@ pub struct World {
     /// Per-owner ant counts, rebuilt each tick after age-out. Used by build_player_info.
     pub ant_counts:      FxHashMap<u32, u32>,
     pub paused:          bool,
+    /// Tracks the last tick on which tiles changed; used to skip viewport delivery when idle.
+    pub dirty_tick:      u64,
 }
 
 impl World {
@@ -148,6 +153,7 @@ impl World {
             scratch_pairs:   Vec::new(),
             ant_counts:      FxHashMap::default(),
             paused:          false,
+            dirty_tick:      0,
         }
     }
 

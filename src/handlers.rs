@@ -166,6 +166,7 @@ pub fn handle_message(
             tiles_ever_held: 0, cached_tiles: 0, npc: false,
         });
         world.queen_map_dirty = true;
+        world.dirty_tick = world.tick; // tiles are about to change
         for dy in 0..size as i32 {
             for dx in 0..size as i32 {
                 world.tiles.set((x + dx) as u32, (y + dy) as u32, pid);
@@ -576,10 +577,10 @@ fn create_or_reconnect_player(
             next_refill: now + 24 * 3600 * 1000,
             queen_placed_at: None,
             npc: false, view: None,
-            tx: Some(tx),
+            tx: Some(tx), view_tx: None,
             conn_gen: 1,
-            prestige: 0,
-            credits: 0,
+            prestige: 0, credits: 0,
+            last_sent_dirty: 0,
         });
         println!("[connect] {username} ({})", id);
     }

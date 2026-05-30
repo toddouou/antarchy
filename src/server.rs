@@ -11,7 +11,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
 use crate::config::cfg;
 use crate::handlers::handle_message;
@@ -26,9 +26,10 @@ pub type WorldState = Arc<RwLock<World>>;
 pub enum Cmd {
     /// Auth (register / login): sim fills in player_id and conn_gen, signals reply.
     Auth {
-        raw:    String,
-        out_tx: mpsc::UnboundedSender<String>,
-        reply:  oneshot::Sender<Option<(u32, u64)>>,
+        raw:     String,
+        out_tx:  mpsc::UnboundedSender<String>,
+        view_tx: watch::Sender<Option<String>>,
+        reply:   oneshot::Sender<Option<(u32, u64)>>,
     },
     /// Any non-auth message from an authenticated connection.
     Message { pid: u32, raw: String },
@@ -75,12 +76,37 @@ async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
 
 async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (mpsc_tx, mut mpsc_rx) = mpsc::unbounded_channel::<String>();
 
-    // Dedicated write task: drains the per-connection outbox → WebSocket.
+    // Priority channel: events, confirmations, me-updates — never dropped, ordered.
+    let (prio_tx, mut prio_rx) = mpsc::unbounded_channel::<String>();
+    // Viewport slot: latest-wins — stale snapshots are replaced, never backlogged.
+    // watch::Sender is Clone; we keep one here and send one clone per auth to the sim loop.
+    let (view_tx_conn, mut view_rx) = watch::channel::<Option<String>>(None);
+
+    // Write task: delivers priority messages immediately; for viewports, only the latest
+    // frame is sent — tokio::select! ensures a slow network never blocks event delivery.
     tokio::spawn(async move {
-        while let Some(msg) = mpsc_rx.recv().await {
-            if ws_tx.send(Message::Text(msg)).await.is_err() { break; }
+        loop {
+            tokio::select! {
+                biased; // drain priority queue before checking viewport
+                msg = prio_rx.recv() => {
+                    match msg {
+                        Some(m) => { if ws_tx.send(Message::Text(m)).await.is_err() { break; } }
+                        None    => break,
+                    }
+                }
+                result = view_rx.changed() => {
+                    match result {
+                        Ok(()) => {
+                            let v = view_rx.borrow_and_update().clone();
+                            if let Some(v) = v {
+                                if ws_tx.send(Message::Text(v)).await.is_err() { break; }
+                            }
+                        }
+                        Err(_) => break, // all senders dropped = disconnected
+                    }
+                }
+            }
         }
     });
 
@@ -115,9 +141,13 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
         if t == "register" || t == "login" {
             // Auth: push to cmd queue, await reply (≤ 1 tick = ~20 ms)
             let (reply_tx, reply_rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Auth { raw: text, out_tx: mpsc_tx.clone(), reply: reply_tx }).is_err() {
-                break;
-            }
+            // Clone the viewport sender so the sim loop can write to this connection's slot
+            if cmd_tx.send(Cmd::Auth {
+                raw: text,
+                out_tx: prio_tx.clone(),
+                view_tx: view_tx_conn.clone(),
+                reply: reply_tx,
+            }).is_err() { break; }
             if let Ok(Some((pid, gen))) = reply_rx.await {
                 player_id = Some(pid);
                 conn_gen  = gen;
@@ -126,10 +156,12 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
             // Non-auth: fire-and-forget, sim processes at next tick start
             if cmd_tx.send(Cmd::Message { pid, raw: text }).is_err() { break; }
         } else {
-            let _ = mpsc_tx.send(r#"{"t":"err","msg":"Not logged in"}"#.to_string());
+            let _ = prio_tx.send(r#"{"t":"err","msg":"Not logged in"}"#.to_string());
         }
     }
 
+    // view_tx_conn is dropped here; sim loop will drop p.view_tx on Disconnect,
+    // causing write task's view_rx.changed() to return Err → write task exits.
     if let Some(pid) = player_id {
         let _ = cmd_tx.send(Cmd::Disconnect { pid, conn_gen });
     }
@@ -161,13 +193,20 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             // WS tasks never lock World — they push here, we process here.
             loop {
                 match cmd_rx.try_recv() {
-                    Ok(Cmd::Auth { raw, out_tx, reply }) => {
+                    Ok(Cmd::Auth { raw, out_tx, view_tx, reply }) => {
                         let parsed = match serde_json::from_str::<serde_json::Value>(&raw) {
                             Ok(v) => v,
                             Err(_) => { let _ = reply.send(None); continue; }
                         };
                         let mut pid: Option<u32> = None;
                         handle_message(&mut w, &mut pid, &out_tx, parsed);
+                        // Wire up the viewport watch channel for this connection
+                        if let Some(id) = pid {
+                            if let Some(p) = w.players.get_mut(&id) {
+                                p.view_tx = Some(view_tx);
+                                p.last_sent_dirty = 0; // force a full viewport send on login
+                            }
+                        }
                         let result = pid.map(|id| {
                             let gen = w.players.get(&id).map(|p| p.conn_gen).unwrap_or(0);
                             (id, gen)
@@ -185,11 +224,16 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                             let mut pid_mut = Some(pid);
                             handle_message(&mut w, &mut pid_mut, &tx, parsed);
                         }
+                        // Any client message may mutate tiles — mark dirty so viewport is sent
+                        w.dirty_tick = w.tick;
                     }
                     Ok(Cmd::Disconnect { pid, conn_gen }) => {
                         let uname = w.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
                         if let Some(p) = w.players.get_mut(&pid) {
-                            if p.conn_gen == conn_gen { p.tx = None; }
+                            if p.conn_gen == conn_gen {
+                                p.tx      = None;
+                                p.view_tx = None; // drops sender → write task's view_rx.changed() returns Err
+                            }
                         }
                         println!("[disconnect] {uname} ({pid})");
                     }
@@ -234,24 +278,36 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
 }
 
 fn send_viewports(world: &World) {
-    if world.tick % 2 != 0 { return; }  // 25 Hz delivery
+    // 10 Hz base rate — viewport data is large; deliver less often to cap bandwidth.
+    if world.tick % 5 != 0 { return; }
+
+    // Skip the expensive tile+fog payload when nothing has changed.
+    // dirty_tick is set whenever tiles mutate (ants moving, queen placed, commands received).
+    // A 3-tick window ensures one or two extra frames after each change (panning, placement).
+    let send_tiles = world.dirty_tick + 3 >= world.tick;
+
+    // Full me update once per second; HP/level sync from viewport queens handles the rest.
+    let send_me = world.tick % 50 == 0;
 
     let pids: Vec<u32> = world.players.iter()
-        .filter(|(_, p)| !p.npc && p.tx.is_some())
+        .filter(|(_, p)| !p.npc && (p.tx.is_some() || p.view_tx.is_some()))
         .map(|(&id, _)| id)
         .collect();
 
-    // Build all viewport updates in parallel (fog + tile work is O(viewport_area) per player)
-    let updates: Vec<(u32, Option<String>, String)> = pids.par_iter()
-        .map(|&pid| (pid, build_view_update(world, pid), build_player_info(world, pid)))
+    // Build viewport updates in parallel — only run fog+tile computation when dirty.
+    let views: Vec<(u32, Option<String>)> = pids.par_iter()
+        .map(|&pid| (pid, if send_tiles { build_view_update(world, pid) } else { None }))
         .collect();
 
-    for (pid, view, info) in updates {
-        if let Some(p) = world.players.get(&pid) {
-            if let Some(tx) = &p.tx {
-                if let Some(v) = view { let _ = tx.send(v); }
-                let _ = tx.send(info);
-            }
+    for (pid, view) in views {
+        let Some(p) = world.players.get(&pid) else { continue };
+        // Tile+fog snapshot → viewport watch slot (latest-wins, no backlog possible)
+        if let Some(v) = view {
+            if let Some(vtx) = &p.view_tx { let _ = vtx.send(Some(v)); }
+        }
+        // me update → priority channel (small, ordered, at reduced rate)
+        if send_me {
+            if let Some(tx) = &p.tx { let _ = tx.send(build_player_info(world, pid)); }
         }
     }
 

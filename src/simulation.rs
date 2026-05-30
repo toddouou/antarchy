@@ -178,7 +178,8 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         id, username: format!("NPC_{id}"), color: hue,
         hue_idx: hue_idx as i32,
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
-        npc: true, view: None, tx: None, conn_gen: 0, prestige: 0, credits: 0,
+        npc: true, view: None, tx: None, view_tx: None, conn_gen: 0,
+        prestige: 0, credits: 0, last_sent_dirty: 0,
     });
     world.queen_map_dirty = true;
 
@@ -208,6 +209,8 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
 
 pub fn tick_world(world: &mut World) {
     world.tick += 1;
+    // Mark the world dirty whenever there are active ants (tiles will change this tick)
+    if !world.ants.is_empty() { world.dirty_tick = world.tick; }
     let c = cfg().clone();
     let ww     = world.world_w as i32;
     let wh     = world.world_h as i32;
