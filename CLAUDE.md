@@ -93,8 +93,9 @@ live in `FxHashMap`s keyed by numeric player id.
 `get-forbidden-zones`, `place-queen`, `place-ant`, `admin` (slider param), `admin-action`
 (`add-ants` / `heal-queen` / `level-up` / `level-down`), `admin-target` (`reset-hp` /
 `delete-queen` / `move-queen` / `ban-player`), `admin-pause`, `admin-kick`, `admin-set-level`,
-`admin-give-xp`, `admin-set-ants`, `admin-broadcast`, `admin-spawn-n`, `admin-player-list`,
-`admin-cfg-reset`.
+`admin-give-xp`, `admin-set-ants`, `admin-broadcast`, `admin-spawn-n`, `admin-spawn-at`,
+`admin-place-ant` (place an ant owned by `targetId` at `x,y` — admin override, no bubble/
+territory/ant-count checks), `admin-player-list` (now includes NPC players), `admin-cfg-reset`.
 
 **Config** (`config.rs`): all tunable simulation parameters live in the global `Config`, accessed
 via `cfg()` / `cfg_write()`. Admin-panel sliders mutate it through `apply_admin_param`, clamped by

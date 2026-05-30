@@ -457,6 +457,22 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     </div>
   </div>
 
+  <div class="panel" id="shop-panel">
+    <div class="ptitle">SHOP</div>
+    <div class="pbody" style="padding:6px 8px;">
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">CREDITS: <span id="shop-credits" style="color:var(--grn);">0</span></div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <button class="btn-sm" id="shop-highway"  onclick="shopBuy('highway')" >HIGHWAY  — <span style="color:var(--grn)">10 CR</span></button>
+        <button class="btn-sm" id="shop-relocate" onclick="shopBuy('relocate')">RELOCATE — <span style="color:var(--grn)">20 CR</span></button>
+        <button class="btn-sm" id="shop-defender" onclick="shopBuy('defender')">DEFENDER — <span style="color:var(--grn)"> 1 CR</span></button>
+        <button class="btn-sm" id="shop-brute"    onclick="shopBuy('brute')"   >BRUTE    — <span style="color:var(--grn)">20 CR</span></button>
+        <button class="btn-sm" id="shop-shield"   onclick="shopBuy('shield')"  >SHIELD   — <span style="color:var(--grn)">10 CR</span></button>
+        <button class="btn-sm" disabled style="color:var(--dim);">ALLIANCE — <span>80 CR</span> (WIP)</button>
+      </div>
+      <div id="shop-def-count" style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);margin-top:6px;display:none;">DEFENDERS QUEUED: <span id="shop-defenders">0</span></div>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="ptitle">LEADERBOARD</div>
     <div id="lb-body" style="padding:0 8px;">
@@ -558,7 +574,18 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <input class="adm-in-sm" id="atgt-setants" type="number" min="0" placeholder="0">
         <button class="btn-sm" onclick="admSetAnts()">SET</button>
       </div>
+      <div class="adm-input-row">
+        <span class="adm-il">CR+</span>
+        <input class="adm-in-sm" id="atgt-givecr" type="number" min="0" max="100" placeholder="0">
+        <button class="btn-sm" onclick="admGiveCredits()">ADD</button>
+      </div>
+      <div class="adm-input-row">
+        <span class="adm-il">CR=</span>
+        <input class="adm-in-sm" id="atgt-setcr" type="number" min="0" max="100" placeholder="0">
+        <button class="btn-sm" onclick="admSetCredits()">SET</button>
+      </div>
       <div class="adm-subsec">ACTIONS</div>
+      <button class="btn-sm" id="atgt-place-ant" style="width:100%;margin-bottom:4px;">♟ PLACE ANTS</button>
       <div class="btn-row" style="margin-bottom:4px;">
         <button class="btn-sm" id="atgt-center">⊙ CENTER</button>
         <button class="btn-sm" id="atgt-move">⊕ MOVE</button>
@@ -663,6 +690,13 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span class="v"><span id="v-hp">100</span></span>
       </div>
       <input type="range" id="s-hp" min="10" max="2000" step="10" value="100">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l">
+        <span>HP REGEN/S <span class="sinfo" data-tip="Queen HP passively regenerated per second while below max HP. 0 = no regen (queens only heal via the shop/admin).">?</span></span>
+        <span class="v"><span id="v-hr">0</span></span>
+      </div>
+      <input type="range" id="s-hr" min="0" max="100" step="1" value="0">
     </div>
     <div class="slider-g">
       <div class="slider-l">
@@ -886,6 +920,7 @@ const CFG_SLIDER_MAP = {
   LIFESPAN:          { sid:'s-ls',   vid:'v-ls',   fmt: fmtTicks },
   BUBBLE_R:          { sid:'s-br',   vid:'v-br'   },
   HP_BASE:           { sid:'s-hp',   vid:'v-hp'   },
+  HP_REGEN:          { sid:'s-hr',   vid:'v-hr'   },
   SPAWN_PAN:         { sid:'s-sp',   vid:'v-sp'   },
   XP_BASE:           { sid:'s-xpb',  vid:'v-xpb'  },
   XP_EXP:            { sid:'s-xpe',  vid:'v-xpe'  },
@@ -955,10 +990,30 @@ const _waterSampleCtx=_waterSampleCanvas.getContext('2d',{willReadFrequently:tru
 const waterCache=new Map();
 let hoverIsWater=false, _waterCheckTile=null;
 // Inspect / admin-target
-let selectedTarget=null, adminMoveTargetId=null;
+let selectedTarget=null, adminMoveTargetId=null, admAntTargetId=null;
 let admTargetQueenX=null, admTargetQueenY=null;
 // Click-vs-drag
 let mouseDownAt=null;
+
+/* fast base64 -> Uint8Array via a 256-entry table — avoids atob()'s intermediate
+   binary string + the per-char charCodeAt copy loop, which hitched the main thread
+   on every tile frame. Server uses standard base64 (length %4==0, '=' padded). */
+const _B64LUT=(()=>{const t=new Uint8Array(256);const c='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';for(let i=0;i<c.length;i++)t[c.charCodeAt(i)]=i;return t;})();
+function b64ToBytes(b64){
+  const len=b64.length;
+  let pad=0; if(len){ if(b64.charCodeAt(len-1)===61)pad++; if(len>1&&b64.charCodeAt(len-2)===61)pad++; }
+  const outLen=(len>>2)*3-pad;
+  const out=new Uint8Array(outLen);
+  let o=0;
+  for(let i=0;i<len;i+=4){
+    const a=_B64LUT[b64.charCodeAt(i)],   b=_B64LUT[b64.charCodeAt(i+1)],
+          c=_B64LUT[b64.charCodeAt(i+2)], d=_B64LUT[b64.charCodeAt(i+3)];
+    out[o++]=(a<<2)|(b>>4);
+    if(o<outLen)out[o++]=((b&15)<<4)|(c>>2);
+    if(o<outLen)out[o++]=((c&3)<<6)|d;
+  }
+  return out;
+}
 
 /* hex -> RGB cache for fog blending */
 const rgbCache={};
@@ -1365,12 +1420,9 @@ function handle(msg) {
         }
         break;
       }
-      const tBin=atob(msg.tiles),tBuf=new Uint8Array(tBin.length);
-      for (let i=0;i<tBin.length;i++) tBuf[i]=tBin.charCodeAt(i);
-      msg.tiles=new Uint16Array(tBuf.buffer);
-      const fBin=atob(msg.fog),fBuf=new Uint8Array(fBin.length);
-      for (let i=0;i<fBin.length;i++) fBuf[i]=fBin.charCodeAt(i);
-      msg.fog=fBuf;
+      const tBytes=b64ToBytes(msg.tiles);
+      msg.tiles=new Uint16Array(tBytes.buffer, tBytes.byteOffset, tBytes.byteLength>>1);
+      msg.fog=b64ToBytes(msg.fog);
       if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
       { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
       vw=msg; palette=msg.palette;
@@ -1459,6 +1511,10 @@ function handle(msg) {
       vw=null;
       if (tileCache){tileCache.fill(0);fogCache.fill(100);}
       tileCacheCamX=tileCacheCamY=-1;
+      break;
+    case 'shop-ok':
+      AudioEngine.plop();
+      toast(`SHOP: ${(msg.item||'').toUpperCase()} PURCHASED`);
       break;
     case 'ant-placed':
       AudioEngine.plop(); break;
@@ -1564,6 +1620,19 @@ function updateHUD() {
   const total=me.nextRefillMs||0;
   const rh=(total/3600000)|0, rm=((total%3600000)/60000)|0, rs=((total%60000)/1000)|0;
   $('refill-timer').textContent=`${String(rh).padStart(2,'0')}:${String(rm).padStart(2,'0')}:${String(rs).padStart(2,'0')}`;
+  // Shop panel sync
+  const cr=me.credits||0, haveQ=q&&!q.dead;
+  $('shop-credits').textContent=cr;
+  $('s-credits').textContent=cr;
+  const shopBtns=[['shop-highway',10,haveQ],['shop-relocate',20,haveQ],
+    ['shop-defender',1,haveQ],['shop-brute',20,haveQ],['shop-shield',10,haveQ]];
+  for (const [id,price,needQ] of shopBtns) {
+    const el=$( id); if (el) el.disabled=cr<price||!needQ;
+  }
+  const dCount=me.defenders||0;
+  const dc=$('shop-def-count');
+  if (dc) { dc.style.display=dCount>0?'':'none'; }
+  const ds=$('shop-defenders'); if (ds) ds.textContent=dCount;
 }
 
 /* CANVAS */
@@ -2035,20 +2104,33 @@ function render() {
     const qi=Math.max(0,(q.y-v.y0))*v.w+Math.max(0,(q.x-v.x0));
     const f=(qi<v.fog.length)?v.fog[qi]:0;
     const tint=(q.id===me?.id)?0:f/100;
+    const qw=cp*q.size;
+    // Shield glow
+    if (q.shield > 0) {
+      ctx.save();
+      const pulse=0.6+0.4*Math.sin(performance.now()/300);
+      ctx.shadowColor='#4488ff'; ctx.shadowBlur=18*pulse;
+      ctx.strokeStyle='#4488ff'; ctx.lineWidth=Math.max(2,cp*0.3);
+      ctx.strokeRect(px-2,py-2,qw+4,qw+4);
+      ctx.restore();
+    }
     ctx.fillStyle=fogBlend(q.color, tint);
-    ctx.fillRect(px,py,cp*q.size,cp*q.size);
+    ctx.fillRect(px,py,qw,qw);
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
-    ctx.strokeRect(px,py,cp*q.size,cp*q.size);
-    if (cp*q.size>=12) {
+    ctx.strokeRect(px,py,qw,qw);
+    if (qw>=12) {
       ctx.fillStyle='#0d0d0d';
-      ctx.font=`${cp*q.size*.5}px serif`;
+      ctx.font=`${qw*.5}px serif`;
       ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText('♛', px+cp*q.size/2, py+cp*q.size/2);
+      ctx.fillText('♛', px+qw/2, py+qw/2);
     }
     if (cp>=4) {
-      const bw=cp*q.size;
-      ctx.fillStyle='#0d0d0d'; ctx.fillRect(px,py-5,bw,3);
-      ctx.fillStyle='#ff2e3f';  ctx.fillRect(px,py-5,bw*(q.hp/q.maxHp),3);
+      ctx.fillStyle='#0d0d0d'; ctx.fillRect(px,py-5,qw,3);
+      ctx.fillStyle='#ff2e3f';  ctx.fillRect(px,py-5,qw*(q.hp/q.maxHp),3);
+      if (q.shield>0) {
+        ctx.fillStyle='#4488ff';
+        ctx.fillRect(px,py-9,qw*(q.shield/q.maxHp),3);
+      }
     }
   }
 
@@ -2069,7 +2151,7 @@ function render() {
   const tickInterval = antFrameDt || (1000 / (me?.tickRate || 50));
   const lerpT = Math.min(1, (performance.now() - lastVwAt) / tickInterval);
   for (const a of v.ants) {
-    const [aid,ax,ay,adx,ady,owner]=a;
+    const [aid,ax,ay,adx,ady,owner,kind]=a;
     const idx=(ay-v.y0)*v.w+(ax-v.x0);
     const f=(idx>=0&&idx<v.fog.length)?v.fog[idx]:100;
     if (f>=100 && owner!==me?.id) continue;
@@ -2088,21 +2170,30 @@ function render() {
       bodyB = (bodyB*(1-ft) + 158*ft)|0;
     }
     ctx.fillStyle = `rgb(${bodyR},${bodyG},${bodyB})`;
-    const inset = Math.max(0, cp*0.08);
-    ctx.fillRect((px+inset)|0, (py+inset)|0, (cp-inset*2)|0, (cp-inset*2)|0);
-    // Eyes
-    if (cp >= 4) {
-      const eyeR = Math.max(0.8, cp*0.12);
-      const eyeOffFwd = cp * 0.22;
-      const eyeOffSide = cp * 0.18;
-      const ecx = px + cp/2 + adx * eyeOffFwd;
-      const ecy = py + cp/2 + ady * eyeOffFwd;
-      const pdx = -ady, pdy = adx;
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(ecx + pdx*eyeOffSide, ecy + pdy*eyeOffSide, eyeR, 0, Math.PI*2);
-      ctx.arc(ecx - pdx*eyeOffSide, ecy - pdy*eyeOffSide, eyeR, 0, Math.PI*2);
-      ctx.fill();
+    if (kind === 1) {
+      // Brute: 2×2 heavy square
+      const bs = cp * 2;
+      ctx.fillRect(px|0, py|0, bs|0, bs|0);
+      ctx.strokeStyle = `rgb(${(rr*0.25)|0},${(gg*0.25)|0},${(bb*0.25)|0})`;
+      ctx.lineWidth = Math.max(2, cp * 0.2);
+      ctx.strokeRect(px|0, py|0, bs|0, bs|0);
+    } else {
+      const inset = Math.max(0, cp*0.08);
+      ctx.fillRect((px+inset)|0, (py+inset)|0, (cp-inset*2)|0, (cp-inset*2)|0);
+      // Eyes
+      if (cp >= 4) {
+        const eyeR = Math.max(0.8, cp*0.12);
+        const eyeOffFwd = cp * 0.22;
+        const eyeOffSide = cp * 0.18;
+        const ecx = px + cp/2 + adx * eyeOffFwd;
+        const ecy = py + cp/2 + ady * eyeOffFwd;
+        const pdx = -ady, pdy = adx;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(ecx + pdx*eyeOffSide, ecy + pdy*eyeOffSide, eyeR, 0, Math.PI*2);
+        ctx.arc(ecx - pdx*eyeOffSide, ecy - pdy*eyeOffSide, eyeR, 0, Math.PI*2);
+        ctx.fill();
+      }
     }
   }
 
@@ -2189,8 +2280,12 @@ function render() {
   } else { ti.style.display='none'; }
 }
 
+let camLastT=0;
 function loop(t) {
   frameCount++;
+  // Frame delta (ms), clamped so a backgrounded/janky tab can't cause a huge camera jump.
+  const dt = camLastT ? Math.min(100, t-camLastT) : 16;
+  camLastT = t;
   // Keep canvas pixel buffer in sync with its CSS layout size
   const _r=cvs.getBoundingClientRect();
   if (cvs.width!==(_r.width|0) || cvs.height!==(_r.height|0)) { resize(); clampView(); }
@@ -2198,9 +2293,14 @@ function loop(t) {
     $('d-fps').textContent=((frameCount*1000/(t-fpsT))|0);
     frameCount=0; fpsT=t;
   }
+  // Frame-rate-independent easing: exponential smoothing by elapsed time, so pan/zoom feel
+  // identical at 30/60/144 Hz (the old fixed per-frame factors moved faster on high-Hz
+  // displays). f = 1 - e^(-rate·dt); rates chosen to match the prior 60 Hz feel.
+  const zoomF = 1 - Math.exp(-10 * dt/1000);
+  const panF  = 1 - Math.exp(-8  * dt/1000);
   // Smooth zoom lerp
   if (Math.abs(zoomTarget-view.zoom)>0.0002) {
-    view.zoom += (zoomTarget-view.zoom)*0.15;
+    view.zoom += (zoomTarget-view.zoom)*zoomF;
     clampView();
   } else if (view.zoom !== zoomTarget) {
     view.zoom = zoomTarget; clampView();
@@ -2211,7 +2311,7 @@ function loop(t) {
     if (Math.abs(dx)<0.05 && Math.abs(dy)<0.05) {
       view.x=panTarget.x; view.y=panTarget.y; panTarget=null;
     } else {
-      view.x+=dx*0.12; view.y+=dy*0.12;
+      view.x+=dx*panF; view.y+=dy*panF;
     }
     clampView();
   }
@@ -2265,6 +2365,25 @@ cvs.addEventListener('mousedown', e => {
     toast(`NPC PLACED AT (${tile.x}, ${tile.y})`);
     // stay in mode — each click places another NPC
     return;
+  } else if (mode==='admin-place-ant') {
+    if (!tile) return;
+    send({t:'admin-place-ant', targetId:admAntTargetId, x:tile.x, y:tile.y});
+    toast(`ANT PLACED AT (${tile.x}, ${tile.y})`);
+    // stay in mode — each click places another ant
+    return;
+  } else if (mode==='shop-relocate') {
+    if (!tile) return;
+    send({t:'shop-buy',item:'relocate',x:tile.x,y:tile.y});
+    exitShopMode();
+  } else if (mode==='shop-highway') {
+    // First click: set origin; second mouseup after drag: send with direction
+    shopOrigin=tile; shopDir=[1,1];
+    mode='shop-highway-drag';
+    dragFrom={px:e.clientX-r.left, py:e.clientY-r.top, raw:{x:e.clientX,y:e.clientY}};
+  } else if (mode==='shop-brute') {
+    shopOrigin=tile; shopDir=[0,-1];
+    mode='shop-brute-drag';
+    dragFrom={px:e.clientX-r.left, py:e.clientY-r.top, raw:{x:e.clientX,y:e.clientY}};
   } else {
     mouseDownAt={x:e.clientX, y:e.clientY};
     dragViewStart={...view};
@@ -2305,6 +2424,11 @@ window.addEventListener('mousemove', e => {
     const dx=cx_-dragFrom.px, dy=cy_-dragFrom.py;
     antPlaceDir=snapDir(dx, dy);
     showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
+  } else if ((mode==='shop-highway-drag'||mode==='shop-brute-drag') && dragFrom) {
+    const r=cvs.getBoundingClientRect();
+    const cx_=e.clientX-r.left, cy_=e.clientY-r.top;
+    shopDir=snapDir(cx_-dragFrom.px, cy_-dragFrom.py);
+    showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
   } else if (dragging && dragFrom) {
     const cp=CELL*view.zoom;
     let nx=dragViewStart.x-(e.clientX-dragFrom.px)/cp;
@@ -2330,6 +2454,16 @@ window.addEventListener('mouseup', () => {
     // If the player runs out of ants, exitPlaceMode() is called on the next 'me' update.
     mode='place-ant-down';
     dragFrom = null;
+  }
+  if (mode==='shop-highway-drag' && dragFrom && shopOrigin) {
+    $('dir-overlay').style.display='none';
+    send({t:'shop-buy',item:'highway',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
+    dragFrom=null; exitShopMode();
+  }
+  if (mode==='shop-brute-drag' && dragFrom && shopOrigin) {
+    $('dir-overlay').style.display='none';
+    send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
+    dragFrom=null; exitShopMode();
   }
   if (dragging) { dragging=false; cvs.classList.remove('dragging'); dragFrom=null; }
   if (mouseDownAt) {
@@ -2489,6 +2623,33 @@ function exitPlaceMode() {
     $('dir-overlay').style.display='none';
   }
 }
+
+// ---- Shop state ----
+let shopItem=null, shopOrigin=null, shopDir=[1,1];
+
+function shopBuy(item) {
+  AudioEngine.click();
+  if (!me || !me.queen || me.queen.dead) return toast('Need a live queen');
+  // Instant items
+  if (item==='defender') { send({t:'shop-buy',item}); return; }
+  if (item==='shield')   { send({t:'shop-buy',item}); return; }
+  // Placement items — enter a mode then wait for click
+  shopItem=item;
+  mode='shop-'+item;
+  cvs.classList.add('placing');
+  const labels={highway:'Click start tile, drag diagonal direction',
+    relocate:'Click new queen position', brute:'Click start tile, drag direction'};
+  $('prompt').style.display='';
+  $('prompt').textContent=labels[item]||'Click to place';
+}
+
+function exitShopMode() {
+  if (!mode.startsWith('shop-')) return;
+  shopItem=null; shopOrigin=null;
+  mode='idle'; cvs.classList.remove('placing');
+  $('prompt').style.display='none';
+  $('dir-overlay').style.display='none';
+}
 function spawnDist(tile) {
   const dx=tile.x-WORLD.spawnX, dy=tile.y-WORLD.spawnY;
   return Math.sqrt(dx*dx+dy*dy);
@@ -2645,7 +2806,7 @@ function admFilterPlayers() {
     const col=(vw?.palette||palette)[p.id]||'#888';
     const dot=p.online?'<span style="color:var(--grn)">●</span>':'<span style="color:var(--dim)">○</span>';
     const tiles=p.tiles>=1000?(p.tiles/1000).toFixed(1)+'K':p.tiles;
-    const pb=p.prestige>0?`<span style="color:var(--yel)">P${p.prestige}</span>`:`<span style="color:var(--dim)">—</span>`;
+    const pb=p.npc?`<span style="color:var(--red)">NPC</span>`:(p.prestige>0?`<span style="color:var(--yel)">P${p.prestige}</span>`:`<span style="color:var(--dim)">—</span>`);
     html+=`<div class="adm-ptable-row" onclick="admSelectPlayer(${p.id})">
       <span style="display:flex;align-items:center;gap:4px;">
         <span style="width:6px;height:6px;background:${col};border:1px solid var(--ink);flex-shrink:0;display:inline-block;"></span>
@@ -2727,6 +2888,7 @@ $('atgt-move').onclick=()=>{
   adminMoveTargetId=admTargetId; mode='admin-move'; cvs.style.cursor='crosshair';
   toast('CLICK MAP TO MOVE QUEEN');
 };
+$('atgt-place-ant').onclick=admTogglePlaceAnt;
 $('atgt-del').onclick=()=>{
   if (admTargetId==null) return;
   if (!confirm('Delete this queen?')) return;
@@ -2764,6 +2926,16 @@ function admSetAnts() {
   if (admTargetId==null||isNaN(n)||n<0) return;
   AudioEngine.click(); send({t:'admin-set-ants',targetId:admTargetId,count:n}); toast('ANTS→'+n);
 }
+function admGiveCredits() {
+  const n=parseInt($('atgt-givecr')?.value);
+  if (admTargetId==null||isNaN(n)||n<=0) return;
+  AudioEngine.click(); send({t:'admin-give-credits',targetId:admTargetId,amount:n}); toast('+'+n+' CR');
+}
+function admSetCredits() {
+  const n=parseInt($('atgt-setcr')?.value);
+  if (admTargetId==null||isNaN(n)||n<0) return;
+  AudioEngine.click(); send({t:'admin-set-credits',targetId:admTargetId,amount:n}); toast('CR→'+n);
+}
 
 /* Sandbox */
 function admTogglePause() {
@@ -2791,6 +2963,20 @@ function admToggleNpcPlace() {
     const b=$('adm-npc-place-btn');
     if (b) { b.textContent='✕ STOP PLACING'; b.style.background='var(--red)'; b.style.color='#fff'; }
     toast('CLICK MAP TO PLACE NPCs · CLICK BUTTON TO STOP');
+  }
+}
+function admTogglePlaceAnt() {
+  AudioEngine.click();
+  const b=$('atgt-place-ant');
+  if (mode==='admin-place-ant') {
+    mode='idle'; cvs.style.cursor=''; admAntTargetId=null;
+    if (b) { b.textContent='♟ PLACE ANTS'; b.style.background=''; b.style.color=''; }
+    toast('ANT PLACEMENT OFF');
+  } else {
+    if (admTargetId==null) { toast('SELECT A TARGET FIRST'); return; }
+    admAntTargetId=admTargetId; mode='admin-place-ant'; cvs.style.cursor='crosshair';
+    if (b) { b.textContent='✕ STOP PLACING'; b.style.background='var(--red)'; b.style.color='#fff'; }
+    toast('CLICK MAP TO PLACE ANTS · CLICK BUTTON TO STOP');
   }
 }
 function admWipeStart() {
@@ -2832,6 +3018,7 @@ bindSlider('s-tr','TICK_RATE','v-tr');
 bindSlider('s-ls','LIFESPAN','v-ls', 1, fmtTicks);
 bindSlider('s-br','BUBBLE_R','v-br');
 bindSlider('s-hp','HP_BASE','v-hp');
+bindSlider('s-hr','HP_REGEN','v-hr');
 bindSlider('s-sp','SPAWN_PAN','v-sp');
 bindSlider('s-ad','ANT_DAMAGE','v-ad');
 bindSlider('s-xpb','XP_BASE','v-xpb');
@@ -2861,7 +3048,7 @@ function updateXpPreview() {
 updateXpPreview();
 
 /* Presets (localStorage) */
-const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','SPAWN_PAN','ANT_DAMAGE','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_MILESTONE','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
+const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','HP_REGEN','SPAWN_PAN','ANT_DAMAGE','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_MILESTONE','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
 function admSavePreset(slot) {
   const p={};
   for (const k of ADM_PRESET_KEYS) {
@@ -2956,7 +3143,9 @@ document.addEventListener('keydown', e => {
     case 'Escape':
       AudioEngine.click();
       if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
+      else if (mode.startsWith('shop-')) exitShopMode();
       else if (mode==='admin-place-npc') admToggleNpcPlace();
+      else if (mode==='admin-place-ant') admTogglePlaceAnt();
       else if (mode==='admin-move') { mode='idle'; cvs.style.cursor=''; adminMoveTargetId=null; }
       break;
     case '+': case '=':

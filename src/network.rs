@@ -2,12 +2,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use serde_json::{json, Value};
 
 use crate::config::{cfg, total_xp_for_level, calc_score, current_ms};
-use crate::fog::compute_fog_field;
+use crate::fog::{compute_fog_field_slice, PAD};
 use crate::world::World;
 
 const MAX_DIM: i32 = 800;
 
-fn get_palette(world: &World) -> Value {
+pub fn get_palette(world: &World) -> Value {
     let mut p = serde_json::Map::new();
     p.insert("0".to_string(), json!("#ffffff"));
     for (id, pl) in &world.players {
@@ -91,8 +91,10 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
         "antsAvail": p.ants_avail,
         "nextRefillMs": (p.next_refill as i64 - current_ms() as i64).max(0),
         "queen": queen_val,
-        "prestige": p.prestige,
-        "credits":  p.credits,
+        "prestige":  p.prestige,
+        "credits":   p.credits,
+        "defenders": p.defenders.len(),
+        "shield":    q.map(|q| q.shield).unwrap_or(0),
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
         "tick": world.tick,
@@ -115,7 +117,36 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
     }).to_string()
 }
 
-pub fn build_view_update(world: &World, player_id: u32, include_tiles: bool) -> Option<String> {
+/// One visible queen, snapshotted with the strings it needs so `finish_view` can run
+/// without touching the World.
+struct QueenLite {
+    qid: u32, x: i32, y: i32, size: u8, hp: i32, max_hp: i32, level: u16,
+    color: String, username: String, prestige: u32, shield: i32,
+    bubble_r: f64,
+    /// Always visible (own queen / admin) → no fog gate, and `bubbleR` is included.
+    reveal: bool,
+}
+
+/// A per-client viewport snapshot taken under the World read lock. Everything needed to
+/// serialize the frame lives here as owned data, so `finish_view` (fog transform + base64
+/// + JSON) can run on another thread with no lock held. See `snapshot_view`/`finish_view`.
+pub struct RawView {
+    x0: i32, y0: i32, w: usize, h: usize,
+    tick: u64,
+    include_tiles: bool,
+    player_id: u32,
+    is_admin: bool,
+    /// Padded (pw×ph) ownership slice for tile blob + fog; empty on ants-only frames.
+    pad: usize, pw: usize, ph: usize,
+    owners: Vec<u32>,
+    /// In-rect ants (id,x,y,dx,dy,owner,kind); fog visibility applied in `finish_view`.
+    ants: Vec<(u32, i32, i32, i8, i8, u32, u8)>,
+    queens: Vec<QueenLite>,
+}
+
+/// Phase A (under the World read lock): extract the minimal owned data for one client's
+/// viewport. Cheap relative to fog/base64/JSON — those happen in `finish_view`, unlocked.
+pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Option<RawView> {
     let p  = world.players.get(&player_id)?;
     let v  = p.view.as_ref()?;
     let ww = world.world_w as i32;
@@ -129,82 +160,128 @@ pub fn build_view_update(world: &World, player_id: u32, include_tiles: bool) -> 
     let y1 = y0 + h as i32;
     if w == 0 || h == 0 { return None; }
 
-    if !include_tiles {
-        // Ants-only frame: skip tile/fog computation.
-        // Client retains its cached fog for visibility decisions.
-        let ants: Vec<Value> = world.ants.iter()
-            .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
-            .map(|a| json!([a.id, a.x, a.y, a.dx, a.dy, a.owner]))
-            .collect();
-        return Some(json!({
-            "t": "view",
-            "x0": x0, "y0": y0, "w": w, "h": h,
-            "ants": ants,
-            "tick": world.tick,
-        }).to_string());
-    }
+    let is_admin = world.auth.is_admin_id(player_id);
 
-    // Build Uint16 tile snapshot
-    let mut tile_u16 = vec![0u16; w * h];
-    for yi in 0..h {
-        for xi in 0..w {
-            let pid = world.tiles.get((x0 as usize + xi) as u32, (y0 as usize + yi) as u32);
-            tile_u16[yi * w + xi] = pid.min(0xFFFF) as u16;
-        }
-    }
-    // Encode as little-endian bytes → base64
-    let tile_bytes: Vec<u8> = tile_u16.iter()
-        .flat_map(|&v| v.to_le_bytes())
+    // In-rect ants (fog filtering deferred to finish_view).
+    let ants: Vec<(u32, i32, i32, i8, i8, u32, u8)> = world.ants.iter()
+        .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
+        .map(|a| (a.id, a.x, a.y, a.dx, a.dy, a.owner, a.kind))
         .collect();
-    let tiles_b64 = B64.encode(&tile_bytes);
 
-    let fog = compute_fog_field(world, player_id, x0, y0, w, h);
+    // Tiles + fog ownership slice + queens only matter on tile frames.
+    let (pad, pw, ph, owners, queens) = if include_tiles {
+        let pad = PAD as usize;
+        let pw = w + 2 * pad;
+        let ph = h + 2 * pad;
+        let mut owners = vec![0u32; pw * ph];
+        for py in 0..ph {
+            let wy = y0 - pad as i32 + py as i32;
+            if wy < 0 || wy >= wh { continue; }
+            let row = py * pw;
+            for px in 0..pw {
+                let wx = x0 - pad as i32 + px as i32;
+                if wx < 0 || wx >= ww { continue; }
+                owners[row + px] = world.tiles.get(wx as u32, wy as u32);
+            }
+        }
+        let queens: Vec<QueenLite> = world.queens.iter()
+            .filter(|(_, q)| !q.dead)
+            .filter(|(_, q)| !((q.x + q.size as i32) < x0 || q.x > x1 || (q.y + q.size as i32) < y0 || q.y > y1))
+            .map(|(&qid, q)| {
+                let qp = world.players.get(&qid);
+                QueenLite {
+                    qid, x: q.x, y: q.y, size: q.size, hp: q.hp, max_hp: q.max_hp, level: q.level,
+                    color:    qp.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
+                    username: qp.map(|p| p.username.clone()).unwrap_or_else(|| "???".into()),
+                    prestige: qp.map(|p| p.prestige).unwrap_or(0),
+                    shield: q.shield,
+                    bubble_r: q.bubble_r,
+                    reveal: qid == player_id || is_admin,
+                }
+            })
+            .collect();
+        (pad, pw, ph, owners, queens)
+    } else {
+        (0, 0, 0, Vec::new(), Vec::new())
+    };
+
+    Some(RawView {
+        x0, y0, w, h, tick: world.tick, include_tiles, player_id, is_admin,
+        pad, pw, ph, owners, ants, queens,
+    })
+}
+
+/// Phase B (no lock held): turn a `RawView` into the JSON frame — fog distance transform
+/// on the local slice, fog-gated ant/queen visibility, base64, and JSON assembly.
+pub fn finish_view(raw: &RawView, palette: &Value) -> String {
+    if !raw.include_tiles {
+        // Ants-only frame: client keeps its cached fog for visibility decisions.
+        let ants: Vec<Value> = raw.ants.iter()
+            .map(|&(id, x, y, dx, dy, owner, kind)| json!([id, x, y, dx, dy, owner, kind]))
+            .collect();
+        return json!({
+            "t": "view",
+            "x0": raw.x0, "y0": raw.y0, "w": raw.w, "h": raw.h,
+            "ants": ants,
+            "tick": raw.tick,
+        }).to_string();
+    }
+
+    // Fog (admins see everything).
+    let fog: Vec<u8> = if raw.is_admin {
+        vec![0u8; raw.w * raw.h]
+    } else {
+        compute_fog_field_slice(&raw.owners, raw.pw, raw.ph, raw.pad, raw.w, raw.h, raw.player_id)
+    };
     let fog_b64 = B64.encode(&fog);
 
-    // Collect visible ants
-    let ants: Vec<Value> = world.ants.iter()
-        .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
-        .filter(|a| {
-            if a.owner == player_id { return true; }
-            let fi = (a.y - y0) as usize * w + (a.x - x0) as usize;
+    // Tile blob: inner w×h of the padded slice, little-endian u16 → base64.
+    let mut tile_bytes: Vec<u8> = Vec::with_capacity(raw.w * raw.h * 2);
+    for yi in 0..raw.h {
+        let row = (yi + raw.pad) * raw.pw + raw.pad;
+        for xi in 0..raw.w {
+            let v = raw.owners[row + xi].min(0xFFFF) as u16;
+            tile_bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    let tiles_b64 = B64.encode(&tile_bytes);
+
+    // Visible ants (own always; others only where fog is not full).
+    let ants: Vec<Value> = raw.ants.iter()
+        .filter(|&&(_, x, y, _, _, owner, _)| {
+            if owner == raw.player_id { return true; }
+            let fi = (y - raw.y0) as usize * raw.w + (x - raw.x0) as usize;
             fog.get(fi).copied().unwrap_or(100) < 100
         })
-        .map(|a| json!([a.id, a.x, a.y, a.dx, a.dy, a.owner]))
+        .map(|&(id, x, y, dx, dy, owner, kind)| json!([id, x, y, dx, dy, owner, kind]))
         .collect();
 
-    // Collect visible queens
-    let is_admin = world.auth.is_admin_id(player_id);
-    let queens: Vec<Value> = world.queens.iter()
-        .filter(|(_, q)| !q.dead)
-        .filter(|(_, q)| !((q.x + q.size as i32) < x0 || q.x > x1 || (q.y + q.size as i32) < y0 || q.y > y1))
-        .filter_map(|(&qid, q)| {
-            if qid != player_id && !is_admin {
-                let qi = ((q.y - y0).max(0) as usize) * w + ((q.x - x0).max(0) as usize);
+    // Visible queens.
+    let queens: Vec<Value> = raw.queens.iter()
+        .filter_map(|q| {
+            if !q.reveal {
+                let qi = ((q.y - raw.y0).max(0) as usize) * raw.w + ((q.x - raw.x0).max(0) as usize);
                 if fog.get(qi).copied().unwrap_or(100) >= 100 { return None; }
             }
-            let qp = world.players.get(&qid);
             let mut obj = json!({
-                "id": qid, "x": q.x, "y": q.y, "size": q.size,
+                "id": q.qid, "x": q.x, "y": q.y, "size": q.size,
                 "hp": q.hp, "maxHp": q.max_hp, "level": q.level,
-                "color":    qp.map(|p| p.color.as_str()).unwrap_or("#888"),
-                "username": qp.map(|p| p.username.as_str()).unwrap_or("???"),
-                "prestige": qp.map(|p| p.prestige).unwrap_or(0),
+                "color": q.color, "username": q.username, "prestige": q.prestige,
+                "shield": q.shield,
             });
-            if qid == player_id || is_admin {
-                obj["bubbleR"] = json!(q.bubble_r);
-            }
+            if q.reveal { obj["bubbleR"] = json!(q.bubble_r); }
             Some(obj)
         })
         .collect();
 
-    Some(json!({
+    json!({
         "t": "view",
-        "x0": x0, "y0": y0, "w": w, "h": h,
+        "x0": raw.x0, "y0": raw.y0, "w": raw.w, "h": raw.h,
         "tiles": tiles_b64,
         "fog":   fog_b64,
         "ants":  ants,
         "queens": queens,
-        "tick":  world.tick,
-        "palette": get_palette(world),
-    }).to_string())
+        "tick":  raw.tick,
+        "palette": palette.clone(),
+    }).to_string()
 }

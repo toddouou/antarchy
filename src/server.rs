@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
 use crate::config::cfg;
 use crate::handlers::handle_message;
-use crate::network::{build_leaderboard, build_player_info, build_view_update};
+use crate::network::{build_leaderboard, build_player_info, finish_view, get_palette, snapshot_view, RawView};
 use crate::simulation::tick_world;
 use crate::world::World;
 
@@ -260,11 +260,9 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             }
         }
 
-        // ---- Read-only viewport delivery ----
-        {
-            let w = world.blocking_read();
-            send_viewports(&w);
-        }
+        // Viewport delivery runs on its own OS thread (`viewport_loop`) so heavy tile/fog
+        // serialization can never eat into this tick's budget. Keeping this loop pure-tick
+        // is what makes the cadence rock-steady → smooth client-side ant interpolation.
 
         // Fixed-interval scheduler: sleep only if we finished early
         let tick_dur = Duration::from_micros(1_000_000 / cfg().tick_rate.max(1) as u64);
@@ -277,56 +275,109 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
     }
 }
 
-fn send_viewports(world: &World) {
-    // Pace delivery by wall-clock, not tick count, so cadence is constant no matter
-    // how fast the sim runs (admin speed buttons drive tick_rate up to 500 Hz).
-    //   ant frames  ≤ ~60 Hz — each carries the latest ant positions (1 step at 50 Hz)
-    //   tile frames ≤ ~10 Hz — expensive base64 tile+fog snapshot, only when dirty
-    let tr = cfg().tick_rate.max(1) as u64;
-    let ant_every  = (tr / 60).max(1);
-    let tile_every = (tr / 10).max(1);
-    let include_tiles = world.tick % tile_every == 0 && world.dirty_tick + tile_every >= world.tick;
-    let send_ants     = world.tick % ant_every == 0;
+/// One client's delivery work for a cycle. Senders are cloned under the read lock so the
+/// actual serialize+send (Phase B) needs no World access.
+struct ClientJob {
+    view_tx: Option<watch::Sender<Option<String>>>,
+    tx:      Option<mpsc::UnboundedSender<String>>,
+    raw:     Option<RawView>,
+    me:      Option<String>,
+}
 
-    // Skip per-player work when there is nothing to show (no tile update, and either
-    // it isn't an ant-frame tick or there are no ants to move).
-    if !include_tiles && (!send_ants || world.ants.is_empty()) {
-        if world.tick % 20 == 0 {
-            let lb = build_leaderboard(world);
-            world.broadcast(&lb);
+/// Viewport delivery loop — runs on its own OS thread, separate from `sim_loop`.
+///
+/// Each cycle is two phases:
+///   A. Under a **short** read lock: snapshot each client's viewport data + clone its
+///      channel senders (`snapshot_view`), plus the cheap `me`/leaderboard strings.
+///   B. With **no lock held**: fog transform + base64 + JSON (`finish_view`) in parallel,
+///      then push frames to the per-connection channels.
+///
+/// Because the expensive serialization is out of the lock and off the sim thread, a heavy
+/// tile frame can no longer delay a tick — the cadence stays steady, which is what keeps
+/// client-side ant interpolation smooth. Cadence is paced on the sim's tick counter:
+/// ant frames whenever the tick advances, tile frames ≤ ~10 Hz, `me` ~1 Hz, leaderboard
+/// every 20 ticks.
+pub fn viewport_loop(world: WorldState) {
+    let mut last_tick:      u64 = u64::MAX;
+    let mut last_tile_tick: u64 = 0;
+    let mut last_me_tick:   u64 = 0;
+    let mut last_lb_tick:   u64 = 0;
+
+    loop {
+        let cycle_start = Instant::now();
+
+        // ---- Phase A: snapshot under a short read lock ----
+        let batch: Option<(Vec<ClientJob>, Arc<serde_json::Value>)> = {
+            let w = world.blocking_read();
+            let tick = w.tick;
+            if tick == last_tick {
+                None // sim hasn't advanced since last delivery — nothing new to send
+            } else {
+                let tr = cfg().tick_rate.max(1) as u64;
+                let tile_every = (tr / 10).max(1);
+                let include_tiles = tick.saturating_sub(last_tile_tick) >= tile_every
+                    && w.dirty_tick + tile_every >= tick;
+                let any_ants   = !w.ants.is_empty();
+                let send_me    = tick.saturating_sub(last_me_tick) >= tr;
+                let lb_due     = tick.saturating_sub(last_lb_tick) >= 20;
+                let do_clients = include_tiles || any_ants;
+
+                last_tick = tick;
+
+                // Leaderboard is cheap (O(queens)); keep it under the lock.
+                if lb_due {
+                    let lb = build_leaderboard(&w);
+                    w.broadcast(&lb);
+                    last_lb_tick = tick;
+                }
+
+                if !do_clients && !send_me {
+                    None
+                } else {
+                    if include_tiles { last_tile_tick = tick; }
+                    if send_me       { last_me_tick = tick; }
+
+                    let pids: Vec<u32> = w.players.iter()
+                        .filter(|(_, p)| !p.npc && (p.tx.is_some() || p.view_tx.is_some()))
+                        .map(|(&id, _)| id)
+                        .collect();
+                    let palette = Arc::new(get_palette(&w));
+                    let wref: &World = &w;
+                    let jobs: Vec<ClientJob> = pids.par_iter().map(|&pid| {
+                        let p = wref.players.get(&pid);
+                        ClientJob {
+                            view_tx: p.and_then(|p| p.view_tx.clone()),
+                            tx:      p.and_then(|p| p.tx.clone()),
+                            raw:     if do_clients { snapshot_view(wref, pid, include_tiles) } else { None },
+                            me:      if send_me { Some(build_player_info(wref, pid)) } else { None },
+                        }
+                    }).collect();
+                    Some((jobs, palette))
+                }
+            }
+        };
+
+        // ---- Phase B: serialize + send, no lock held ----
+        if let Some((jobs, palette)) = batch {
+            let frames: Vec<Option<String>> = jobs.par_iter()
+                .map(|job| job.raw.as_ref().map(|r| finish_view(r, palette.as_ref())))
+                .collect();
+            for (job, frame) in jobs.iter().zip(frames) {
+                // Tile/ant frame → viewport watch slot (latest-wins, never backlogged)
+                if let Some(frame) = frame {
+                    if let Some(vtx) = &job.view_tx { let _ = vtx.send(Some(frame)); }
+                }
+                // me update → priority channel
+                if let Some(me) = &job.me {
+                    if let Some(tx) = &job.tx { let _ = tx.send(me.clone()); }
+                }
+            }
         }
-        return;
-    }
 
-    // Full me update once per second (wall-clock); HP/level sync from viewport queens
-    // handles the rest.
-    let send_me = world.tick % tr == 0;
-
-    let pids: Vec<u32> = world.players.iter()
-        .filter(|(_, p)| !p.npc && (p.tx.is_some() || p.view_tx.is_some()))
-        .map(|(&id, _)| id)
-        .collect();
-
-    // Build viewport updates in parallel.
-    let views: Vec<(u32, Option<String>)> = pids.par_iter()
-        .map(|&pid| (pid, build_view_update(world, pid, include_tiles)))
-        .collect();
-
-    for (pid, view) in views {
-        let Some(p) = world.players.get(&pid) else { continue };
-        // Tile+fog snapshot → viewport watch slot (latest-wins, no backlog possible)
-        if let Some(v) = view {
-            if let Some(vtx) = &p.view_tx { let _ = vtx.send(Some(v)); }
-        }
-        // me update → priority channel (small, ordered, at reduced rate)
-        if send_me {
-            if let Some(tx) = &p.tx { let _ = tx.send(build_player_info(world, pid)); }
-        }
-    }
-
-    if world.tick % 20 == 0 {
-        let lb = build_leaderboard(world);
-        world.broadcast(&lb);
+        // Pace at up to ~120 Hz; never busy-spin when the sim is idle/slow.
+        let el = cycle_start.elapsed();
+        let min_cycle = Duration::from_millis(8);
+        if el < min_cycle { std::thread::sleep(min_cycle - el); }
     }
 }
 

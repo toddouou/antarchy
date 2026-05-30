@@ -93,6 +93,28 @@ impl TileMap {
         self.counts.clear();
     }
 
+    /// Clear every tile owned by `owner` (set to 0 / unclaimed) and drop the owner's
+    /// count. Used when a queen dies — its territory is forfeited and turns blank.
+    /// `remaining` lets later chunks skip the cell scan once all of the owner's tiles
+    /// have been found; emptied chunks are dropped.
+    pub fn clear_owner(&mut self, owner: u32) {
+        if owner == 0 { return; }
+        let mut remaining = self.counts.get(&owner).copied().unwrap_or(0);
+        if remaining <= 0 { self.counts.remove(&owner); return; }
+        self.chunks.retain(|_, chunk| {
+            if remaining > 0 && chunk.occupied > 0 {
+                let mut zeroed: u32 = 0;
+                for cell in chunk.cells.iter_mut() {
+                    if *cell == owner { *cell = 0; zeroed += 1; }
+                }
+                chunk.occupied -= zeroed;
+                remaining -= zeroed as i64;
+            }
+            chunk.occupied != 0
+        });
+        self.counts.remove(&owner);
+    }
+
     #[allow(dead_code)]
     pub fn total_tiles(&self) -> usize {
         self.chunks.values().map(|c| c.occupied as usize).sum()

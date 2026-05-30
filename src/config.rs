@@ -12,6 +12,25 @@ pub const HUES: &[&str] = &[
 
 pub const ENEMY_HUES: &[&str] = &["#9b3027","#6b4423","#5a4e7c","#3d5a80","#52796f"];
 
+// ---- Shop / credit economy -------------------------------------------------
+/// Credits are earned only by killing an enemy queen (+1 each), and never exceed this.
+pub const CREDIT_CAP: u64 = 100;
+// Shop prices (credits)
+pub const PRICE_HIGHWAY:  u64 = 10;
+pub const PRICE_RELOCATE: u64 = 20;
+pub const PRICE_DEFENDER: u64 = 1;
+pub const PRICE_ALLIANCE: u64 = 80;
+pub const PRICE_BRUTE:    u64 = 20;
+pub const PRICE_SHIELD:   u64 = 10;
+// Durations (ms)
+pub const SHIELD_MS:   u64 = 12 * 3600 * 1000;   // 12h queen shield
+pub const DEFENDER_MS: u64 = 3600 * 1000;        // 1h defender decay
+// Tunables
+pub const DEFENDER_RANGE: i32 = 10;   // enemy worker proximity (tiles) that triggers a defender
+pub const HIGHWAY_LEN:    i32 = 150;  // diagonal road length (tiles)
+pub const HIGHWAY_NEAR:   i32 = 30;   // start must be within this many tiles of friendly territory
+pub const BRUTE_DMG_MULT: f32 = 3.0;  // brute queen-damage multiplier
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
@@ -41,6 +60,8 @@ pub struct Config {
     pub xp_highway_tick: f64,
     pub levelup_ant_grant: i32,
     pub ant_damage: f64,
+    /// Passive queen HP regenerated per second while below max. 0 = no regen.
+    pub hp_regen: f64,
 }
 
 impl Default for Config {
@@ -73,6 +94,7 @@ impl Default for Config {
             xp_highway_tick:   1.0,
             levelup_ant_grant: 1,
             ant_damage:        1.0,
+            hp_regen:          0.0,
         }
     }
 }
@@ -80,7 +102,15 @@ impl Default for Config {
 static GLOBAL_CFG: OnceLock<RwLock<Config>> = OnceLock::new();
 
 fn lock() -> &'static RwLock<Config> {
-    GLOBAL_CFG.get_or_init(|| RwLock::new(Config::default()))
+    GLOBAL_CFG.get_or_init(|| {
+        let mut c = Config::default();
+        // Optional PORT env override — lets a second instance run for testing without
+        // disturbing a server already on the default port. Defaults to 8080 in prod.
+        if let Ok(p) = std::env::var("PORT") {
+            if let Ok(p) = p.parse::<u16>() { c.port = p; }
+        }
+        RwLock::new(c)
+    })
 }
 
 pub fn cfg() -> RwLockReadGuard<'static, Config> {
@@ -107,6 +137,7 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("levelup_ant_grant", 0.0,       100.0),
     ("spawn_pan",        10.0,    10_000.0),
     ("ant_damage",        0.1,        50.0),
+    ("hp_regen",          0.0,       100.0),
 ];
 
 /// Returns the clamped value, or None if key is unknown.
@@ -132,6 +163,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "levelup_ant_grant" => c.levelup_ant_grant  = v as i32,
         "spawn_pan"         => c.spawn_pan          = v,
         "ant_damage"        => c.ant_damage         = v,
+        "hp_regen"          => c.hp_regen           = v,
         _ => return None,
     }
     Some(v)
@@ -155,6 +187,7 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
         ("levelup_ant_grant", d.levelup_ant_grant as f64),
         ("spawn_pan",         d.spawn_pan),
         ("ant_damage",        d.ant_damage),
+        ("hp_regen",          d.hp_regen),
     ];
     let mut out = Vec::with_capacity(vals.len());
     let mut c = cfg_write();
@@ -173,6 +206,7 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     c.levelup_ant_grant  = d.levelup_ant_grant;
     c.spawn_pan          = d.spawn_pan;
     c.ant_damage         = d.ant_damage;
+    c.hp_regen           = d.hp_regen;
     drop(c);
     for &(k, v) in vals { out.push((k, v)); }
     out

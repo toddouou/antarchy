@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::config::{
     cfg, queen_size_for_level, level_for_xp, current_ms, ENEMY_HUES,
+    BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE,
 };
 use crate::world::{Ant, Player, Queen, QueenHit, World, XpGrant};
 
@@ -55,11 +56,6 @@ pub fn flush_xp(world: &mut World) {
             }
         };
 
-        // Award 1 credit per XP point earned (persists through prestige)
-        if let Some(p) = world.players.get_mut(&g.player_id) {
-            p.credits += g.amount.max(0.0) as u64;
-        }
-
         if let Some((old_lvl, new_lvl)) = level_up_result {
             let ants_gained = (new_lvl - old_lvl) as i32 * c.levelup_ant_grant;
             if let Some(p) = world.players.get_mut(&g.player_id) {
@@ -84,13 +80,27 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         let Some(q) = world.queens.get_mut(&loser_id) else { return };
         if q.dead { return; }
         q.dead = true;
+        q.cached_tiles = 0;
         (q.x, q.y)
     };
     world.queen_map_dirty = true;
 
-    // Prestige: increment on each queen death
+    // Forfeit all territory — the fallen queen's tiles turn blank, so a respawn (or any
+    // future queen for this player) starts from zero tiles.
+    world.tiles.clear_owner(loser_id);
+    world.dirty_tick = world.tick;
+
+    // Prestige: increment on each queen death. Real players also lose their standing
+    // army — workers reset to the starter count and the daily timer restarts, so no
+    // refill arrives until tomorrow. (Existing live ants are removed below.)
+    let daily = cfg().daily_ants;
+    let now = current_ms();
     if let Some(p) = world.players.get_mut(&loser_id) {
         p.prestige += 1;
+        if !p.npc {
+            p.ants_avail  = daily;
+            p.next_refill = now + 24 * 3600 * 1000;
+        }
     }
 
     let near_msg = json!({"t":"queen-killed","x":qx,"y":qy}).to_string();
@@ -103,6 +113,9 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
 
     if let Some(kid) = killer_id {
         if let Some(kq) = world.queens.get_mut(&kid) { kq.kills += 1; }
+        if let Some(kp) = world.players.get_mut(&kid) {
+            kp.credits = (kp.credits + 1).min(CREDIT_CAP);
+        }
         let kill_xp = cfg().xp_kill;
         award_xp(world, kid, kill_xp, "kill", qx, qy);
         flush_xp(world);
@@ -173,6 +186,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         hp: 100, max_hp: 100, level: 1, xp: 0.0, kills: 0,
         bubble_r, last_attacker: None, dead: false,
         tiles_ever_held: 0, cached_tiles: 0, npc: true,
+        shield: 0, shield_expiry: None,
     });
     world.players.insert(id, Player {
         id, username: format!("NPC_{id}"), color: hue,
@@ -180,6 +194,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
         npc: true, view: None, tx: None, view_tx: None, conn_gen: 0,
         prestige: 0, credits: 0, last_sent_dirty: 0,
+        defenders: Vec::new(),
     });
     world.queen_map_dirty = true;
 
@@ -237,6 +252,7 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 1: Plan moves — Rayon parallel, no Mutex, fold/reduce for accumulation
     // =========================================================================
+    let is_even = world.tick % 2 == 0;
     let (hits, xp_grants) = {
         let tiles     = &world.tiles;
         let queen_map = &world.queen_map;
@@ -245,6 +261,13 @@ pub fn tick_world(world: &mut World) {
             .fold(
                 || (Vec::<QueenHit>::new(), Vec::<XpGrant>::new()),
                 |(mut hits, mut xp), ant| {
+                    // Brute ants only move on even ticks
+                    if ant.kind == 1 && !is_even {
+                        ant._nx = ant.x; ant._ny = ant.y;
+                        ant._ndx = ant.dx; ant._ndy = ant.dy;
+                        return (hits, xp);
+                    }
+
                     let cur = tiles.get(ant.x as u32, ant.y as u32);
 
                     let (mut ndx, mut ndy) = if cur == 0 {
@@ -264,16 +287,39 @@ pub fn tick_world(world: &mut World) {
                         ny = (ant.y + ndy as i32).clamp(0, wh - 1);
                     }
 
-                    let dest_key = ny as u64 * ww_u64 + nx as u64;
-                    if let Some(&queen_id) = queen_map.get(&dest_key) {
-                        if queen_id != ant.owner {
-                            hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false });
-                            xp.push(XpGrant { player_id: ant.owner, amount: 0.5, reason: "hit", x: ant.x, y: ant.y });
-                        } else {
-                            hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: true });
+                    if ant.kind == 1 {
+                        // Brute: check 2×2 destination block; deduplicate per queen
+                        let mut brute_hit = false;
+                        let mut hit_queens: Vec<u32> = Vec::new();
+                        for bdy in 0i32..2 {
+                            for bdx in 0i32..2 {
+                                let dest_key = (ny + bdy) as u64 * ww_u64 + (nx + bdx) as u64;
+                                if let Some(&queen_id) = queen_map.get(&dest_key) {
+                                    if queen_id != ant.owner && !hit_queens.contains(&queen_id) {
+                                        hit_queens.push(queen_id);
+                                        hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false, dmg_mult: BRUTE_DMG_MULT });
+                                        xp.push(XpGrant { player_id: ant.owner, amount: 0.5, reason: "hit", x: ant.x, y: ant.y });
+                                    }
+                                    brute_hit = true;
+                                }
+                            }
                         }
-                        (ndx, ndy) = turn_cw(ndx, ndy);
-                        nx = ant.x; ny = ant.y;
+                        if brute_hit {
+                            (ndx, ndy) = turn_cw(ndx, ndy);
+                            nx = ant.x; ny = ant.y;
+                        }
+                    } else {
+                        let dest_key = ny as u64 * ww_u64 + nx as u64;
+                        if let Some(&queen_id) = queen_map.get(&dest_key) {
+                            if queen_id != ant.owner {
+                                hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false, dmg_mult: 1.0 });
+                                xp.push(XpGrant { player_id: ant.owner, amount: 0.5, reason: "hit", x: ant.x, y: ant.y });
+                            } else {
+                                hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: true, dmg_mult: 1.0 });
+                            }
+                            (ndx, ndy) = turn_cw(ndx, ndy);
+                            nx = ant.x; ny = ant.y;
+                        }
                     }
 
                     ant._ndx = ndx; ant._ndy = ndy;
@@ -304,7 +350,7 @@ pub fn tick_world(world: &mut World) {
             }
             world.xp_queue.push(XpGrant { player_id: hit.attacker, amount: heal_xp, reason: "heal", x: 0, y: 0 });
         } else {
-            *damage_map.entry(hit.queen_id).or_insert(0.0) += c.ant_damage;
+            *damage_map.entry(hit.queen_id).or_insert(0.0) += c.ant_damage * hit.dmg_mult as f64;
             last_attacker_map.insert(hit.queen_id, hit.attacker);
         }
     }
@@ -314,7 +360,15 @@ pub fn tick_world(world: &mut World) {
         let (qx, qy) = {
             let Some(q) = world.queens.get_mut(&queen_id) else { continue };
             if q.dead { continue; }
-            q.hp = (q.hp as f64 - total_dmg).max(0.0) as i32;
+            // Absorb from shield before reducing HP
+            let remaining = if q.shield > 0 {
+                let absorbed = (total_dmg as i32).min(q.shield);
+                q.shield -= absorbed;
+                total_dmg - absorbed as f64
+            } else {
+                total_dmg
+            };
+            q.hp = (q.hp as f64 - remaining).max(0.0) as i32;
             q.last_attacker = last_attacker_map.get(&queen_id).copied();
             (q.x, q.y)
         };
@@ -373,20 +427,36 @@ pub fn tick_world(world: &mut World) {
     for ant in world.ants.iter_mut() {
         let cur_key = ant.y as u64 * ww_u64 + ant.x as u64;
         if !world.queen_map.contains_key(&cur_key) {
-            let cur = world.tiles.get(ant.x as u32, ant.y as u32);
-            if cur == 0 {
-                world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
-                ant.highway_ticks += 1;
-                if ant.highway_ticks >= 3 {
-                    world.xp_queue.push(XpGrant { player_id: ant.owner, amount: highway_xp, reason: "highway", x: ant.x, y: ant.y });
-                    ant.highway_ticks = 0;
+            if ant.kind == 1 {
+                // Brute: paint 2×2 block on even ticks only; never erase own tiles
+                if is_even {
+                    for bdy in 0i32..2 {
+                        for bdx in 0i32..2 {
+                            let bx = (ant.x + bdx) as u32;
+                            let by = (ant.y + bdy) as u32;
+                            if world.tiles.get(bx, by) != ant.owner {
+                                world.tiles.set(bx, by, ant.owner);
+                            }
+                        }
+                    }
                 }
-            } else if cur == ant.owner {
-                world.tiles.set(ant.x as u32, ant.y as u32, 0);
                 ant.highway_ticks = 0;
             } else {
-                world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
-                ant.highway_ticks = 0;
+                let cur = world.tiles.get(ant.x as u32, ant.y as u32);
+                if cur == 0 {
+                    world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
+                    ant.highway_ticks += 1;
+                    if ant.highway_ticks >= 3 {
+                        world.xp_queue.push(XpGrant { player_id: ant.owner, amount: highway_xp, reason: "highway", x: ant.x, y: ant.y });
+                        ant.highway_ticks = 0;
+                    }
+                } else if cur == ant.owner {
+                    world.tiles.set(ant.x as u32, ant.y as u32, 0);
+                    ant.highway_ticks = 0;
+                } else {
+                    world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
+                    ant.highway_ticks = 0;
+                }
             }
         }
         ant.dx = ant._ndx; ant.dy = ant._ndy;
@@ -498,11 +568,56 @@ pub fn tick_world(world: &mut World) {
     }
 
     // =========================================================================
-    // Phase 8: Passive queen HP regen (1 HP per 10 ticks)
+    // Phase 8: Passive queen HP regen (c.hp_regen HP per second) + shield expiry
     // =========================================================================
-    if world.tick % 10 == 0 {
+    let ticks_per_sec = c.tick_rate.max(1) as u64;
+    if c.hp_regen > 0.0 && world.tick % ticks_per_sec == 0 {
+        let gain = c.hp_regen.round() as i32;
+        if gain > 0 {
+            for q in world.queens.values_mut() {
+                if !q.dead && q.hp < q.max_hp { q.hp = (q.hp + gain).min(q.max_hp); }
+            }
+        }
+    }
+    if world.tick % 50 == 0 {
+        let now = current_ms();
         for q in world.queens.values_mut() {
-            if !q.dead && q.hp < q.max_hp { q.hp = (q.hp + 1).min(q.max_hp); }
+            if let Some(exp) = q.shield_expiry {
+                if now >= exp { q.shield = 0; q.shield_expiry = None; }
+            }
+        }
+    }
+
+    // =========================================================================
+    // Phase 8b: Defender trigger (throttled every 25 ticks)
+    // =========================================================================
+    if world.tick % 25 == 0 && !world.ants.is_empty() {
+        let now = current_ms();
+        let def_range = DEFENDER_RANGE;
+        let def_lifespan = c.lifespan;
+        let player_ids: Vec<u32> = world.players.keys().copied().collect();
+        for def_pid in player_ids {
+            let is_npc = world.players.get(&def_pid).map(|p| p.npc).unwrap_or(true);
+            if is_npc { continue; }
+            let has_defenders = world.players.get(&def_pid).map(|p| !p.defenders.is_empty()).unwrap_or(false);
+            if !has_defenders { continue; }
+            let queen_data = world.queens.get(&def_pid)
+                .filter(|q| !q.dead)
+                .map(|q| (q.x + q.size as i32 / 2, q.y + q.size as i32 / 2));
+            let Some((qcx, qcy)) = queen_data else { continue };
+            world.players.get_mut(&def_pid).unwrap().defenders.retain(|&exp| exp > now);
+            if world.players.get(&def_pid).map(|p| p.defenders.is_empty()).unwrap_or(true) { continue; }
+            let enemy_near = world.ants.iter().any(|a| {
+                a.owner != def_pid
+                    && (a.x - qcx).abs() <= def_range
+                    && (a.y - qcy).abs() <= def_range
+            });
+            if !enemy_near { continue; }
+            world.players.get_mut(&def_pid).unwrap().defenders.remove(0);
+            let ax = (qcx + 1).min(ww - 1);
+            world.ants.push(Ant::new(rand::random::<u32>(), def_pid, ax, qcy, 1, 0, def_lifespan));
+            let ev = json!({"t":"event","msg":"DEFENDER ACTIVATED!"}).to_string();
+            world.send_to(def_pid, ev);
         }
     }
 

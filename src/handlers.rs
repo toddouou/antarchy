@@ -164,6 +164,7 @@ pub fn handle_message(
             x, y, size, hp: max_hp, max_hp, level: 1, xp: 0.0, kills: 0,
             bubble_r, last_attacker: None, dead: false,
             tiles_ever_held: 0, cached_tiles: 0, npc: false,
+            shield: 0, shield_expiry: None,
         });
         world.queen_map_dirty = true;
         world.dirty_tick = world.tick; // tiles are about to change
@@ -502,16 +503,41 @@ pub fn handle_message(
         return;
     }
 
+    // ---- Admin place ant for a target player (override) ----
+    if t == "admin-place-ant" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let target_id = msg["targetId"].as_u64().unwrap_or(0) as u32;
+        // The owner id drives palette color / rendering; a live queen is not required.
+        if !world.players.contains_key(&target_id) { return; }
+        let x = msg["x"].as_i64().unwrap_or(-1) as i32;
+        let y = msg["y"].as_i64().unwrap_or(-1) as i32;
+        let ww = world.world_w as i32; let wh = world.world_h as i32;
+        if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
+        // Default direction up; no bubble / territory / ants_avail restrictions (admin override).
+        let (adx, ady): (i8, i8) = (0, -1);
+        // Skip placement if an identical ant (same owner, position, direction) already exists —
+        // two stacked same-direction ants cancel each other's painting and run straight forever.
+        if world.ants.iter().any(|a| a.owner == target_id && a.x == x && a.y == y && a.dx == adx && a.dy == ady) {
+            return;
+        }
+        let lifespan = cfg().lifespan;
+        let ant_id = rand::random::<u32>();
+        world.ants.push(Ant::new(ant_id, target_id, x, y, adx, ady, lifespan));
+        world.dirty_tick = world.tick; // tiles are about to change
+        let _ = tx.send(json!({"t":"ant-placed","x":x,"y":y}).to_string());
+        return;
+    }
+
     // ---- Admin player list ----
     if t == "admin-player-list" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
         let players: Vec<serde_json::Value> = world.players.iter()
-            .filter(|(_, p)| !p.npc)
             .map(|(id, p)| {
                 let q = world.queens.get(id);
                 json!({
                     "id":       id,
                     "username": p.username,
+                    "npc":      p.npc,
                     "online":   p.tx.is_some(),
                     "level":    q.map(|q| q.level).unwrap_or(0),
                     "tiles":    q.map(|q| q.cached_tiles).unwrap_or(0),
@@ -526,6 +552,181 @@ pub fn handle_message(
             })
             .collect();
         let _ = tx.send(json!({"t":"admin-player-list","players":players}).to_string());
+        return;
+    }
+
+    // ---- Shop buy ----
+    if t == "shop-buy" {
+        use crate::config::{
+            PRICE_HIGHWAY, PRICE_RELOCATE, PRICE_DEFENDER,
+            PRICE_BRUTE, PRICE_SHIELD, SHIELD_MS, DEFENDER_MS,
+            HIGHWAY_LEN, HIGHWAY_NEAR,
+        };
+
+        let item = msg["item"].as_str().unwrap_or("").to_string();
+
+        // Alliance is WIP — no charge
+        if item == "alliance" {
+            let _ = tx.send(json!({"t":"event","msg":"Alliances — coming soon!"}).to_string());
+            return;
+        }
+
+        let credits = world.players.get(&pid).map(|p| p.credits).unwrap_or(0);
+        let price: u64 = match item.as_str() {
+            "highway"  => PRICE_HIGHWAY,
+            "relocate" => PRICE_RELOCATE,
+            "defender" => PRICE_DEFENDER,
+            "brute"    => PRICE_BRUTE,
+            "shield"   => PRICE_SHIELD,
+            _ => { let _ = tx.send(err("Unknown item")); return; }
+        };
+        if credits < price { let _ = tx.send(err("Not enough credits")); return; }
+
+        match item.as_str() {
+            "highway" => {
+                let queen_alive = world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false);
+                if !queen_alive { let _ = tx.send(err("Need a live queen")); return; }
+                let x   = msg["x"].as_i64().unwrap_or(-1) as i32;
+                let y   = msg["y"].as_i64().unwrap_or(-1) as i32;
+                let vdx = msg["dx"].as_i64().unwrap_or(1) as i8;
+                let vdy = msg["dy"].as_i64().unwrap_or(1) as i8;
+                let ww = world.world_w as i32; let wh = world.world_h as i32;
+                if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
+                if world.tiles.get(x as u32, y as u32) != 0 { let _ = tx.send(err("Start on a white tile")); return; }
+                let hn = HIGHWAY_NEAR;
+                let mut near_friendly = false;
+                'near: for dy in -hn..=hn {
+                    for dx in -hn..=hn {
+                        let tx2 = x + dx; let ty2 = y + dy;
+                        if tx2 < 0 || ty2 < 0 || tx2 >= ww || ty2 >= wh { continue; }
+                        if world.tiles.get(tx2 as u32, ty2 as u32) == pid { near_friendly = true; break 'near; }
+                    }
+                }
+                if !near_friendly { let _ = tx.send(err("Too far from your territory")); return; }
+                let adx: i8 = if vdx >= 0 { 1 } else { -1 };
+                let ady: i8 = if vdy >= 0 { 1 } else { -1 };
+                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
+                let c = cfg(); let lifespan = c.lifespan; drop(c);
+                let mut cx = x; let mut cy = y; let mut painted = 0u32;
+                for _ in 0..HIGHWAY_LEN {
+                    if cx < 0 || cy < 0 || cx >= ww || cy >= wh { break; }
+                    if world.tiles.get(cx as u32, cy as u32) == 0 {
+                        world.tiles.set(cx as u32, cy as u32, pid);
+                        painted += 1;
+                    }
+                    cx += adx as i32; cy += ady as i32;
+                }
+                let tip_x = (cx - adx as i32).clamp(0, ww - 1);
+                let tip_y = (cy - ady as i32).clamp(0, wh - 1);
+                world.ants.push(Ant::new(rand::random::<u32>(), pid, tip_x, tip_y, adx, ady, lifespan));
+                world.dirty_tick = world.tick;
+                let _ = tx.send(json!({"t":"shop-ok","item":"highway","painted":painted}).to_string());
+            }
+            "relocate" => {
+                let old_pos = world.queens.get(&pid).filter(|q| !q.dead).map(|q| (q.x, q.y, q.size));
+                let Some((ox, oy, sz)) = old_pos else { let _ = tx.send(err("Need a live queen")); return; };
+                let x = msg["x"].as_i64().unwrap_or(-1) as i32;
+                let y = msg["y"].as_i64().unwrap_or(-1) as i32;
+                let c = cfg(); let ww = world.world_w as i32; let wh = world.world_h as i32;
+                if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 { let _ = tx.send(err("Out of bounds")); return; }
+                let mut too_close = false;
+                for (&qid, q) in world.queens.iter().filter(|(_, q)| !q.dead) {
+                    if qid == pid { continue; }
+                    let ddx = q.x + q.size as i32 / 2 - x;
+                    let ddy = q.y + q.size as i32 / 2 - y;
+                    if ((ddx*ddx + ddy*ddy) as f64).sqrt() < q.bubble_r { too_close = true; break; }
+                }
+                drop(c);
+                if too_close { let _ = tx.send(err("Too close to another queen")); return; }
+                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
+                for dy in 0..sz as i32 {
+                    for dx in 0..sz as i32 {
+                        if world.tiles.get((ox+dx) as u32, (oy+dy) as u32) == pid {
+                            world.tiles.set((ox+dx) as u32, (oy+dy) as u32, 0);
+                        }
+                    }
+                }
+                if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; }
+                for dy in 0..sz as i32 {
+                    for dx in 0..sz as i32 { world.tiles.set((x+dx) as u32, (y+dy) as u32, pid); }
+                }
+                world.queen_map_dirty = true; world.dirty_tick = world.tick;
+                let _ = tx.send(json!({"t":"shop-ok","item":"relocate","x":x,"y":y}).to_string());
+            }
+            "defender" => {
+                let queen_alive = world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false);
+                if !queen_alive { let _ = tx.send(err("Need a live queen")); return; }
+                let expiry = current_ms() + DEFENDER_MS;
+                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; p.defenders.push(expiry); }
+                let _ = tx.send(json!({"t":"shop-ok","item":"defender"}).to_string());
+            }
+            "brute" => {
+                let queen_data = world.queens.get(&pid).filter(|q| !q.dead)
+                    .map(|q| (q.x, q.y, q.size, q.bubble_r));
+                let Some((qx, qy, qs, bubble_r)) = queen_data else { let _ = tx.send(err("Need a live queen")); return; };
+                let x   = msg["x"].as_i64().unwrap_or(-1) as i32;
+                let y   = msg["y"].as_i64().unwrap_or(-1) as i32;
+                let vdx = msg["dx"].as_i64().unwrap_or(0) as i8;
+                let vdy = msg["dy"].as_i64().unwrap_or(-1) as i8;
+                let ww = world.world_w as i32; let wh = world.world_h as i32;
+                if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
+                world.get_queen_map();
+                if world.queen_map.contains_key(&world.cell_key(x, y)) { let _ = tx.send(err("Cannot place on a queen")); return; }
+                let dxq = x - (qx + qs as i32/2); let dyq = y - (qy + qs as i32/2);
+                let in_bubble = ((dxq*dxq+dyq*dyq) as f64).sqrt() <= bubble_r;
+                let tile = world.tiles.get(x as u32, y as u32);
+                if in_bubble { if tile != 0 && tile != pid { let _ = tx.send(err("Enemy tile inside bubble")); return; } }
+                else { if tile != pid { let _ = tx.send(err("Place inside your bubble or on your territory")); return; } }
+                const DIRS: [(i8,i8); 4] = [(0,-1),(1,0),(0,1),(-1,0)];
+                let (adx, ady) = DIRS.iter().copied().find(|&(a,b)| a==vdx && b==vdy).unwrap_or((0,-1));
+                let c = cfg(); let lifespan = c.lifespan; drop(c);
+                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
+                world.ants.push(crate::world::Ant::new_kind(rand::random::<u32>(), pid, x, y, adx, ady, lifespan, 1));
+                world.dirty_tick = world.tick;
+                let _ = tx.send(json!({"t":"shop-ok","item":"brute","x":x,"y":y}).to_string());
+            }
+            "shield" => {
+                let queen_alive = world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false);
+                if !queen_alive { let _ = tx.send(err("Need a live queen")); return; }
+                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
+                let now = current_ms();
+                if let Some(q) = world.queens.get_mut(&pid) {
+                    q.shield = q.max_hp;
+                    q.shield_expiry = Some(now + SHIELD_MS);
+                }
+                let _ = tx.send(json!({"t":"shop-ok","item":"shield"}).to_string());
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // ---- Admin give credits ----
+    if t == "admin-give-credits" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
+        let amount = msg["amount"].as_u64().unwrap_or(0);
+        if let Some(tp) = world.players.get_mut(&tid) {
+            tp.credits = (tp.credits + amount).min(crate::config::CREDIT_CAP);
+            let new_cr = tp.credits;
+            if let Some(ttx) = &tp.tx {
+                let _ = ttx.send(json!({"t":"event","msg":format!("+{amount} CREDITS (ADMIN) · total {new_cr}")}).to_string());
+            }
+        }
+        return;
+    }
+
+    // ---- Admin set credits ----
+    if t == "admin-set-credits" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
+        let amount = msg["amount"].as_u64().unwrap_or(0).min(crate::config::CREDIT_CAP);
+        if let Some(tp) = world.players.get_mut(&tid) {
+            tp.credits = amount;
+            if let Some(ttx) = &tp.tx {
+                let _ = ttx.send(json!({"t":"event","msg":format!("CREDITS SET TO {amount} (ADMIN)")}).to_string());
+            }
+        }
         return;
     }
 
@@ -569,6 +770,7 @@ fn create_or_reconnect_player(
             conn_gen: 1,
             prestige: 0, credits: 0,
             last_sent_dirty: 0,
+            defenders: Vec::new(),
         });
         println!("[connect] {username} ({})", id);
     }

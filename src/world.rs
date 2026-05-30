@@ -19,6 +19,9 @@ pub struct Ant {
     pub age:           u32,
     pub lifespan:      u32,
     pub highway_ticks: u8,
+    /// 0 = normal worker, 1 = brute (2×2, slow, no self-erase, heavy damage)
+    #[serde(default)]
+    pub kind:          u8,
     #[serde(skip)]
     pub _nx: i32,
     #[serde(skip)]
@@ -31,7 +34,10 @@ pub struct Ant {
 
 impl Ant {
     pub fn new(id: u32, owner: u32, x: i32, y: i32, dx: i8, dy: i8, lifespan: u32) -> Self {
-        Ant { id, owner, x, y, dx, dy, age: 0, lifespan, highway_ticks: 0,
+        Ant::new_kind(id, owner, x, y, dx, dy, lifespan, 0)
+    }
+    pub fn new_kind(id: u32, owner: u32, x: i32, y: i32, dx: i8, dy: i8, lifespan: u32, kind: u8) -> Self {
+        Ant { id, owner, x, y, dx, dy, age: 0, lifespan, highway_ticks: 0, kind,
               _nx: x, _ny: y, _ndx: dx, _ndy: dy }
     }
 }
@@ -55,6 +61,12 @@ pub struct Queen {
     #[serde(default)]
     pub cached_tiles:   u64,
     pub npc:            bool,
+    /// Shop shield: a separate damage-absorb pool (set to max_hp on cast); damage
+    /// hits this before hp. Expires at shield_expiry. 0 = no shield.
+    #[serde(default)]
+    pub shield:         i32,
+    #[serde(default)]
+    pub shield_expiry:  Option<u64>,
 }
 
 // ---- Player ---------------------------------------------------------------
@@ -76,6 +88,9 @@ pub struct Player {
     pub prestige:        u32,
     pub credits:         u64,
     pub last_sent_dirty: u64,
+    /// Queued shop defenders: each entry is an expiry timestamp (ms). When an enemy
+    /// worker nears this player's queen, one is consumed to spawn a free distraction ant.
+    pub defenders:       Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +117,8 @@ pub struct QueenHit {
     pub queen_id:  u32,
     pub attacker:  u32,
     pub is_own:    bool,
+    /// Damage multiplier for this hit (1.0 normal, >1 for brute ants).
+    pub dmg_mult:  f32,
 }
 
 // ---- World ----------------------------------------------------------------

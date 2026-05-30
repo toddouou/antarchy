@@ -11,7 +11,7 @@ mod world;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use server::{sim_loop, run, WorldState, Cmd};
+use server::{sim_loop, viewport_loop, run, WorldState, Cmd};
 use world::World;
 use config::cfg;
 
@@ -50,6 +50,11 @@ async fn main() {
     // Sim loop on a dedicated OS thread (blocking, bypasses tokio scheduler)
     let world_sim = world.clone();
     std::thread::spawn(move || sim_loop(world_sim, cmd_rx));
+
+    // Viewport delivery on its own OS thread — keeps heavy tile/fog serialization off the
+    // sim thread so the tick cadence stays steady (smooth client interpolation).
+    let world_vp = world.clone();
+    std::thread::spawn(move || viewport_loop(world_vp));
 
     // HTTP + WebSocket server on tokio runtime
     run(world, cmd_tx).await;
