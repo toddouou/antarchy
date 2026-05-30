@@ -70,6 +70,9 @@ pub struct Player {
     pub npc:             bool,
     pub view:            Option<PlayerView>,
     pub tx:              Option<UnboundedSender<String>>,
+    pub conn_gen:        u64,
+    pub prestige:        u32,
+    pub credits:         u64,
 }
 
 #[derive(Debug, Clone)]

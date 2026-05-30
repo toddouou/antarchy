@@ -24,16 +24,16 @@ pub type WorldState = Arc<RwLock<World>>;
 /// Messages pushed from WebSocket tasks → sim loop.
 /// WS tasks never lock the World — they just push here.
 pub enum Cmd {
-    /// Auth (register / login): sim fills in player_id and signals reply.
+    /// Auth (register / login): sim fills in player_id and conn_gen, signals reply.
     Auth {
         raw:    String,
         out_tx: mpsc::UnboundedSender<String>,
-        reply:  oneshot::Sender<Option<u32>>,
+        reply:  oneshot::Sender<Option<(u32, u64)>>,
     },
     /// Any non-auth message from an authenticated connection.
     Message { pid: u32, raw: String },
-    /// Connection closed.
-    Disconnect { pid: u32 },
+    /// Connection closed — only clears tx if conn_gen still matches.
+    Disconnect { pid: u32, conn_gen: u64 },
 }
 
 pub type CmdTx = mpsc::UnboundedSender<Cmd>;
@@ -85,6 +85,7 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
     });
 
     let mut player_id: Option<u32> = None;
+    let mut conn_gen:  u64         = 0;
     let mut msg_window = Instant::now();
     let mut msg_count  = 0u32;
     const RATE_LIMIT: u32 = 120;
@@ -117,8 +118,9 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
             if cmd_tx.send(Cmd::Auth { raw: text, out_tx: mpsc_tx.clone(), reply: reply_tx }).is_err() {
                 break;
             }
-            if let Ok(Some(pid)) = reply_rx.await {
+            if let Ok(Some((pid, gen))) = reply_rx.await {
                 player_id = Some(pid);
+                conn_gen  = gen;
             }
         } else if let Some(pid) = player_id {
             // Non-auth: fire-and-forget, sim processes at next tick start
@@ -129,7 +131,7 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
     }
 
     if let Some(pid) = player_id {
-        let _ = cmd_tx.send(Cmd::Disconnect { pid });
+        let _ = cmd_tx.send(Cmd::Disconnect { pid, conn_gen });
     }
 }
 
@@ -166,7 +168,11 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                         };
                         let mut pid: Option<u32> = None;
                         handle_message(&mut w, &mut pid, &out_tx, parsed);
-                        let _ = reply.send(pid);
+                        let result = pid.map(|id| {
+                            let gen = w.players.get(&id).map(|p| p.conn_gen).unwrap_or(0);
+                            (id, gen)
+                        });
+                        let _ = reply.send(result);
                     }
                     Ok(Cmd::Message { pid, raw }) => {
                         let parsed = match serde_json::from_str::<serde_json::Value>(&raw) {
@@ -180,9 +186,11 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                             handle_message(&mut w, &mut pid_mut, &tx, parsed);
                         }
                     }
-                    Ok(Cmd::Disconnect { pid }) => {
+                    Ok(Cmd::Disconnect { pid, conn_gen }) => {
                         let uname = w.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
-                        if let Some(p) = w.players.get_mut(&pid) { p.tx = None; }
+                        if let Some(p) = w.players.get_mut(&pid) {
+                            if p.conn_gen == conn_gen { p.tx = None; }
+                        }
                         println!("[disconnect] {uname} ({pid})");
                     }
                     Err(_) => break,  // empty queue

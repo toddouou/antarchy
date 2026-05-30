@@ -22,12 +22,13 @@ pub fn build_leaderboard(world: &World) -> String {
         .filter_map(|(&id, q)| {
             let p = world.players.get(&id)?;
             Some(json!({
-                "id":     id,
-                "name":   p.username,
-                "color":  p.color,
-                "tiles":  q.cached_tiles,
-                "level":  q.level,
-                "kills":  q.kills,
+                "id":       id,
+                "name":     p.username,
+                "color":    p.color,
+                "tiles":    q.cached_tiles,
+                "level":    q.level,
+                "kills":    q.kills,
+                "prestige": p.prestige,
             }))
         })
         .collect();
@@ -90,6 +91,8 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
         "antsAvail": p.ants_avail,
         "nextRefillMs": (p.next_refill as i64 - current_ms() as i64).max(0),
         "queen": queen_val,
+        "prestige": p.prestige,
+        "credits":  p.credits,
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
         "tick": world.tick,
@@ -170,6 +173,7 @@ pub fn build_view_update(world: &World, player_id: u32) -> Option<String> {
                 "hp": q.hp, "maxHp": q.max_hp, "level": q.level,
                 "color":    qp.map(|p| p.color.as_str()).unwrap_or("#888"),
                 "username": qp.map(|p| p.username.as_str()).unwrap_or("???"),
+                "prestige": qp.map(|p| p.prestige).unwrap_or(0),
             });
             if qid == player_id || is_admin {
                 obj["bubbleR"] = json!(q.bubble_r);

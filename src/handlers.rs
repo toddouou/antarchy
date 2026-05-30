@@ -135,7 +135,7 @@ pub fn handle_message(
 
     // ---- Place queen ----
     if t == "place-queen" {
-        if world.queens.contains_key(&pid) {
+        if world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false) {
             let _ = tx.send(err("Already have a queen")); return;
         }
         let x = msg["x"].as_i64().unwrap_or(-1) as i32;
@@ -504,6 +504,15 @@ pub fn handle_message(
         return;
     }
 
+    // ---- Admin spawn NPC at position ----
+    if t == "admin-spawn-at" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let x = msg["x"].as_i64().unwrap_or(0) as i32;
+        let y = msg["y"].as_i64().unwrap_or(0) as i32;
+        spawn_npc(world, pid, Some(x), Some(y));
+        return;
+    }
+
     // ---- Admin player list ----
     if t == "admin-player-list" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
@@ -520,6 +529,10 @@ pub fn handle_message(
                     "hp":       q.map(|q| q.hp).unwrap_or(0),
                     "maxHp":    q.map(|q| q.max_hp).unwrap_or(0),
                     "ants":     p.ants_avail,
+                    "prestige": p.prestige,
+                    "credits":  p.credits,
+                    "qx":       q.map(|q| q.x).unwrap_or(-1),
+                    "qy":       q.map(|q| q.y).unwrap_or(-1),
                 })
             })
             .collect();
@@ -552,6 +565,7 @@ fn create_or_reconnect_player(
     let now = current_ms();
 
     if let Some(p) = world.players.get_mut(&id) {
+        p.conn_gen += 1;
         p.tx = Some(tx);
         println!("[reconnect] {username} ({})", id);
     } else {
@@ -563,6 +577,9 @@ fn create_or_reconnect_player(
             queen_placed_at: None,
             npc: false, view: None,
             tx: Some(tx),
+            conn_gen: 1,
+            prestige: 0,
+            credits: 0,
         });
         println!("[connect] {username} ({})", id);
     }

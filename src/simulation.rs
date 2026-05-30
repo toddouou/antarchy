@@ -55,6 +55,11 @@ pub fn flush_xp(world: &mut World) {
             }
         };
 
+        // Award 1 credit per XP point earned (persists through prestige)
+        if let Some(p) = world.players.get_mut(&g.player_id) {
+            p.credits += g.amount.max(0.0) as u64;
+        }
+
         if let Some((old_lvl, new_lvl)) = level_up_result {
             let ants_gained = (new_lvl - old_lvl) as i32 * c.levelup_ant_grant;
             if let Some(p) = world.players.get_mut(&g.player_id) {
@@ -82,6 +87,11 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         (q.x, q.y)
     };
     world.queen_map_dirty = true;
+
+    // Prestige: increment on each queen death
+    if let Some(p) = world.players.get_mut(&loser_id) {
+        p.prestige += 1;
+    }
 
     let near_msg = json!({"t":"queen-killed","x":qx,"y":qy}).to_string();
     world.broadcast_near(qx, qy, &near_msg);
@@ -168,7 +178,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         id, username: format!("NPC_{id}"), color: hue,
         hue_idx: hue_idx as i32,
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
-        npc: true, view: None, tx: None,
+        npc: true, view: None, tx: None, conn_gen: 0, prestige: 0, credits: 0,
     });
     world.queen_map_dirty = true;
 
