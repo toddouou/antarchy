@@ -198,28 +198,12 @@ pub fn handle_message(
         // p and q borrows are dead here — safe to call get_queen_map (&mut World)
         let x = msg["x"].as_i64().unwrap_or(-1) as i32;
         let y = msg["y"].as_i64().unwrap_or(-1) as i32;
-        let ww = world.world_w as i32; let wh = world.world_h as i32;
-        if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
-        world.get_queen_map();
-        let ck = world.cell_key(x, y);
-        if world.queen_map.contains_key(&ck) { let _ = tx.send(err("Cannot place on a queen")); return; }
-        let dxq = (x - (qx + qs as i32 / 2)) as i64; let dyq = (y - (qy + qs as i32 / 2)) as i64;
-        let dist_q = ((dxq*dxq + dyq*dyq) as f64).sqrt();
-        let in_bubble = dist_q <= bubble_r;
-        let tile = world.tiles.get(x as u32, y as u32);
-        let on_friendly = tile == pid;
-        let is_enemy = tile != 0 && tile != pid;
-        if in_bubble {
-            if is_enemy { let _ = tx.send(err("Enemy tile inside bubble")); return; }
-        } else {
-            if !on_friendly { let _ = tx.send(err("Place inside your bubble or on your territory")); return; }
-        }
         let vdx = msg["dx"].as_i64().unwrap_or(0) as i8;
         let vdy = msg["dy"].as_i64().unwrap_or(-1) as i8;
-        const DIRS: [(i8,i8); 4] = [(0,-1),(1,0),(0,1),(-1,0)];
-        let (adx, ady) = DIRS.iter().copied()
-            .find(|&(a,b)| a == vdx && b == vdy)
-            .unwrap_or((0,-1));
+        let (adx, ady) = match validate_worker_placement(world, pid, (x, y), (vdx, vdy), (qx, qy, qs, bubble_r)) {
+            Ok(d)  => d,
+            Err(e) => { let _ = tx.send(err(e)); return; }
+        };
         let lifespan = c.lifespan;
         drop(c);
         // Silently skip placement if an identical ant (same owner, position, direction) already
@@ -634,18 +618,11 @@ pub fn handle_message(
                 let y   = msg["y"].as_i64().unwrap_or(-1) as i32;
                 let vdx = msg["dx"].as_i64().unwrap_or(0) as i8;
                 let vdy = msg["dy"].as_i64().unwrap_or(-1) as i8;
-                let ww = world.world_w as i32; let wh = world.world_h as i32;
-                if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
-                world.get_queen_map();
-                if world.queen_map.contains_key(&world.cell_key(x, y)) { let _ = tx.send(err("Cannot place on a queen")); return; }
-                let dxq = (x - (qx + qs as i32/2)) as i64; let dyq = (y - (qy + qs as i32/2)) as i64;
-                let in_bubble = ((dxq*dxq+dyq*dyq) as f64).sqrt() <= bubble_r;
-                let tile = world.tiles.get(x as u32, y as u32);
-                if in_bubble { if tile != 0 && tile != pid { let _ = tx.send(err("Enemy tile inside bubble")); return; } }
-                else { if tile != pid { let _ = tx.send(err("Place inside your bubble or on your territory")); return; } }
-                const DIRS: [(i8,i8); 4] = [(0,-1),(1,0),(0,1),(-1,0)];
-                let (adx, ady) = DIRS.iter().copied().find(|&(a,b)| a==vdx && b==vdy).unwrap_or((0,-1));
-                let c = cfg(); let lifespan = c.lifespan; drop(c);
+                let (adx, ady) = match validate_worker_placement(world, pid, (x, y), (vdx, vdy), (qx, qy, qs, bubble_r)) {
+                    Ok(d)  => d,
+                    Err(e) => { let _ = tx.send(err(e)); return; }
+                };
+                let lifespan = cfg().lifespan;
                 if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
                 world.ants.push(crate::world::Ant::new_kind(rand::random::<u32>(), pid, x, y, adx, ady, lifespan, 1));
                 world.dirty_tick = world.tick;
@@ -710,6 +687,35 @@ pub fn handle_message(
             world.broadcast(&cfg_msg);
         }
     }
+}
+
+/// Validate a worker placement at (`x`,`y`) heading (`vdx`,`vdy`) for `pid`, given their live
+/// queen's footprint. Returns the resolved cardinal direction, or a client-facing error string.
+/// Shared verbatim by place-ant and the shop brute (identical legality rules).
+fn validate_worker_placement(
+    world: &mut World, pid: u32, pos: (i32, i32), dir: (i8, i8), queen: (i32, i32, u8, f64),
+) -> Result<(i8, i8), &'static str> {
+    let (x, y) = pos;
+    let (vdx, vdy) = dir;
+    let (qx, qy, qs, bubble_r) = queen;
+    let ww = world.world_w as i32;
+    let wh = world.world_h as i32;
+    if x < 0 || y < 0 || x >= ww || y >= wh { return Err("Out of bounds"); }
+    world.get_queen_map();
+    if world.queen_map.contains_key(&world.cell_key(x, y)) {
+        return Err("Cannot place on a queen");
+    }
+    let dxq = (x - (qx + qs as i32 / 2)) as i64;
+    let dyq = (y - (qy + qs as i32 / 2)) as i64;
+    let in_bubble = ((dxq * dxq + dyq * dyq) as f64).sqrt() <= bubble_r;
+    let tile = world.tiles.get(x as u32, y as u32);
+    if in_bubble {
+        if tile != 0 && tile != pid { return Err("Enemy tile inside bubble"); }
+    } else if tile != pid {
+        return Err("Place inside your bubble or on your territory");
+    }
+    const DIRS: [(i8, i8); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    Ok(DIRS.iter().copied().find(|&(a, b)| a == vdx && b == vdy).unwrap_or((0, -1)))
 }
 
 fn create_or_reconnect_player(
@@ -778,4 +784,39 @@ fn build_welcome_back(world: &World, id: u32, snap: &crate::world::AwaySnapshot,
         "armyDelta":      cur_army as i64 - snap.army as i64,
         "countriesDelta": cur_visited as i64 - snap.visited_countries as i64,
     }).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn world_with_queen() -> (World, u32) {
+        let mut w = World::new();
+        let pid = 100u32;
+        w.queens.insert(pid, Queen { x: 1000, y: 1000, size: 2, hp: 100, max_hp: 100,
+            level: 1, xp: 0.0, kills: 0, bubble_r: 30.0, last_attacker: None, dead: false,
+            tiles_ever_held: 0, cached_tiles: 0, npc: false, shield: 0, shield_expiry: None,
+            region: String::new() });
+        w.queen_map_dirty = true;
+        (w, pid)
+    }
+
+    #[test]
+    fn worker_placement_rules() {
+        let (mut w, pid) = world_with_queen();
+        let q = (1000, 1000, 2u8, 30.0);
+        // Valid: inside the bubble, empty tile, default heading.
+        assert_eq!(validate_worker_placement(&mut w, pid, (1005, 1005), (0, -1), q), Ok((0, -1)));
+        // Out of bounds.
+        assert!(validate_worker_placement(&mut w, pid, (-1, 5), (0, -1), q).is_err());
+        // On the queen's own cell.
+        assert_eq!(validate_worker_placement(&mut w, pid, (1000, 1000), (0, -1), q), Err("Cannot place on a queen"));
+        // Far outside the bubble and not on owned territory.
+        assert_eq!(validate_worker_placement(&mut w, pid, (5000, 5000), (0, -1), q), Err("Place inside your bubble or on your territory"));
+        // Enemy tile inside the bubble.
+        w.tiles.set(1005, 1005, 999);
+        assert_eq!(validate_worker_placement(&mut w, pid, (1005, 1005), (0, -1), q), Err("Enemy tile inside bubble"));
+        // An unknown heading falls back to up.
+        assert_eq!(validate_worker_placement(&mut w, pid, (1006, 1004), (9, 9), q), Ok((0, -1)));
+    }
 }
