@@ -279,10 +279,7 @@ pub fn handle_message(
                     }
                 }
                 world.queen_map_dirty = true;
-                let ttx = world.players.get(&target_id).and_then(|p| p.tx.clone());
-                if let Some(ttx) = ttx {
-                    let _ = ttx.send(json!({"t":"event","msg":"[ADMIN] LEVEL UP"}).to_string());
-                }
+                world.send_to(target_id, json!({"t":"event","msg":"[ADMIN] LEVEL UP"}).to_string());
             }
             "level-down" => {
                 let c = cfg().clone();
@@ -299,10 +296,7 @@ pub fn handle_message(
                     qd.xp     = cur_xp.clamp(floor, ceil);
                 }
                 world.queen_map_dirty = true;
-                let ttx = world.players.get(&target_id).and_then(|p| p.tx.clone());
-                if let Some(ttx) = ttx {
-                    let _ = ttx.send(json!({"t":"event","msg":"[ADMIN] LEVEL DOWN"}).to_string());
-                }
+                world.send_to(target_id, json!({"t":"event","msg":"[ADMIN] LEVEL DOWN"}).to_string());
             }
             "spawn-npc"  => spawn_npc(world, pid, None, None),
             "wipe-world" => wipe_world(world),
@@ -389,10 +383,7 @@ pub fn handle_message(
                 world.queen_map_dirty = true;
             }
         }
-        let ttx = world.players.get(&tid).and_then(|p| p.tx.clone());
-        if let Some(ttx) = ttx {
-            let _ = ttx.send(json!({"t":"event","msg":format!("[ADMIN] LEVEL SET TO {level}")}).to_string());
-        }
+        world.send_to(tid, json!({"t":"event","msg":format!("[ADMIN] LEVEL SET TO {level}")}).to_string());
         return;
     }
 
@@ -415,17 +406,11 @@ pub fn handle_message(
                     if ants_delta > 0 {
                         if let Some(tp) = world.players.get_mut(&tid) { tp.ants_avail += ants_delta; }
                     }
-                    let ttx = world.players.get(&tid).and_then(|p| p.tx.clone());
-                    if let Some(ttx) = ttx {
-                        let _ = ttx.send(json!({"t":"level-up","level":new_lvl}).to_string());
-                    }
+                    world.send_to(tid, json!({"t":"level-up","level":new_lvl}).to_string());
                 }
             }
         }
-        let ttx = world.players.get(&tid).and_then(|p| p.tx.clone());
-        if let Some(ttx) = ttx {
-            let _ = ttx.send(json!({"t":"event","msg":format!("+{xp} XP (ADMIN)")}).to_string());
-        }
+        world.send_to(tid, json!({"t":"event","msg":format!("+{xp} XP (ADMIN)")}).to_string());
         return;
     }
 
