@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
@@ -67,6 +67,10 @@ pub struct Queen {
     pub shield:         i32,
     #[serde(default)]
     pub shield_expiry:  Option<u64>,
+    /// Region this queen sits in (metro name, else country, else "Open Water"). Recomputed
+    /// on placement / relocate / admin-move. Drives the leaderboard region column + tabs.
+    #[serde(default)]
+    pub region:         String,
 }
 
 // ---- Player ---------------------------------------------------------------
@@ -91,6 +95,28 @@ pub struct Player {
     /// Queued shop defenders: each entry is an expiry timestamp (ms). When an enemy
     /// worker nears this player's queen, one is consumed to spawn a free distraction ant.
     pub defenders:       Vec<u64>,
+    // ---- Discovery (account-level; survive queen death because Player outlives the Queen) ----
+    /// Distinct countries / continents this account's queens & ants have set foot in.
+    pub visited_countries:   FxHashSet<String>,
+    pub visited_continents:  FxHashSet<String>,
+    /// Lifetime accumulators folded in from each fallen queen (for the USER-vs-QUEEN compare).
+    pub lifetime_kills:      u32,
+    pub lifetime_peak_tiles: u64,
+    pub queens_fielded:      u32,
+    /// Snapshot taken at disconnect; diffed on reconnect for the welcome-back summary.
+    pub away:                Option<AwaySnapshot>,
+}
+
+/// Snapshot of a player's state at disconnect → diffed on reconnect for the welcome-back summary.
+#[derive(Debug, Clone)]
+pub struct AwaySnapshot {
+    pub at_ms:             u64,
+    pub tiles:             u64,
+    pub kills:             u32,
+    pub level:             u16,
+    pub army:              u32,
+    pub visited_countries: usize,
+    pub queen_alive:       bool,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +149,14 @@ pub struct QueenHit {
 
 // ---- World ----------------------------------------------------------------
 
+/// King-of-the-hill result for one metro: who holds the most painted tiles inside its radius.
+#[derive(Debug, Clone)]
+pub struct MetroHolder {
+    pub name:  String,
+    pub owner: Option<u32>,
+    pub tiles: u64,
+}
+
 pub struct World {
     pub tiles:           TileMap,
     pub ants:            Vec<Ant>,
@@ -144,7 +178,19 @@ pub struct World {
     pub paused:          bool,
     /// Tracks the last tick on which tiles changed; used to skip viewport delivery when idle.
     pub dirty_tick:      u64,
+    /// Metro king-of-the-hill holders, recomputed on a throttle (simulation.rs::recompute_holders).
+    pub metro_holders:   Vec<MetroHolder>,
+    /// Round-robin cursor into `ants` for throttled discovery (visited-region) sampling.
+    pub visit_sample_cursor: usize,
+    /// Ring buffer of recent tick-window durations (ms) for `/health` p50/p99 — the scaling
+    /// metric that tells us whether a tick holds its budget at load. `tick_ms_pos` is the
+    /// write cursor once the ring fills.
+    pub tick_ms_ring: Vec<f32>,
+    pub tick_ms_pos:  usize,
 }
+
+/// Capacity of the tick-duration ring (≈ a few seconds of history at 50 Hz).
+pub const TICK_RING_CAP: usize = 240;
 
 impl World {
     pub fn new() -> Self {
@@ -171,6 +217,20 @@ impl World {
             ant_counts:      FxHashMap::default(),
             paused:          false,
             dirty_tick:      0,
+            metro_holders:   Vec::new(),
+            visit_sample_cursor: 0,
+            tick_ms_ring:    Vec::with_capacity(TICK_RING_CAP),
+            tick_ms_pos:     0,
+        }
+    }
+
+    /// Record one tick-window duration into the ring (overwrites oldest once full).
+    pub fn record_tick_ms(&mut self, ms: f32) {
+        if self.tick_ms_ring.len() < TICK_RING_CAP {
+            self.tick_ms_ring.push(ms);
+        } else {
+            self.tick_ms_ring[self.tick_ms_pos] = ms;
+            self.tick_ms_pos = (self.tick_ms_pos + 1) % TICK_RING_CAP;
         }
     }
 

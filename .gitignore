@@ -1,4 +1,5 @@
 /target
+/target-dev
 users.json
 *.snapshot
 world.snapshot

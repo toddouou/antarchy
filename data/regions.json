@@ -1,0 +1,15 @@
+{
+  "_comment": "HIVE metro regions. Add entries and rebuild (this file is embedded via include_str!). radius_km = the metro area's approximate average radius; it is converted to tiles with the Mercator scale at that latitude. Everywhere outside every metro falls back to the country tag.",
+  "metros": [
+    { "name": "New York",    "lat": 40.71,  "lon": -74.01,  "radius_km": 45 },
+    { "name": "Los Angeles", "lat": 34.05,  "lon": -118.24, "radius_km": 55 },
+    { "name": "Paris",       "lat": 48.85,  "lon": 2.35,    "radius_km": 35 },
+    { "name": "London",      "lat": 51.51,  "lon": -0.13,   "radius_km": 40 },
+    { "name": "Tokyo",       "lat": 35.68,  "lon": 139.69,  "radius_km": 55 },
+    { "name": "Sao Paulo",   "lat": -23.55, "lon": -46.63,  "radius_km": 45 },
+    { "name": "Mexico City", "lat": 19.43,  "lon": -99.13,  "radius_km": 40 },
+    { "name": "Lagos",       "lat": 6.52,   "lon": 3.38,    "radius_km": 30 },
+    { "name": "Mumbai",      "lat": 19.08,  "lon": 72.88,   "radius_km": 30 },
+    { "name": "Berlin",      "lat": 52.52,  "lon": 13.40,   "radius_km": 30 }
+  ]
+}

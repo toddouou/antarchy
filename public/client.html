@@ -17,6 +17,7 @@
     overscroll-behavior:none; touch-action:none; }
   body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
     background:repeating-linear-gradient(0deg, transparent 0px, transparent 2px, rgba(0,0,0,.025) 2px, rgba(0,0,0,.025) 3px); }
+  body.no-scan::after { display:none; }
 
   /* Layout — admin panel is dynamic */
   body { display:grid;
@@ -38,11 +39,113 @@
     background:var(--ink); color:var(--yel); border:1px solid var(--ink); display:none; }
   body.admin-on .admin-badge { display:inline-block; }
   .hstats { margin-left:auto; display:flex; }
-  .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 12px;
+  .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 11px;
     border-left:1px solid var(--line); }
   .hstat .l { font-family:'Press Start 2P',monospace; color:var(--dim); font-size:7px; }
   .hstat .v { font-family:'Press Start 2P',monospace; font-size:11px; margin-top:4px; }
-  .hstat.score-stat .v { color:var(--red); font-size:13px; }
+  .hstat.sh .l { color:var(--blu); opacity:.7; }      /* server-health bundle */
+  .hstat.sh .v { color:var(--blu); }
+  .hdr-logout { margin-left:14px; font-family:'Press Start 2P',monospace; font-size:8px;
+    background:var(--bg); color:var(--ink); border:2px solid var(--ink); padding:7px 10px;
+    cursor:pointer; transition:background .12s, color .12s; }
+  .hdr-logout:hover { background:var(--red); color:#fff; transform:translate(-1px,-1px);
+    box-shadow:2px 2px 0 0 var(--ink); }
+
+  /* HEADER ACTION BUTTONS — boxy nav (shop / discovery / settings) */
+  .hdr-actions { display:flex; gap:7px; margin-left:14px; }
+  .hbtn { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+    min-width:50px; padding:5px 8px; background:var(--bg); border:2px solid var(--ink); cursor:pointer;
+    transition:background .12s, transform .08s, box-shadow .08s; }
+  .hbtn .ic { font-size:14px; line-height:1; }
+  .hbtn .lb { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); letter-spacing:.03em; }
+  .hbtn:hover { background:var(--yel); transform:translate(-1px,-1px); box-shadow:2px 2px 0 0 var(--ink); }
+  .hbtn:hover .lb { color:var(--ink); }
+  .hbtn.on { background:var(--ink); }
+  .hbtn.on .lb { color:var(--yel); }
+
+  /* KILLFEED (CS1.6-style, top-right, newest on top, fades) */
+  #killfeed { position:fixed; top:60px; right:12px; z-index:60; display:flex;
+    flex-direction:column; gap:4px; align-items:flex-end; pointer-events:none; }
+  .kf-row { font-family:'Press Start 2P',monospace; font-size:8px; line-height:1;
+    background:rgba(13,13,13,.82); color:#f5f3ec; border:1px solid rgba(255,255,255,.16);
+    padding:6px 9px; display:flex; align-items:center; gap:7px; white-space:nowrap;
+    box-shadow:2px 2px 0 rgba(0,0,0,.35); animation:kfIn .16s ease-out; }
+  .kf-row.kf-out { animation:kfOut .5s ease-in forwards; }
+  .kf-x { color:var(--red); font-size:9px; }
+  .kf-elim { color:var(--dim); }
+  @keyframes kfIn  { from{opacity:0;transform:translateX(22px);} to{opacity:1;transform:none;} }
+  @keyframes kfOut { to{opacity:0;transform:translateX(22px);} }
+
+  /* WORKERS panel */
+  .wk-types { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:8px; }
+  .wk-type { font-family:'Press Start 2P',monospace; font-size:7px; padding:7px 4px;
+    background:var(--bg2); border:2px solid var(--ink); color:var(--ink); cursor:pointer;
+    transition:background .1s; }
+  .wk-type:hover { background:var(--yel); }
+  .wk-type.active { background:var(--ink); color:var(--yel); }
+  .wk-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px; margin-bottom:6px; }
+  .wk-cell { background:var(--bg); border:1px solid var(--line); padding:5px 3px; text-align:center; }
+  .wk-l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
+  .wk-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:4px; color:var(--red); }
+  .wk-v.sm { font-size:8px; color:var(--blu); }
+  .wk-cap { font-size:6px; color:var(--dim); margin-left:1px; }
+  .wk-army-bar { height:6px; background:var(--bg); border:1px solid var(--ink); margin-bottom:8px; }
+  .wk-army-fill { height:100%; width:0%; background:var(--blu); transition:width .3s; }
+  .wk-hint { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:6px; line-height:1.5; }
+  .wk-toggle { width:100%; margin-top:8px; font-family:'Press Start 2P',monospace; font-size:7px;
+    background:var(--bg2); border:2px solid var(--ink); color:var(--ink); padding:6px 7px;
+    cursor:pointer; text-align:left; }
+  .wk-toggle:hover { background:var(--yel); }
+  .wk-list { margin-top:6px; max-height:170px; overflow-y:auto; display:flex; flex-direction:column; gap:3px; }
+  .wk-ant { display:flex; align-items:center; gap:5px; font-family:'Press Start 2P',monospace; font-size:6px; }
+  .wk-ant-ic { width:9px; text-align:center; color:var(--grn); }
+  .wk-ant.brute .wk-ant-ic { color:var(--yel); }
+  .wk-ant-bar { flex:1; height:6px; background:var(--bg); border:1px solid var(--line); }
+  .wk-ant-fill { height:100%; background:var(--grn); }
+  .wk-ant.brute .wk-ant-fill { background:var(--yel); }
+  .wk-ant-t { color:var(--dim); width:44px; text-align:right; }
+
+  /* Leaderboard extras (region col, tabs, expand, my-rank pin) */
+  .lb-reg { display:block; font-family:'Press Start 2P',monospace; font-size:5px; color:var(--blu); margin-top:2px; }
+  .lb-detail { font-family:'Press Start 2P',monospace; font-size:5px; color:var(--dim); margin-top:2px; }
+  .lb-tabs { display:flex; flex-wrap:wrap; gap:3px; padding:6px 2px; }
+  .lb-tab { font-family:'Press Start 2P',monospace; font-size:5px; padding:3px 5px; border:1px solid var(--line);
+    color:var(--dim); cursor:pointer; }
+  .lb-tab.on { background:var(--ink); color:var(--yel); border-color:var(--ink); }
+  .lb-tab:hover { background:var(--yel); color:var(--ink); }
+  .lb-sep { text-align:center; color:var(--dim); font-size:8px; padding:2px 0; }
+  .lb-expand { width:100%; margin-top:6px; font-family:'Press Start 2P',monospace; font-size:6px;
+    background:var(--bg2); border:2px solid var(--ink); color:var(--ink); padding:6px; cursor:pointer; }
+  .lb-expand:hover { background:var(--yel); }
+  .region-opt { font-family:'Press Start 2P',monospace; font-size:7px; padding:7px 12px; cursor:pointer;
+    border-bottom:1px solid var(--line); white-space:nowrap; }
+  .region-opt:hover { background:var(--yel); }
+  .lb-sub { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); padding:4px 2px 7px; letter-spacing:.06em; }
+  .lb-empty { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); padding:10px 0; text-align:center; }
+
+  /* Reusable app window */
+  .win-bg { position:fixed; inset:0; background:rgba(13,13,13,.55); z-index:500; display:grid; place-items:center; }
+  .win { background:var(--bg2); border:3px solid var(--ink); box-shadow:9px 9px 0 0 var(--red);
+    width:min(820px,93vw); max-height:86vh; display:flex; flex-direction:column; }
+  .win-head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px;
+    border-bottom:2px solid var(--ink); background:var(--yel); }
+  .win-title { font-family:'Press Start 2P',monospace; font-size:12px; letter-spacing:.04em; }
+  .win-close { font-family:'Press Start 2P',monospace; font-size:11px; background:var(--ink); color:#fff;
+    border:2px solid var(--ink); padding:6px 9px; cursor:pointer; }
+  .win-close:hover { background:var(--red); }
+  .win-body { padding:18px 20px 22px; overflow:auto; }
+  /* Full leaderboard table inside the window */
+  .lbw-head, .lbw-row { display:grid; grid-template-columns:34px 16px 1fr 90px 70px 38px 30px 38px;
+    align-items:center; gap:8px; font-family:'Press Start 2P',monospace; font-size:8px; }
+  .lbw-head { color:var(--dim); font-size:6px; padding:6px 4px; border-bottom:2px solid var(--ink); margin-top:6px; }
+  .lbw-row { padding:7px 4px; border-bottom:1px solid var(--line); }
+  .lbw-row.lb-me { background:var(--bg); }
+  .lbw-rank { color:var(--dim); }
+  .lbw-sw { width:12px; height:12px; border:1px solid var(--ink); }
+  .lbw-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lbw-reg { color:var(--blu); font-size:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lbw-c { text-align:right; }
+  .lbw-list { max-height:60vh; overflow:auto; }
 
   /* SIDEBAR */
   .sidebar { grid-area:s; border-right:2px solid var(--ink); background:var(--bg2);
@@ -62,6 +165,7 @@
     margin-top:4px;
     background-image:repeating-linear-gradient(90deg,transparent 0,transparent 8px,var(--ink) 8px,var(--ink) 9px); }
   .hp-fill { height:100%; background:var(--red); transition:width .3s; }
+  .shield-fill { position:absolute; top:0; left:0; height:100%; background:var(--blu); transition:width .3s; }
 
   .xp-wrap { margin-top:8px; }
   .xp-label { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
@@ -81,6 +185,10 @@
   .stat-cell .v.r { color:var(--red); }
   .stat-cell .v.g { color:var(--grn); }
   .stat-cell .v.b { color:var(--blu); }
+  /* STATS sub-divider inside the merged QUEEN panel */
+  .psub { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--blu);
+    padding:6px 8px 4px; letter-spacing:.05em; border-top:2px solid var(--ink); }
+  .stat-grid.nbt { border-top:none; }
 
   /* SCORE PANEL */
   .score-panel { border:2px solid var(--ink); background:var(--ink); color:var(--bg2);
@@ -150,15 +258,107 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     box-shadow:4px 4px 0 0 var(--red); }
   .toast.show { opacity:1; }
 
-  /* INSPECT BOX */
-  .inspect-box { position:absolute; bottom:12px; left:12px; background:var(--ink); color:var(--yel);
-    border:2px solid var(--ink); padding:8px 10px; box-shadow:3px 3px 0 0 var(--red);
-    min-width:160px; max-width:220px; z-index:30; display:none; }
+  /* INSPECT — folded into the compass coordinate overlay (top-left) */
+  #compass { max-width:240px; }
+  .insp-div { border-top:2px dashed var(--line); margin:7px 0 5px; }
+  #inspect-section { pointer-events:none; }
   .inspect-header { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--red);
-    margin-bottom:6px; letter-spacing:.1em; }
+    margin-bottom:5px; letter-spacing:.1em; }
   .inspect-row { display:flex; align-items:center; gap:6px; margin-top:4px;
-    font-family:'Press Start 2P',monospace; font-size:7px; color:rgba(255,230,0,.8); }
-  .inspect-swatch { width:8px; height:8px; border:1px solid var(--yel); flex-shrink:0; }
+    font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink); }
+  .inspect-swatch { width:8px; height:8px; border:1px solid var(--ink); flex-shrink:0; }
+
+  /* DEATH SCREEN */
+  #death-screen { position:fixed; inset:0; z-index:900; display:none; place-items:center;
+    background:rgba(13,13,13,.82); }
+  #death-screen.vis { display:grid; animation:ds-fade .3s ease-out; }
+  @keyframes ds-fade { from{opacity:0} to{opacity:1} }
+  .ds-card { background:var(--bg2); border:3px solid var(--ink); box-shadow:9px 9px 0 0 var(--red);
+    width:min(440px,92vw); padding:26px 28px; text-align:center; }
+  .ds-title { font-family:'Press Start 2P',monospace; font-size:16px; line-height:1.5; color:var(--ink); }
+  .ds-title em { color:var(--red); font-style:normal; }
+  .ds-sub { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
+    margin-top:8px; letter-spacing:.1em; }
+  .ds-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px; background:var(--ink);
+    border:2px solid var(--ink); margin:18px 0; }
+  .ds-stat { background:var(--bg2); padding:9px 6px; }
+  .ds-l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
+  .ds-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:5px; color:var(--ink); }
+  .ds-prestige { display:flex; align-items:center; gap:12px; text-align:left;
+    border:2px solid var(--ink); background:var(--bg); padding:10px 12px; margin-bottom:18px; }
+  .ds-pr-badge { font-family:'Press Start 2P',monospace; font-size:16px; color:var(--ink);
+    background:var(--yel); border:2px solid var(--ink); padding:8px 10px; flex-shrink:0; }
+  .ds-pr-text { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink); line-height:1.5; }
+  .ds-pr-text span { color:var(--dim); font-size:6px; }
+  .ds-redeploy { font-size:11px; padding:13px; }
+  .ds-foot { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); margin-top:10px; }
+
+  /* WELCOME-BACK (reuses the death-screen card shell) */
+  #welcome-screen { position:fixed; inset:0; z-index:880; display:none; place-items:center;
+    background:rgba(13,13,13,.82); }
+  #welcome-screen.vis { display:grid; animation:ds-fade .3s ease-out; }
+  .wb-list { display:flex; flex-direction:column; gap:7px; margin:16px 0 18px; text-align:left; }
+  .wb-row { display:flex; align-items:center; gap:10px; border:2px solid var(--ink); background:var(--bg);
+    padding:9px 11px; font-family:'Press Start 2P',monospace; font-size:8px; color:var(--ink); }
+  .wb-ico { font-size:13px; flex-shrink:0; }
+  .wb-row b { margin-left:auto; }
+  .wb-pos { color:var(--grn); } .wb-neg { color:var(--red); }
+
+  /* DISCOVERY window */
+  .disc-sec { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--blu);
+    margin:4px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--ink); letter-spacing:.05em; }
+  .disc-sec:not(:first-child) { margin-top:22px; }
+  .disc-counts { display:flex; gap:22px; margin-bottom:12px; }
+  .disc-count b { font-family:'Press Start 2P',monospace; font-size:20px; color:var(--ink); }
+  .disc-count span { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); display:block; margin-top:4px; }
+  .disc-chips { display:flex; flex-wrap:wrap; gap:5px; }
+  .disc-chip { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink);
+    border:1px solid var(--ink); background:var(--bg2); padding:5px 7px; }
+  .disc-chip.cont { background:var(--ink); color:var(--yel); }
+  .disc-empty { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); }
+  .disc-cmp { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--ink); border:2px solid var(--ink); }
+  .disc-col { background:var(--bg2); padding:10px 12px; }
+  .disc-col h4 { font-family:'Press Start 2P',monospace; font-size:8px; margin-bottom:8px; }
+  .disc-col.user h4 { color:var(--red); } .disc-col.queen h4 { color:var(--grn); }
+  .disc-stat { display:flex; justify-content:space-between; gap:8px; font-family:'Press Start 2P',monospace;
+    font-size:7px; color:var(--dim); padding:5px 0; border-bottom:1px solid var(--line); }
+  .disc-stat:last-child { border-bottom:none; }
+  .disc-stat b { color:var(--ink); text-align:right; }
+
+  /* SHOP window — product cards */
+  .shop-top { display:flex; align-items:center; justify-content:space-between; gap:10px;
+    border:2px solid var(--ink); background:var(--ink); color:var(--bg2); padding:11px 14px; margin-bottom:16px; }
+  .shop-cr { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--yel); }
+  .shop-cr b { font-size:15px; color:#fff; margin-left:6px; }
+  .shop-note { font-family:'Press Start 2P',monospace; font-size:6px; color:rgba(255,255,255,.55); }
+  .shop-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+  .shop-card { border:2px solid var(--ink); background:var(--bg2); padding:14px 12px; display:flex;
+    flex-direction:column; align-items:center; text-align:center; gap:7px; box-shadow:3px 3px 0 0 var(--ink); }
+  .shop-card.wip { opacity:.5; }
+  .shop-ic { font-size:30px; line-height:1; }
+  .shop-nm { font-family:'Press Start 2P',monospace; font-size:9px; }
+  .shop-ds { font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--dim); line-height:1.45; min-height:42px; }
+  .shop-pr { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--grn); }
+  .shop-buy { width:100%; font-family:'Press Start 2P',monospace; font-size:8px; background:var(--red);
+    color:#fff; border:2px solid var(--ink); padding:8px; cursor:pointer; transition:background .1s; }
+  .shop-buy:hover:not(:disabled) { background:var(--ink); }
+  .shop-buy:disabled { background:var(--bg); color:var(--dim); cursor:not-allowed; }
+
+  /* SETTINGS window — toggle rows + volume */
+  .set-row { display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:14px 4px; border-bottom:1px solid var(--line); }
+  .set-row:last-child { border-bottom:none; }
+  .set-info { display:flex; flex-direction:column; gap:5px; }
+  .set-name { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--ink); }
+  .set-desc { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--dim); }
+  .set-toggle { width:54px; height:26px; border:2px solid var(--ink); background:var(--bg);
+    position:relative; cursor:pointer; flex-shrink:0; transition:background .15s; }
+  .set-toggle .knob { position:absolute; top:1px; left:1px; width:20px; height:20px;
+    background:var(--ink); transition:left .15s, background .15s; }
+  .set-toggle.on { background:var(--grn); }
+  .set-toggle.on .knob { left:31px; background:#fff; }
+  .set-vol { display:flex; align-items:center; gap:10px; }
+  .set-vol input[type=range] { width:130px; accent-color:var(--red); cursor:pointer; }
 
   /* CAPITOL MARKER on map */
   .cap-label { position:absolute; pointer-events:none;
@@ -394,14 +594,22 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
 <header>
   <div class="logo">HIVE<em>.</em></div>
-  <div class="region">REGION · <b>MADISON, WI</b></div>
+  <div class="region" id="hdr-region">REGION · <b id="hdr-region-name">—</b></div>
   <span class="admin-badge" id="admin-badge">◆ ADMIN</span>
   <div class="hstats">
-    <div class="hstat"><span class="l">TICK</span><span class="v" id="hdr-tick">0</span></div>
+    <div class="hstat"><span class="l">ONLINE</span><span class="v" id="hdr-online">0</span></div>
     <div class="hstat"><span class="l">ANTS</span><span class="v" id="hdr-ants">0</span></div>
-    <div class="hstat"><span class="l">PLAYERS</span><span class="v" id="hdr-players">0</span></div>
-    <div class="hstat score-stat"><span class="l">SCORE</span><span class="v" id="hdr-score">0</span></div>
+    <div class="hstat"><span class="l">QUEENS</span><span class="v" id="hdr-queens">0</span></div>
+    <div class="hstat sh"><span class="l">TICK</span><span class="v" id="hdr-tick">0</span></div>
+    <div class="hstat sh"><span class="l">TPS</span><span class="v" id="hdr-tps">0</span></div>
+    <div class="hstat sh"><span class="l">UPTIME</span><span class="v" id="hdr-uptime">--</span></div>
   </div>
+  <div class="hdr-actions">
+    <button class="hbtn" id="hbtn-shop" title="Shop" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
+    <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><span class="ic">🧭</span><span class="lb">DISCOVER</span></button>
+    <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><span class="ic">⚙</span><span class="lb">SETTINGS</span></button>
+  </div>
+  <button class="hdr-logout" id="btn-logout" title="Log out">⎋ LOGOUT</button>
 </header>
 
 <aside class="sidebar">
@@ -422,22 +630,19 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <div class="pfp" id="pfp">◆</div>
         <div>
           <div class="pname" id="pname">—</div>
-          <div class="pmeta">LEVEL <span id="lvl">1</span>/<span id="lvl-cap">100</span></div>
+          <div class="pmeta">LEVEL <span id="lvl">1</span></div>
         </div>
       </div>
       <div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);margin-top:10px;">HP</div>
-      <div class="hp-bar"><div class="hp-fill" id="hp-fill" style="width:100%"></div></div>
-      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-top:3px;"><span id="hp-cur">100</span>/<span id="hp-max">100</span></div>
+      <div class="hp-bar"><div class="hp-fill" id="hp-fill" style="width:100%"></div><div class="shield-fill" id="shield-fill" style="width:0%"></div></div>
+      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-top:3px;"><span id="hp-cur">100</span>/<span id="hp-max">100</span><span id="hp-shield" style="color:var(--blu)"></span></div>
       <div class="xp-wrap">
         <div class="xp-label"><span>XP</span><span class="xv" id="xp-val">0/0</span></div>
         <div class="xp-bar"><div class="xp-fill" id="xp-fill" style="width:0%"></div></div>
       </div>
     </div>
-  </div>
-
-  <div class="panel">
-    <div class="ptitle">STATS</div>
-    <div class="stat-grid">
+    <div class="psub">STATS</div>
+    <div class="stat-grid nbt">
       <div class="stat-cell"><div class="l">LIFESPAN</div><div class="v g" id="s-life">0:00</div></div>
       <div class="stat-cell"><div class="l">TILES</div><div class="v" id="s-tiles">0</div></div>
       <div class="stat-cell"><div class="l">ARMY</div><div class="v b" id="s-army">0</div></div>
@@ -450,26 +655,20 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   <div class="panel">
     <div class="ptitle">WORKERS</div>
     <div class="pbody">
-      <div style="font-family:'Press Start 2P',monospace;font-size:9px;margin-bottom:6px;">AVAIL: <span id="ants-avail" style="color:var(--red);">0</span></div>
-      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:8px;">REFILL <span id="refill-timer" style="color:var(--blu);">--:--:--</span></div>
-      <button class="btn" id="btn-ant" disabled>+ DEPLOY WORKER</button>
-      <div id="drag-hint" style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-top:6px;display:none;">CLICK &amp; DRAG → DIR</div>
-    </div>
-  </div>
-
-  <div class="panel" id="shop-panel">
-    <div class="ptitle">SHOP</div>
-    <div class="pbody" style="padding:6px 8px;">
-      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">CREDITS: <span id="shop-credits" style="color:var(--grn);">0</span></div>
-      <div style="display:flex;flex-direction:column;gap:4px;">
-        <button class="btn-sm" id="shop-highway"  onclick="shopBuy('highway')" >HIGHWAY  — <span style="color:var(--grn)">10 CR</span></button>
-        <button class="btn-sm" id="shop-relocate" onclick="shopBuy('relocate')">RELOCATE — <span style="color:var(--grn)">20 CR</span></button>
-        <button class="btn-sm" id="shop-defender" onclick="shopBuy('defender')">DEFENDER — <span style="color:var(--grn)"> 1 CR</span></button>
-        <button class="btn-sm" id="shop-brute"    onclick="shopBuy('brute')"   >BRUTE    — <span style="color:var(--grn)">20 CR</span></button>
-        <button class="btn-sm" id="shop-shield"   onclick="shopBuy('shield')"  >SHIELD   — <span style="color:var(--grn)">10 CR</span></button>
-        <button class="btn-sm" disabled style="color:var(--dim);">ALLIANCE — <span>80 CR</span> (WIP)</button>
+      <div class="wk-types">
+        <button class="wk-type active" id="wk-type-normal" onclick="setWorkerType('normal')">▴ WORKER</button>
+        <button class="wk-type" id="wk-type-brute" onclick="setWorkerType('brute')">◼ BRUTE</button>
       </div>
-      <div id="shop-def-count" style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);margin-top:6px;display:none;">DEFENDERS QUEUED: <span id="shop-defenders">0</span></div>
+      <div class="wk-grid">
+        <div class="wk-cell"><div class="wk-l">READY</div><div class="wk-v" id="ants-avail">0</div></div>
+        <div class="wk-cell"><div class="wk-l">ARMY</div><div class="wk-v" id="wk-army">0<span class="wk-cap" id="wk-cap"></span></div></div>
+        <div class="wk-cell"><div class="wk-l">REFILL</div><div class="wk-v sm" id="refill-timer">--:--:--</div></div>
+      </div>
+      <div class="wk-army-bar"><div class="wk-army-fill" id="wk-army-fill"></div></div>
+      <button class="btn" id="btn-ant" disabled>+ DEPLOY WORKER</button>
+      <div id="drag-hint" class="wk-hint" style="display:none;">◆ Click &amp; drag to aim · click again to stop</div>
+      <button class="wk-toggle" id="wk-list-toggle" onclick="toggleAntList()"><span id="wk-list-caret">▸</span> ACTIVE WORKERS · <span id="wk-list-count">0</span></button>
+      <div id="wk-list" class="wk-list" style="display:none;"></div>
     </div>
   </div>
 
@@ -481,7 +680,6 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   </div>
 
   <button class="btn ghost" id="btn-recenter" style="margin-bottom:5px;">⊕ CENTER QUEEN</button>
-<button class="btn ghost" id="btn-logout">⎋ LOGOUT</button>
 </aside>
 
 <main class="canvas-area">
@@ -491,10 +689,16 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <polygon points="24,4 30,18 18,18" fill="#ff2e3f"/>
   </svg></div>
 
-  <div class="ovr compass">
+  <div class="ovr compass" id="compass">
     <div class="coord" id="ovr-coord">— — —</div>
     <div class="zooml">ZOOM <span id="ovr-zoom">1.00X</span> · CELL <span id="ovr-cell">8PX</span></div>
     <div class="zooml" id="ovr-tile" style="color:var(--yel);display:none;"></div>
+    <!-- Target/inspect display folded into the coordinate window -->
+    <div id="inspect-section" style="display:none;">
+      <div class="insp-div"></div>
+      <div class="inspect-header" id="inspect-type"></div>
+      <div id="inspect-rows"></div>
+    </div>
   </div>
   <button id="btn-mute" style="position:absolute;bottom:14px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle audio">♪</button>
   <button id="btn-map-toggle" style="position:absolute;bottom:48px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle map (M)">🗺</button>
@@ -504,11 +708,51 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   </div>
   <div class="ovr place-prompt" id="prompt" style="display:none;">CLICK TO PLACE</div>
   <div class="toast" id="toast"></div>
-  <div class="inspect-box ovr" id="inspect-box">
-    <div class="inspect-header" id="inspect-type"></div>
-    <div id="inspect-rows"></div>
+  <div id="killfeed"></div>
+  <!-- Reusable app window (leaderboard / shop / discovery / admin / settings). position:fixed,
+       so it sits out of flow regardless of where it lives in the DOM. -->
+  <div id="win-bg" class="win-bg" style="display:none;" onclick="if(event.target===this)closeWindow()">
+    <div class="win">
+      <div class="win-head">
+        <div class="win-title" id="win-title">WINDOW</div>
+        <button class="win-close" id="win-close" onclick="closeWindow()">✕</button>
+      </div>
+      <div class="win-body" id="win-body"></div>
+    </div>
   </div>
 </main>
+
+<!-- DEATH SCREEN — queen-life summary + prestige + redeploy -->
+<div id="death-screen">
+  <div class="ds-card">
+    <div class="ds-title">QUEEN <em>FALLEN</em></div>
+    <div class="ds-sub" id="ds-sub">FALLEN</div>
+    <div class="ds-grid">
+      <div class="ds-stat"><div class="ds-l">PEAK TILES</div><div class="ds-v" id="ds-tiles">0</div></div>
+      <div class="ds-stat"><div class="ds-l">KILLS</div><div class="ds-v" id="ds-kills">0</div></div>
+      <div class="ds-stat"><div class="ds-l">TIME ALIVE</div><div class="ds-v" id="ds-time">0:00</div></div>
+      <div class="ds-stat"><div class="ds-l">LEVEL</div><div class="ds-v" id="ds-level">1</div></div>
+      <div class="ds-stat"><div class="ds-l">REGION</div><div class="ds-v" id="ds-region" style="font-size:8px">—</div></div>
+      <div class="ds-stat"><div class="ds-l">CREDITS</div><div class="ds-v" id="ds-credits" style="color:var(--grn)">0</div></div>
+    </div>
+    <div class="ds-prestige">
+      <div class="ds-pr-badge" id="ds-prestige">P0</div>
+      <div class="ds-pr-text">PRESTIGE EARNED<br><span>Each fallen queen raises your prestige. Prestige, stats &amp; credits persist — only your territory is lost.</span></div>
+    </div>
+    <button class="btn ds-redeploy" id="ds-redeploy">▲ REDEPLOY QUEEN</button>
+    <div class="ds-foot">A new queen deploys at full strength.</div>
+  </div>
+</div>
+
+<!-- WELCOME-BACK — offline summary on reconnect -->
+<div id="welcome-screen">
+  <div class="ds-card">
+    <div class="ds-title">WELCOME <em>BACK</em></div>
+    <div class="ds-sub" id="wb-sub">WHILE YOU WERE AWAY</div>
+    <div class="wb-list" id="wb-list"></div>
+    <button class="btn ds-redeploy" id="wb-continue">CONTINUE ▸</button>
+  </div>
+</div>
 
 <aside class="admin" id="admin-panel">
   <div class="adm-tabs">
@@ -966,6 +1210,9 @@ let prevAntPos=new Map(), lastVwAt=0, antFrameDt=0; // antFrameDt: smoothed ms b
 // Tile layer pixel cache (1px-per-tile offscreen canvas)
 const tileCanvas=document.createElement('canvas');
 const tileCtx=tileCanvas.getContext('2d',{alpha:true});
+// LOD overview offscreen (1px-per-super-cell) for zoomed-out territory pyramid frames
+const lodCanvas=document.createElement('canvas');
+const lodCtx=lodCanvas.getContext('2d',{alpha:true});
 let tileCacheVw=null, tileCachePlacing=false, tileCacheMapVis=true;
 let tileCacheDirty=false;
 let tileCacheCamX=-1, tileCacheCamY=-1;
@@ -1129,14 +1376,18 @@ function spatialFromWorld(wx, wy) {
    AUDIO ENGINE  (Web Audio API — all sounds procedural, no files)
    =================================================================== */
 const AudioEngine = (() => {
-  let _ctx = null, _master = null, _bgmSrc = null, _muted = false;
+  let _ctx = null, _master = null, _sfx = null, _music = null, _bgmSrc = null, _muted = false;
+  let _masterVol = 0.6, _sfxOn = true, _musicOn = true;
 
   function _ensureCtx() {
     if (_ctx) return;
     _ctx = new (window.AudioContext || window.webkitAudioContext)();
     _master = _ctx.createGain();
-    _master.gain.value = 0.6;
+    _master.gain.value = _muted ? 0 : _masterVol;
     _master.connect(_ctx.destination);
+    // Independent SFX + music buses so they can be toggled separately (settings).
+    _sfx = _ctx.createGain();   _sfx.gain.value   = _sfxOn   ? 1 : 0; _sfx.connect(_master);
+    _music = _ctx.createGain(); _music.gain.value = _musicOn ? 1 : 0; _music.connect(_master);
   }
 
   function init() {
@@ -1146,8 +1397,11 @@ const AudioEngine = (() => {
 
   function setMute(bool) {
     _muted = bool;
-    if (_master) _master.gain.value = bool ? 0 : 0.6;
+    if (_master) _master.gain.value = bool ? 0 : _masterVol;
   }
+  function setSfx(bool)   { _sfxOn = bool;   if (_sfx)   _sfx.gain.value   = bool ? 1 : 0; }
+  function setMusic(bool) { _musicOn = bool; if (_music) _music.gain.value = bool ? 1 : 0; if (bool && _ctx) startBGM(); }
+  function setMasterVolume(v) { _masterVol = v; if (_master && !_muted) _master.gain.value = v; }
 
   /* — primitive tone helper — */
   function _tone(freq, type, dur, gain, pan = 0, delay = 0) {
@@ -1161,7 +1415,7 @@ const AudioEngine = (() => {
     g.gain.setValueAtTime(gain, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     panner.pan.value = pan;
-    osc.connect(g); g.connect(panner); panner.connect(_master);
+    osc.connect(g); g.connect(panner); panner.connect(_sfx);
     osc.start(t0); osc.stop(t0 + dur + 0.01);
   }
 
@@ -1182,7 +1436,7 @@ const AudioEngine = (() => {
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     const panner = _ctx.createStereoPanner();
     panner.pan.value = pan;
-    src.connect(lp); lp.connect(g); g.connect(panner); panner.connect(_master);
+    src.connect(lp); lp.connect(g); g.connect(panner); panner.connect(_sfx);
     src.start(t0); src.stop(t0 + dur + 0.01);
   }
 
@@ -1199,7 +1453,7 @@ const AudioEngine = (() => {
     g.gain.setValueAtTime(gain, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     panner.pan.value = pan;
-    osc.connect(g); g.connect(panner); panner.connect(_master);
+    osc.connect(g); g.connect(panner); panner.connect(_sfx);
     osc.start(t0); osc.stop(t0 + dur + 0.02);
   }
 
@@ -1308,11 +1562,11 @@ const AudioEngine = (() => {
     const bgmGain = _ctx.createGain();
     bgmGain.gain.value = 0.18;
     _bgmSrc.connect(bgmGain);
-    bgmGain.connect(_master);
+    bgmGain.connect(_music);
     _bgmSrc.start();
   }
 
-  return { init, setMute, startBGM, click, tick, plop, clash, queenShriek, levelUp, ziu, armorClank, fleshHit };
+  return { init, setMute, setSfx, setMusic, setMasterVolume, startBGM, click, tick, plop, clash, queenShriek, levelUp, ziu, armorClank, fleshHit };
 })();
 
 /* ===================================================================
@@ -1375,7 +1629,6 @@ function handle(msg) {
       $('pfp').textContent=me.username[0];
       $('pfp').style.color=me.color;
       palette[me.id]=me.color;
-      $('lvl-cap').textContent=me.cfg?.LEVEL_CAP||100;
       // Admin gating
       const tog=$('admin-tog'), chk=$('admin-chk');
       if (me.isAdmin) {
@@ -1390,7 +1643,7 @@ function handle(msg) {
       if (me.queen && !me.queen.dead) {
         view.x=me.queen.x+1; view.y=me.queen.y+1; panLocked=false;
         view.zoom=zoomTarget=1.0;
-        $('btn-ant').disabled=me.antsAvail<=0;
+        updateDeployBtn();
       } else {
         view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
         view.zoom=zoomTarget=1.0;
@@ -1407,6 +1660,9 @@ function handle(msg) {
     case 'me':
       me={...me,...msg};
       updateHUD();
+      renderAntList();
+      if (winIsOpen('disc')) renderDiscoveryWindow();
+      if (winIsOpen('shop')) renderShopWindow();
       if ($('adm-tps')&&me.tickRate) $('adm-tps').textContent=me.tickRate;
       if ($('adm-tick')&&me.tick!=null) $('adm-tick').textContent=me.tick;
       break;
@@ -1427,7 +1683,9 @@ function handle(msg) {
       { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
       vw=msg; palette=msg.palette;
       tileCacheDirty=true;
-      if (tileCache) {
+      // Only 1:1 frames feed the sliding fine cache; LOD (downsampled) frames are drawn
+      // directly from `vw` by drawLodTiles — blitting them here would corrupt the cache.
+      if (tileCache && (msg.lod||1) === 1) {
         const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=msg;
         // Shift the cache origin if this viewport falls outside the current window
         if (_vx < cacheOriX || _vx+_vw > cacheOriX+TILE_CACHE_W ||
@@ -1450,7 +1708,7 @@ function handle(msg) {
       // even though full me updates are now sent at 1 Hz instead of 25 Hz.
       if (me?.queen && vw?.queens) {
         const myQ=vw.queens.find(q=>q.id===me.id);
-        if (myQ) { me.queen.hp=myQ.hp; me.queen.maxHp=myQ.maxHp; me.queen.level=myQ.level; updateHUD(); }
+        if (myQ) { me.queen.hp=myQ.hp; me.queen.maxHp=myQ.maxHp; me.queen.level=myQ.level; me.shield=myQ.shield; updateHUD(); }
       }
       // Refresh inspect panel with live data from this viewport update
       if (selectedTarget) {
@@ -1477,8 +1735,14 @@ function handle(msg) {
       if (mode==='place-queen') updateSpawnStatus();
       break;
     case 'cfg': applyCfgSlider(msg.key, msg.value); break;
+    case 'server-stats': applyServerStats(msg); break;
+    case 'kill': pushKill(msg); break;
+    case 'regions': regionMetros=msg.metros||[]; buildRegionSwitcher(); break;
+    case 'region-holders': regionHolders=msg.holders||[]; buildRegionSwitcher(); if(winIsOpen('lb')) renderLbWindow(); break;
+    case 'welcome-back': showWelcomeBack(msg); break;
     case 'queen-placed':
       _queenPlaceCooldown = false;
+      $('death-screen').classList.remove('vis');
       mode='idle'; cvs.classList.remove('placing');
       stopForbiddenPoll(); hideSpawnScreen();
       panLocked=false; view.x=msg.x+1; view.y=msg.y+1;
@@ -1487,15 +1751,9 @@ function handle(msg) {
       break;
     case 'queen-dead':
       AudioEngine.queenShriek(0, 1);
-      toast('YOUR QUEEN HAS FALLEN — RETURNING TO SPAWN');
       stopForbiddenPoll(); hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
-      setTimeout(()=>{
-        view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
-        view.zoom=zoomTarget=1.0;
-        mode='place-queen'; cvs.classList.add('placing');
-        hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
-        doGeolocate();
-      },2000);
+      clearInspect();
+      showDeathScreen(msg);
       break;
     case 'world-wiped':
       toast('[ADMIN] WORLD WIPED');
@@ -1543,53 +1801,300 @@ function handle(msg) {
       AudioEngine.fleshHit(s.pan, s.vol);
       spawnFloatingText('-1', msg.sx, msg.sy, '#ff2e3f'); break;
     }
-    case 'leaderboard': {
-      const el=$('lb-body'); if (!el) break;
-      const entries=msg.entries||[], newPrev={};
-      let html='<div class="lb-table">';
-      const top=Math.min(entries.length,10);
-      if (top===0) {
-        html+='<div style="font-family:\'Press Start 2P\',monospace;font-size:7px;color:var(--dim);padding:10px 0;text-align:center;">NO QUEENS YET</div>';
-      }
-      for (let i=0;i<top;i++) {
-        const e=entries[i];
-        newPrev[e.id]=e.tiles;
-        const isMe=me && e.id===me.id;
-        const prevT=lbPrevTiles[e.id];
-        let trend=`<span style="color:var(--dim)">—</span>`;
-        if (prevT!==undefined) {
-          if (e.tiles>prevT) trend='<span class="lb-trend up">▲</span>';
-          else if (e.tiles<prevT) trend='<span class="lb-trend dn">▼</span>';
-        }
-        const name=e.name.length>9?e.name.slice(0,8)+'…':e.name;
-        const pbadge=e.prestige>0?`<span style="color:var(--yel);font-size:5px;margin-left:2px">P${e.prestige}</span>`:'';
-        html+=`<div class="lb-row${isMe?' lb-me':''}">
-          <span class="lb-rank">#${i+1}</span>
-          <div class="lb-name">
-            <span class="lb-swatch" style="background:${e.color}"></span>
-            <span class="lb-name-text">${name}</span>${pbadge}
-          </div>
-          <span class="lb-tiles">${fmtLbTiles(e.tiles)}</span>
-          ${trend}
-        </div>`;
-      }
-      html+='</div>';
-      el.innerHTML=html;
-      lbPrevTiles=newPrev;
-      break;
-    }
+    case 'leaderboard': lbAll=msg.entries||[]; renderLeaderboard(); if(winIsOpen('lb')) renderLbWindow(); break;
   }
 }
 
+// ---- Reusable app window (leaderboard now; shop / discovery / admin / settings reuse it) ----
+let _winKind=null;
+function openWindow(title, kind){
+  $('win-title').textContent=title;
+  $('win-body').innerHTML='';
+  _winKind=kind||null;
+  $('win-bg').style.display='grid';
+  syncHdrBtns();
+}
+function closeWindow(){ $('win-bg').style.display='none'; _winKind=null; syncHdrBtns(); }
+function syncHdrBtns(){
+  const map={shop:'hbtn-shop', disc:'hbtn-disc', settings:'hbtn-settings'};
+  for (const k in map){ const b=$(map[k]); if(b) b.classList.toggle('on', _winKind===k); }
+}
+function winIsOpen(kind){ const bg=$('win-bg'); return !!bg && bg.style.display!=='none' && (!kind || _winKind===kind); }
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && winIsOpen()){ e.stopPropagation(); closeWindow(); } });
+
+// ---- Leaderboard ----
+let lbAll=[], lbRegionFilter=null;
+// Simple SIDEBAR board: GLOBAL grand-score ranking — rank, color, name, score. Top 10 + YOU.
+function lbSimpleRow(e, rank, you){
+  const name=e.name.length>11?e.name.slice(0,10)+'…':e.name;
+  return `<div class="lb-row${you?' lb-me':''}">
+    <span class="lb-rank">#${rank}</span>
+    <div class="lb-name"><span class="lb-swatch" style="background:${e.color}"></span><span class="lb-name-text">${name}</span></div>
+    <span class="lb-tiles">${fmtLbTiles(e.score||0)}</span>
+  </div>`;
+}
+function renderLeaderboard(){
+  const el=$('lb-body'); if(!el) return;
+  let html='<div class="lb-sub">GLOBAL · GRAND SCORE</div><div class="lb-table">';
+  const top=Math.min(lbAll.length,10);
+  if (top===0) html+='<div class="lb-empty">NO QUEENS YET</div>';
+  for (let i=0;i<top;i++) html+=lbSimpleRow(lbAll[i], i+1, me&&lbAll[i].id===me.id);
+  html+='</div>';
+  // 11th slot: always YOU + your rank
+  if (me){
+    const idx=lbAll.findIndex(e=>e.id===me.id);
+    html+='<div class="lb-sep">— YOU —</div>';
+    if (idx>=0) html+=lbSimpleRow(lbAll[idx], idx+1, true);
+    else html+=`<div class="lb-row lb-me"><span class="lb-rank">#—</span><div class="lb-name"><span class="lb-swatch" style="background:${me.color||'#888'}"></span><span class="lb-name-text">${me.username||'YOU'}</span></div><span class="lb-tiles" style="color:var(--dim)">—</span></div>`;
+  }
+  html+='<button class="lb-expand" onclick="openLeaderboardWindow()">▦ FULL RANKINGS</button>';
+  el.innerHTML=html;
+}
+// Full WINDOW board: regions filter + all detail columns.
+function openLeaderboardWindow(){ AudioEngine.click(); openWindow('GRAND SCORE — WORLD RANKINGS','lb'); renderLbWindow(); }
+function lbSetRegion(r){ AudioEngine.tick(); lbRegionFilter=(lbRegionFilter===r?null:r); renderLbWindow(); }
+function lbFullRow(e, rank){
+  const you=me && e.id===me.id;
+  const kd=(e.kills||0)/Math.max(1,e.prestige||0);
+  const pbadge=e.prestige>0?` <span style="color:var(--yel)">P${e.prestige}</span>`:'';
+  return `<div class="lbw-row${you?' lb-me':''}">
+    <span class="lbw-rank">#${rank}</span>
+    <span class="lbw-sw" style="background:${e.color}"></span>
+    <span class="lbw-name">${e.name}${pbadge}</span>
+    <span class="lbw-reg">${e.region||'—'}</span>
+    <span class="lbw-c">${(e.score||0).toLocaleString()}</span>
+    <span class="lbw-c">LV${e.level}</span>
+    <span class="lbw-c">${e.kills||0}</span>
+    <span class="lbw-c">${kd.toFixed(1)}</span>
+  </div>`;
+}
+function renderLbWindow(){
+  const el=$('win-body'); if(!el) return;
+  let list = lbRegionFilter ? lbAll.filter(e=>e.region===lbRegionFilter) : lbAll;
+  const regions=[...new Set(lbAll.map(e=>e.region).filter(Boolean))].sort();
+  let html='<div class="lb-tabs"><span class="lb-tab'+(!lbRegionFilter?' on':'')+'" onclick="lbSetRegion(null)">ALL</span>';
+  for (const r of regions) html+=`<span class="lb-tab${lbRegionFilter===r?' on':''}" onclick="lbSetRegion(${JSON.stringify(r).replace(/"/g,'&quot;')})">${r}</span>`;
+  html+='</div>';
+  if (lbRegionFilter){
+    const hh=regionHolders.find(x=>x.name===lbRegionFilter);
+    if (hh) html+=`<div class="lb-sub">${hh.holder?('HELD BY <span style="color:'+(hh.color||'var(--ink)')+'">'+hh.holder+'</span> · '+(hh.tiles||0).toLocaleString()+' TILES'):'UNCLAIMED'}</div>`;
+  }
+  html+='<div class="lbw-head"><span class="lbw-rank">#</span><span class="lbw-sw"></span><span class="lbw-name">NAME</span><span class="lbw-reg">REGION</span><span class="lbw-c">SCORE</span><span class="lbw-c">LV</span><span class="lbw-c">K</span><span class="lbw-c">KD</span></div>';
+  html+='<div class="lbw-list">';
+  if (!list.length) html+='<div class="lb-empty">NO QUEENS</div>';
+  let meShown=false;
+  for (let i=0;i<list.length;i++){ if(me&&list[i].id===me.id) meShown=true; html+=lbFullRow(list[i], i+1); }
+  if (me && !meShown){ const idx=list.findIndex(e=>e.id===me.id); if(idx>=0) html+='<div class="lb-sep">· · ·</div>'+lbFullRow(list[idx], idx+1); }
+  html+='</div>';
+  el.innerHTML=html;
+}
+// ---- Region switcher (header) ----
+let regionMetros=[], regionHolders=[];
+function buildRegionSwitcher(){
+  const host=$('hdr-region'); if(!host) return;
+  host.style.cursor='pointer'; host.title='Switch region';
+  host.onclick=()=>{
+    let pop=$('region-pop');
+    if(pop){ pop.remove(); return; }
+    pop=document.createElement('div'); pop.id='region-pop';
+    pop.style.cssText="position:absolute;top:46px;left:120px;z-index:200;background:var(--bg2);border:2px solid var(--ink);box-shadow:4px 4px 0 0 var(--ink);max-height:60vh;overflow:auto;";
+    let h='';
+    for (const m of regionMetros){
+      const hh=regionHolders.find(x=>x.name===m.name);
+      const held = hh&&hh.holder
+        ? `<div style="font-size:6px;margin-top:3px;color:${hh.color||'var(--dim)'}">HELD BY ${hh.holder}</div>`
+        : `<div style="font-size:6px;margin-top:3px;color:var(--dim)">UNCLAIMED</div>`;
+      h+=`<div class="region-opt" data-x="${m.x}" data-y="${m.y}">${m.name}${held}</div>`;
+    }
+    pop.innerHTML=h;
+    pop.querySelectorAll('.region-opt').forEach(o=>o.onclick=()=>{ panTarget={x:+o.dataset.x+1,y:+o.dataset.y+1}; if(typeof zoomTarget!=='undefined') zoomTarget=Math.max(zoomTarget,0.6); pop.remove(); });
+    document.body.appendChild(pop);
+  };
+}
+
+// ---- Discovery window (passport + USER-vs-QUEEN) ----
+function openDiscoveryWindow(){ AudioEngine.click(); openWindow('DISCOVERY — PASSPORT','disc'); renderDiscoveryWindow(); }
+function renderDiscoveryWindow(){
+  const el=$('win-body'); if(!el||!me) return;
+  const countries=me.visitedCountries||[], continents=me.visitedContinents||[];
+  const q=me.queen, st=me.stats||{};
+  const chips=arr=>arr.length?arr.map(c=>`<span class="disc-chip">${c}</span>`).join(''):'<span class="disc-empty">— none yet — deploy ants to explore —</span>';
+  const contChips=continents.length?continents.map(c=>`<span class="disc-chip cont">${c}</span>`).join(''):'<span class="disc-empty">— none yet —</span>';
+  let html='<div class="disc-sec">▸ PASSPORT</div>';
+  html+=`<div class="disc-counts">
+    <div class="disc-count"><b>${continents.length}</b><span>CONTINENTS / 7</span></div>
+    <div class="disc-count"><b>${countries.length}</b><span>COUNTRIES</span></div>
+  </div>`;
+  html+=`<div class="disc-chips" style="margin-bottom:12px">${contChips}</div>`;
+  html+=`<div class="disc-chips">${chips(countries)}</div>`;
+  html+='<div class="disc-sec">▸ USER vs QUEEN</div>';
+  html+=`<div class="disc-cmp">
+    <div class="disc-col user"><h4>◆ USER (ACCOUNT)</h4>
+      <div class="disc-stat"><span>QUEENS FIELDED</span><b>${me.queensFielded||0}</b></div>
+      <div class="disc-stat"><span>LIFETIME KILLS</span><b>${me.lifetimeKills||0}</b></div>
+      <div class="disc-stat"><span>PEAK TILES EVER</span><b>${(me.lifetimePeakTiles||0).toLocaleString()}</b></div>
+      <div class="disc-stat"><span>PRESTIGE</span><b>P${me.prestige||0}</b></div>
+    </div>
+    <div class="disc-col queen"><h4>♛ THIS QUEEN</h4>
+      <div class="disc-stat"><span>REGION</span><b>${me.region||'—'}</b></div>
+      <div class="disc-stat"><span>TILES</span><b>${(st.tiles||0).toLocaleString()}</b></div>
+      <div class="disc-stat"><span>KILLS</span><b>${st.kills||0}</b></div>
+      <div class="disc-stat"><span>LEVEL</span><b>${q?q.level:'—'}</b></div>
+      <div class="disc-stat"><span>TIME ALIVE</span><b>${fmtTime(st.secs||0)}</b></div>
+    </div>
+  </div>`;
+  el.innerHTML=html;
+}
+
+// ---- Shop window (product cards, reuses the app window like Discovery) ----
+const SHOP_ITEMS=[
+  {id:'highway', ic:'🛣️', nm:'HIGHWAY',  pr:10, ds:'Carve a long painted highway in the direction you drag.'},
+  {id:'relocate',ic:'📍', nm:'RELOCATE', pr:20, ds:'Teleport your queen to a new tile you pick.'},
+  {id:'defender',ic:'🐜', nm:'DEFENDER', pr:1,  ds:'Spawn a stationary guard ant by your queen.'},
+  {id:'brute',   ic:'🦏', nm:'BRUTE',    pr:20, ds:'Deploy a heavy 2×2 worker that sieges enemy queens.'},
+  {id:'shield',  ic:'🛡️', nm:'SHIELD',   pr:10, ds:'Wrap your queen in a shield that absorbs damage.'},
+];
+function openShopWindow(){ AudioEngine.click(); openWindow('SHOP — REQUISITIONS','shop'); renderShopWindow(); }
+function renderShopWindow(){
+  const el=$('win-body'); if(!el) return;
+  if(!me){ el.innerHTML='<div class="disc-empty">CONNECTING…</div>'; return; }
+  const cr=me.credits||0, q=me.queen, haveQ=!!(q&&!q.dead);
+  let html=`<div class="shop-top"><div class="shop-cr">CREDITS<b>${cr}</b></div>
+    <div class="shop-note">+1 CR PER QUEEN KILL · CAP 100</div></div><div class="shop-grid">`;
+  for (const it of SHOP_ITEMS){
+    const need = it.id==='shield' ? (haveQ && !(me.shield>0)) : haveQ;
+    const dis = cr<it.pr || !need;
+    html+=`<div class="shop-card"><div class="shop-ic">${it.ic}</div>
+      <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
+      <div class="shop-pr">${it.pr} CR</div>
+      <button class="shop-buy" ${dis?'disabled':''} onclick="shopWindowBuy('${it.id}')">BUY</button></div>`;
+  }
+  html+=`<div class="shop-card wip"><div class="shop-ic">🤝</div>
+    <div class="shop-nm">ALLIANCE</div><div class="shop-ds">Team up with a rival queen. Coming soon.</div>
+    <div class="shop-pr">80 CR</div><button class="shop-buy" disabled>SOON</button></div></div>`;
+  const dCount=me.defenders||0;
+  if (dCount>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--blu);margin-top:14px;text-align:center;">DEFENDERS QUEUED: ${dCount}</div>`;
+  if (!haveQ) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--red);margin-top:14px;text-align:center;">DEPLOY A QUEEN TO PURCHASE</div>`;
+  el.innerHTML=html;
+}
+function shopWindowBuy(item){
+  shopBuy(item); // handles credit/queen checks + placement modes + sounds
+  // Placement items need the map — get the window out of the way.
+  if (item==='highway'||item==='relocate'||item==='brute') closeWindow();
+  else if (winIsOpen('shop')) renderShopWindow();
+}
+
+// ---- Settings window (sound / music / map / scanlines / volume) ----
+const settings = {
+  sfx:   localStorage.getItem('hive-sfx')   !== '0',
+  music: localStorage.getItem('hive-music') !== '0',
+  scan:  localStorage.getItem('hive-scan')  !== '0',
+  vol:   (()=>{ const v=parseFloat(localStorage.getItem('hive-vol')); return isNaN(v)?0.6:v; })(),
+};
+function applySettings(){
+  AudioEngine.setSfx(settings.sfx);
+  AudioEngine.setMusic(settings.music);
+  AudioEngine.setMasterVolume(settings.vol);
+  document.body.classList.toggle('no-scan', !settings.scan);
+}
+function openSettingsWindow(){ AudioEngine.click(); openWindow('SETTINGS','settings'); renderSettingsWindow(); }
+function renderSettingsWindow(){
+  const el=$('win-body'); if(!el) return;
+  const tog=(name,desc,on,fn)=>`<div class="set-row"><div class="set-info">
+    <div class="set-name">${name}</div><div class="set-desc">${desc}</div></div>
+    <div class="set-toggle${on?' on':''}" onclick="${fn}"><div class="knob"></div></div></div>`;
+  let html='';
+  html+=tog('SOUND FX','Clicks, clashes, queen shrieks.', settings.sfx, "toggleSetting('sfx')");
+  html+=tog('MUSIC','Looping chiptune soundtrack.', settings.music, "toggleSetting('music')");
+  html+=tog('BASE MAP','OpenStreetMap geography under your territory.', mapVisible, "toggleSetting('map')");
+  html+=tog('SCANLINES','Retro CRT scanline overlay.', settings.scan, "toggleSetting('scan')");
+  html+=`<div class="set-row"><div class="set-info"><div class="set-name">MASTER VOLUME</div>
+    <div class="set-desc">Overall loudness of the game.</div></div>
+    <div class="set-vol"><input type="range" min="0" max="100" value="${Math.round(settings.vol*100)}"
+      oninput="setVolume(this.value)"></div></div>`;
+  el.innerHTML=html;
+}
+function toggleSetting(key){
+  AudioEngine.click();
+  if (key==='map'){ toggleMap(); renderSettingsWindow(); return; }
+  settings[key]=!settings[key];
+  if (key==='sfx'){ AudioEngine.setSfx(settings.sfx); localStorage.setItem('hive-sfx', settings.sfx?'1':'0'); }
+  else if (key==='music'){ AudioEngine.setMusic(settings.music); localStorage.setItem('hive-music', settings.music?'1':'0'); }
+  else if (key==='scan'){ document.body.classList.toggle('no-scan', !settings.scan); localStorage.setItem('hive-scan', settings.scan?'1':'0'); }
+  renderSettingsWindow();
+}
+function setVolume(v){ settings.vol=(+v)/100; AudioEngine.setMasterVolume(settings.vol); localStorage.setItem('hive-vol', String(settings.vol)); }
+
+// ---- Welcome-back (offline summary on reconnect) ----
+function fmtAway(ms){ const m=(ms/60000)|0; if(m<60) return m+'M'; return ((m/60)|0)+'H '+(m%60)+'M'; }
+function showWelcomeBack(m){
+  const sgn=n=>n>0?`<b class="wb-pos">+${n.toLocaleString()}</b>`:(n<0?`<b class="wb-neg">${n.toLocaleString()}</b>`:'<b>0</b>');
+  const rows=[`<div class="wb-row"><span class="wb-ico">⏱</span>AWAY<b>${fmtAway(m.awayMs||0)}</b></div>`];
+  if (m.queenDied){
+    $('wb-sub').textContent='YOUR QUEEN FELL WHILE AWAY';
+    if ((m.armyDelta||0)<0) rows.push(`<div class="wb-row"><span class="wb-ico">♟</span>WORKERS LOST<b class="wb-neg">${m.armyDelta}</b></div>`);
+    if ((m.countriesDelta||0)>0) rows.push(`<div class="wb-row"><span class="wb-ico">🌍</span>NEW COUNTRIES<b class="wb-pos">+${m.countriesDelta}</b></div>`);
+  } else {
+    $('wb-sub').textContent='WHILE YOU WERE AWAY';
+    rows.push(`<div class="wb-row"><span class="wb-ico">▦</span>TILES ${sgn(m.tilesDelta||0)}</div>`);
+    if ((m.killsDelta||0)>0)  rows.push(`<div class="wb-row"><span class="wb-ico">⚔</span>KILLS<b class="wb-pos">+${m.killsDelta}</b></div>`);
+    if ((m.levelsDelta||0)>0) rows.push(`<div class="wb-row"><span class="wb-ico">▲</span>LEVELS<b class="wb-pos">+${m.levelsDelta}</b></div>`);
+    if ((m.armyDelta||0)!==0) rows.push(`<div class="wb-row"><span class="wb-ico">♟</span>WORKERS ${sgn(m.armyDelta||0)}</div>`);
+    if ((m.countriesDelta||0)>0) rows.push(`<div class="wb-row"><span class="wb-ico">🌍</span>NEW COUNTRIES<b class="wb-pos">+${m.countriesDelta}</b></div>`);
+  }
+  $('wb-list').innerHTML=rows.join('');
+  $('welcome-screen').classList.add('vis');
+}
+function closeWelcome(){ AudioEngine.click(); $('welcome-screen').classList.remove('vis'); }
+$('wb-continue').onclick=closeWelcome;
+
 function fmtTime(s) { return `${(s/60)|0}:${String(s%60).padStart(2,'0')}`; }
+function fmtUptime(ms, withSecs) {
+  const u=(ms/1000)|0, h=(u/3600)|0, m=((u%3600)/60)|0, s=u%60;
+  return withSecs ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+                  : `${h}h${String(m).padStart(2,'0')}`;
+}
+// Server-wide stats push (~1 Hz) → header bar + admin status cards.
+function applyServerStats(s) {
+  $('hdr-online').textContent=s.online;
+  $('hdr-ants').textContent=(s.ants||0).toLocaleString();
+  $('hdr-queens').textContent=s.queens;
+  $('hdr-tick').textContent=(s.tick||0).toLocaleString();
+  $('hdr-tps').textContent=s.tps;
+  $('hdr-uptime').textContent=fmtUptime(s.uptimeMs||0,false);
+  if ($('adm-online')) $('adm-online').textContent=s.online;
+  if ($('adm-queens')) $('adm-queens').textContent=s.queens;
+  if ($('adm-ants'))   $('adm-ants').textContent=(s.ants||0).toLocaleString();
+  if ($('adm-tick'))   $('adm-tick').textContent=(s.tick||0).toLocaleString();
+  if ($('adm-tps'))    $('adm-tps').textContent=s.tps;
+  if ($('adm-uptime')) $('adm-uptime').textContent=fmtUptime(s.uptimeMs||0,true);
+}
+// CS1.6-style killfeed: prepend (newest on top), cap, fade out after a TTL.
+const KF_MAX=6, KF_TTL=6000;
+function kfEsc(s){ return String(s==null?'':s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+function pushKill(m) {
+  const kf=$('killfeed'); if (!kf) return;
+  const row=document.createElement('div'); row.className='kf-row';
+  const vc=m.victimColor||'#bbb';
+  if (m.killer) {
+    const kc=m.killerColor||'#bbb';
+    row.innerHTML=`<span style="color:${kc}">♛ ${kfEsc(m.killer)}</span>`
+      +`<span class="kf-x">⚔</span><span style="color:${vc}">${kfEsc(m.victim)}</span>`;
+  } else {
+    row.innerHTML=`<span class="kf-x">☠</span><span style="color:${vc}">${kfEsc(m.victim)}</span>`
+      +`<span class="kf-elim">ELIMINATED</span>`;
+  }
+  kf.prepend(row);
+  while (kf.children.length>KF_MAX) kf.removeChild(kf.lastChild);
+  setTimeout(()=>{ row.classList.add('kf-out'); setTimeout(()=>row.remove(),500); }, KF_TTL);
+}
 function updateHUD() {
   if (!me) return;
   const q=me.queen, st=me.stats||{};
   const tiles=st.tiles||0, secs=st.secs||0, kills=st.kills||0, score=st.score||0;
-  $('hdr-tick').textContent=me.tick;
-  $('hdr-ants').textContent=me.army||0;
-  $('hdr-score').textContent=score.toLocaleString();
+  // Header now shows SERVER stats (applyServerStats); personal score lives in the sidebar.
   $('score-big').textContent=score.toLocaleString();
+  if ($('hdr-region-name')) $('hdr-region-name').textContent=me.region||'—';
   $('sc-tiles').textContent=tiles.toLocaleString();
   $('sc-time').textContent=fmtTime(secs);
   $('sc-kills').textContent=kills;
@@ -1604,12 +2109,14 @@ function updateHUD() {
     $('hp-cur').textContent=q.hp|0;
     $('hp-max').textContent=q.maxHp;
     $('hp-fill').style.width=(q.hp/q.maxHp*100)+'%';
+    const _sh=me.shield||0;
+    $('shield-fill').style.width=(q.maxHp?Math.min(100,_sh/q.maxHp*100):0)+'%';
+    $('hp-shield').textContent=_sh>0?(' +'+_sh):'';
     $('lvl').textContent=q.level;
     const into = q.xpIntoLevel||0, span = q.xpLevelSpan||1;
     const pct = (into / span * 100);
     $('xp-fill').style.width=pct+'%';
     $('xp-val').textContent=into.toLocaleString()+'/'+span.toLocaleString();
-    $('btn-ant').disabled=me.antsAvail<=0 || q.dead;
     // If we ran out of ants while in sticky place mode, exit it
     if (me.antsAvail<=0 && (mode==='place-ant-down' || mode==='place-ant-drag')) {
       exitPlaceMode();
@@ -1617,22 +2124,17 @@ function updateHUD() {
     }
   }
   $('ants-avail').textContent=me.antsAvail;
+  // Workers panel: live ARMY / cap readout + bar + deploy-button state.
+  const army=me.army||0, cap=me.cfg?.ARMY_CAP||0;
+  const wkArmy=$('wk-army');
+  if (wkArmy && wkArmy.firstChild && wkArmy.firstChild.nodeType===3) wkArmy.firstChild.nodeValue=army.toLocaleString();
+  if ($('wk-cap')) $('wk-cap').textContent = cap ? ('/'+(cap>=1000?(cap/1000)+'K':cap)) : '';
+  if ($('wk-army-fill')&&cap) $('wk-army-fill').style.width=Math.min(100,army/cap*100)+'%';
+  if ($('wk-list-count')) $('wk-list-count').textContent=army;
+  updateDeployBtn();
   const total=me.nextRefillMs||0;
   const rh=(total/3600000)|0, rm=((total%3600000)/60000)|0, rs=((total%60000)/1000)|0;
   $('refill-timer').textContent=`${String(rh).padStart(2,'0')}:${String(rm).padStart(2,'0')}:${String(rs).padStart(2,'0')}`;
-  // Shop panel sync
-  const cr=me.credits||0, haveQ=q&&!q.dead;
-  $('shop-credits').textContent=cr;
-  $('s-credits').textContent=cr;
-  const shopBtns=[['shop-highway',10,haveQ],['shop-relocate',20,haveQ],
-    ['shop-defender',1,haveQ],['shop-brute',20,haveQ],['shop-shield',10,haveQ]];
-  for (const [id,price,needQ] of shopBtns) {
-    const el=$( id); if (el) el.disabled=cr<price||!needQ;
-  }
-  const dCount=me.defenders||0;
-  const dc=$('shop-def-count');
-  if (dc) { dc.style.display=dCount>0?'':'none'; }
-  const ds=$('shop-defenders'); if (ds) ds.textContent=dCount;
 }
 
 /* CANVAS */
@@ -1660,13 +2162,21 @@ resize();
 let lastViewKey=null, pendingViewKey=null, viewSendTimer=null;
 const SERVER_MAX_DIM=800; // must match MAX_DIM in network.rs
 function _computeViewBox() {
-  const cp=CELL*view.zoom; if (cp<0.5) return null;
+  const cp=CELL*view.zoom;
   const W=cvs.width, H=cvs.height;
-  const tx=Math.min(Math.ceil(W/cp)+4, SERVER_MAX_DIM);
-  const ty=Math.min(Math.ceil(H/cp)+4, SERVER_MAX_DIM);
-  const PAD=Math.min(4, Math.floor((SERVER_MAX_DIM-tx)/2), Math.floor((SERVER_MAX_DIM-ty)/2));
-  const x0=Math.floor(view.x-tx/2)-PAD, y0=Math.floor(view.y-ty/2)-PAD;
-  return {x0, y0, x1:x0+tx+PAD*2, y1:y0+ty+PAD*2};
+  if (cp >= 0.5) {
+    // Zoomed-in: request the visible rect at 1:1, clamped to the server's MAX_DIM.
+    const tx=Math.min(Math.ceil(W/cp)+4, SERVER_MAX_DIM);
+    const ty=Math.min(Math.ceil(H/cp)+4, SERVER_MAX_DIM);
+    const PAD=Math.min(4, Math.floor((SERVER_MAX_DIM-tx)/2), Math.floor((SERVER_MAX_DIM-ty)/2));
+    const x0=Math.floor(view.x-tx/2)-PAD, y0=Math.floor(view.y-ty/2)-PAD;
+    return {x0, y0, x1:x0+tx+PAD*2, y1:y0+ty+PAD*2};
+  }
+  // Zoomed-out: request the FULL visible rect (may be millions of tiles). The server
+  // downsamples it to a ≤MAX_DIM grid (LOD pyramid) and tags the frame with `lod` step.
+  const fw=Math.max(1,Math.ceil(W/cp)), fh=Math.max(1,Math.ceil(H/cp));
+  const x0=Math.floor(view.x-fw/2), y0=Math.floor(view.y-fh/2);
+  return {x0, y0, x1:x0+fw, y1:y0+fh};
 }
 function _flushView() {
   viewSendTimer=null; pendingViewKey=null;
@@ -1692,14 +2202,14 @@ function pushView(immediate=false) {
 
 function clearInspect() {
   selectedTarget = null;
-  $('inspect-box').style.display = 'none';
+  $('inspect-section').style.display = 'none';
   admClearTarget();
 }
 
 function showInspectBox() {
   const t = selectedTarget;
   if (!t) return;
-  const box = $('inspect-box');
+  const box = $('inspect-section');
   const hdr = $('inspect-type');
   const rows = $('inspect-rows');
 
@@ -1745,6 +2255,30 @@ function showInspectBox() {
   rows.innerHTML = rowsHtml;
   box.style.display = 'block';
 }
+
+// ---- Death screen: queen-life summary + prestige + redeploy ----
+function showDeathScreen(m){
+  m=m||{};
+  $('ds-tiles').textContent=(m.peakTiles||0).toLocaleString();
+  $('ds-kills').textContent=m.kills||0;
+  $('ds-time').textContent=fmtTime(m.secsAlive||0);
+  $('ds-level').textContent=m.level||1;
+  $('ds-region').textContent=m.region||'—';
+  $('ds-credits').textContent=(m.credits||0).toLocaleString();
+  $('ds-prestige').textContent='P'+(m.prestige||0);
+  $('ds-sub').textContent = m.killer ? ('SLAIN BY '+String(m.killer).toUpperCase()) : 'FALLEN';
+  $('death-screen').classList.add('vis');
+}
+function redeployQueen(){
+  AudioEngine.click();
+  $('death-screen').classList.remove('vis');
+  view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+  view.zoom=zoomTarget=1.0;
+  mode='place-queen'; cvs.classList.add('placing');
+  hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+  doGeolocate();
+}
+$('ds-redeploy').onclick=redeployQueen;
 
 function inspectAtTile(tile) {
   if (!vw) { clearInspect(); return; }
@@ -1942,6 +2476,33 @@ function toggleMap() {
   tileCacheVw = null;
 }
 
+// LOD territory overview: paint the downsampled grid into a small offscreen (1px per
+// super-cell), then blit it up nearest-neighbour so each cell covers `lod*cp` screen px.
+// Positioned by world coords each frame, so it pans/zooms smoothly between ~10 Hz refreshes.
+function drawLodTiles(v, cp, W, H) {
+  const step=v.lod||1, gw=v.w, gh=v.h, tiles=v.tiles, fog=v.fog;
+  if (!gw || !gh || !tiles) return;
+  if (lodCanvas.width!==gw || lodCanvas.height!==gh) { lodCanvas.width=gw; lodCanvas.height=gh; }
+  const img=lodCtx.createImageData(gw, gh), d=img.data;
+  const myId=me?.id||0;
+  for (let i=0; i<gw*gh; i++) {
+    const t=tiles[i];
+    if (t===0) continue;
+    const f=fog?fog[i]:0;
+    if (f>=100) continue;
+    const o=i*4;
+    const [r,g,b]=toRGB(palette[t]||'#9b3027');
+    d[o]=r; d[o+1]=g; d[o+2]=b;
+    const baseA = (t===myId) ? 255 : (mapVisible ? 150 : 255);
+    d[o+3] = Math.round(baseA * (f>0 ? Math.max(0,1-f/100) : 1));
+  }
+  lodCtx.putImageData(img, 0, 0);
+  const sx = W/2 + (v.x0 - view.x)*cp;
+  const sy = H/2 + (v.y0 - view.y)*cp;
+  const dw = gw*step*cp, dh = gh*step*cp;
+  if (dw>0 && dh>0) { ctx.imageSmoothingEnabled=false; ctx.drawImage(lodCanvas, sx, sy, dw, dh); }
+}
+
 function render() {
   const cp=CELL*view.zoom;
   const W=cvs.width, H=cvs.height;
@@ -1976,8 +2537,12 @@ function render() {
   const placingMode = mode==='place-queen';
   const myId = me?.id || 0;
 
-  // 2) Tile layer — chunk-cached: 2048×2048 sliding window, 1px-per-tile offscreen canvas
-  if (tileCache && cp >= 0.5) {
+  // 2) Tile layer.
+  // LOD overview when zoomed out (server sent a downsampled `lod` frame); else the 1:1
+  // sliding-cache path. The two are mutually exclusive — lod>1 only occurs below cp 0.5.
+  if (vw && (vw.lod||1) > 1) {
+    drawLodTiles(vw, cp, W, H);
+  } else if (tileCache && cp >= 0.5) {
     const MAX_CAM = 600;
     const camW = Math.min(MAX_CAM, Math.ceil(W/cp) + 6);
     const camH = Math.min(MAX_CAM, Math.ceil(H/cp) + 6);
@@ -2691,15 +3256,81 @@ function stopForbiddenPoll() {
   forbiddenZones = [];
 }
 
+let workerType='normal';
+function setWorkerType(t) {
+  AudioEngine.tick();
+  workerType=t;
+  $('wk-type-normal').classList.toggle('active',t==='normal');
+  $('wk-type-brute').classList.toggle('active',t==='brute');
+  // Leaving a half-started placement of the other type
+  if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
+  if (mode.startsWith('shop-brute')) exitShopMode();
+  updateDeployBtn();
+}
+function updateDeployBtn() {
+  const b=$('btn-ant'); if (!b) return;
+  // Don't fight the "STOP PLACING" label while a placement is active.
+  if (mode==='place-ant-down'||mode==='place-ant-drag'||mode.startsWith('shop-brute')) return;
+  const q=me?.queen, haveQ=!!(q&&!q.dead);
+  if (workerType==='brute') {
+    const cr=me?.credits||0;
+    b.textContent='+ DEPLOY BRUTE · 20CR';
+    b.disabled=!haveQ||cr<20;
+  } else {
+    b.textContent='+ DEPLOY WORKER';
+    b.disabled=!haveQ||(me?.antsAvail||0)<=0;
+  }
+}
 $('btn-ant').onclick=()=>{
   AudioEngine.click();
-  if (mode==='place-ant-down' || mode==='place-ant-drag') {
-    exitPlaceMode();
+  if (!me||!me.queen||me.queen.dead) return toast('PLACE A QUEEN FIRST');
+  if (mode==='place-ant-down' || mode==='place-ant-drag') { exitPlaceMode(); return; }
+  if (mode.startsWith('shop-brute')) { exitShopMode(); updateDeployBtn(); return; }
+  if (workerType==='brute') {
+    if ((me.credits||0)<20) return toast('NEED 20 CREDITS');
+    shopBuy('brute');
+  } else {
+    if ((me.antsAvail||0)<=0) return toast('NO ANTS LEFT');
+    enterPlaceMode();
+  }
+};
+// ---- Active-worker list (expandable, lifespan bars) ----
+let antListOpen=false;
+function toggleAntList() {
+  AudioEngine.tick();
+  antListOpen=!antListOpen;
+  $('wk-list').style.display=antListOpen?'':'none';
+  $('wk-list-caret').textContent=antListOpen?'▾':'▸';
+  renderAntList();
+}
+function fmtCountdown(secs) {
+  const h=(secs/3600)|0, m=((secs%3600)/60)|0, s=secs%60;
+  if (h>0) return `${h}h${String(m).padStart(2,'0')}`;
+  if (m>0) return `${m}m${String(s).padStart(2,'0')}`;
+  return `${s}s`;
+}
+function renderAntList() {
+  if (!antListOpen) return;
+  const el=$('wk-list'); if (!el) return;
+  const ants=me?.ants||[], life=me?.cfg?.LIFESPAN||1, tr=me?.tickRate||50;
+  if (!ants.length) {
+    el.innerHTML='<div style="font-family:\'Press Start 2P\',monospace;font-size:6px;color:var(--dim);padding:8px 2px;text-align:center;">NO ACTIVE WORKERS</div>';
     return;
   }
-  if (!me||me.antsAvail<=0) return toast('NO ANTS LEFT');
-  enterPlaceMode();
-};
+  let html='';
+  for (const a of ants) {
+    const rem=a[1], kind=a[2];
+    const frac=Math.max(0,Math.min(1,rem/life));
+    const secs=Math.max(0,(rem/tr)|0);
+    const ic=kind===1?'◼':'▴';
+    html+=`<div class="wk-ant${kind===1?' brute':''}"><span class="wk-ant-ic">${ic}</span>`
+      +`<span class="wk-ant-bar"><span class="wk-ant-fill" style="width:${(frac*100).toFixed(1)}%"></span></span>`
+      +`<span class="wk-ant-t">${fmtCountdown(secs)}</span></div>`;
+  }
+  const more=(me?.army||0)-ants.length;
+  if (more>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);text-align:center;padding:4px;">+${more} MORE</div>`;
+  el.innerHTML=html;
+}
 $('admin-chk').onchange=e=>{
   AudioEngine.tick();
   document.body.classList.toggle('admin-on',e.target.checked);
@@ -3092,20 +3723,9 @@ function toast(msg) {
   toastTmr=setTimeout(()=>el.classList.remove('show'), 2800);
 }
 
-setInterval(async()=>{
-  try {
-    const j=await fetch('/health').then(r=>r.json());
-    $('hdr-players').textContent=j.players;
-    if ($('adm-online')) $('adm-online').textContent=j.players;
-    if ($('adm-queens')) $('adm-queens').textContent=j.queens;
-    if ($('adm-ants'))   $('adm-ants').textContent=j.ants;
-    if ($('adm-tick'))   $('adm-tick').textContent=j.tick;
-    if ($('adm-uptime')) {
-      const u=(j.uptimeMs/1000)|0, h=(u/3600)|0, m=((u%3600)/60)|0, s=u%60;
-      $('adm-uptime').textContent=`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-    }
-  } catch{}
-},2000);
+// Header + admin status cards are driven by the pushed `server-stats` message
+// (see applyServerStats), so no per-client /health polling is needed — that
+// previously hit the world read lock once per client every 2s.
 
 /* Init audio context on first user interaction */
 document.addEventListener('click', () => AudioEngine.init(), { once: true });
@@ -3154,6 +3774,9 @@ document.addEventListener('keydown', e => {
       zoomTarget = clamp(zoomTarget/1.15, 0.0001, 16); break;
   }
 });
+
+/* Apply saved user settings (sfx / music / scanlines / master volume) before audio starts */
+applySettings();
 
 /* Mute toggle */
 let _muteState = localStorage.getItem('hive-muted') === '1';

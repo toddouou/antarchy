@@ -21,6 +21,7 @@ pub fn build_leaderboard(world: &World) -> String {
         .filter(|(_, q)| !q.dead)
         .filter_map(|(&id, q)| {
             let p = world.players.get(&id)?;
+            let score = calc_score(q.cached_tiles, p.queen_placed_at, q.kills);
             Some(json!({
                 "id":       id,
                 "name":     p.username,
@@ -29,15 +30,55 @@ pub fn build_leaderboard(world: &World) -> String {
                 "level":    q.level,
                 "kills":    q.kills,
                 "prestige": p.prestige,
+                "region":   q.region,
+                "score":    score as i64,
+                "npc":      p.npc,
             }))
         })
         .collect();
+    // Rank by Grand Score (tiles + time alive + kills), not tiles alone.
     entries.sort_by(|a, b| {
-        let ta = a["tiles"].as_u64().unwrap_or(0);
-        let tb = b["tiles"].as_u64().unwrap_or(0);
-        tb.cmp(&ta)
+        let sa = a["score"].as_i64().unwrap_or(0);
+        let sb = b["score"].as_i64().unwrap_or(0);
+        sb.cmp(&sa)
     });
     json!({"t": "leaderboard", "entries": entries}).to_string()
+}
+
+/// World-wide server stats pushed to every connected client (~1 Hz). Replaces per-client
+/// `/health` polling — built once, broadcast to all, so cost is O(1) not O(players) HTTP
+/// hits against the world lock. Drives the header bar + admin status cards.
+pub fn build_server_stats(world: &World) -> String {
+    let online = world.players.values().filter(|p| !p.npc && p.tx.is_some()).count();
+    let queens = world.queens.values().filter(|q| !q.dead).count();
+    json!({
+        "t":       "server-stats",
+        "online":  online,
+        "ants":    world.ants.len(),
+        "queens":  queens,
+        "tick":    world.tick,
+        "tps":     cfg().tick_rate,
+        "uptimeMs": current_ms() - world.started_at,
+    }).to_string()
+}
+
+/// Metro king-of-the-hill holders for the client (region switcher + leaderboard region tabs).
+/// Text only — no map borders. Broadcast on the holder-recompute cadence (simulation.rs).
+pub fn build_region_holders(world: &World) -> String {
+    let holders: Vec<Value> = world.metro_holders.iter().map(|h| {
+        let (name, color) = match h.owner.and_then(|id| world.players.get(&id)) {
+            Some(p) => (Some(p.username.clone()), Some(p.color.clone())),
+            None    => (None, None),
+        };
+        json!({
+            "name":     h.name,
+            "holderId": h.owner,
+            "holder":   name,
+            "color":    color,
+            "tiles":    h.tiles,
+        })
+    }).collect();
+    json!({"t": "region-holders", "holders": holders}).to_string()
 }
 
 pub fn build_player_info(world: &World, player_id: u32) -> String {
@@ -54,6 +95,21 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
     let xp      = q.map(|q| q.xp).unwrap_or(0.0);
     let xp_this = q.map(|q| total_xp_for_level(q.level, &c)).unwrap_or(0.0);
     let xp_next = q.map(|q| total_xp_for_level(q.level + 1, &c)).unwrap_or(c.xp_base);
+
+    // Player's own live workers for the WORKERS active-list (capped at 120; each entry is
+    // [id, remaining_lifespan_ticks, kind]). Early-out once we have enough to bound the
+    // per-player scan a little. Client renders lifespan bars from this + cfg LIFESPAN.
+    let mut my_ants: Vec<Value> = Vec::new();
+    for a in world.ants.iter() {
+        if a.owner != player_id { continue; }
+        my_ants.push(json!([a.id, a.lifespan.saturating_sub(a.age), a.kind]));
+        if my_ants.len() >= 120 { break; }
+    }
+
+    let mut visited_countries: Vec<&String> = p.visited_countries.iter().collect();
+    visited_countries.sort();
+    let mut visited_continents: Vec<&String> = p.visited_continents.iter().collect();
+    visited_continents.sort();
 
     let is_admin = world.auth.is_admin_id(player_id);
     let color_chosen = if is_admin {
@@ -93,10 +149,17 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
         "queen": queen_val,
         "prestige":  p.prestige,
         "credits":   p.credits,
+        "region":    q.map(|q| q.region.clone()).unwrap_or_default(),
         "defenders": p.defenders.len(),
+        "visitedCountries":  visited_countries,
+        "visitedContinents": visited_continents,
+        "lifetimeKills":     p.lifetime_kills,
+        "lifetimePeakTiles": p.lifetime_peak_tiles,
+        "queensFielded":     p.queens_fielded,
         "shield":    q.map(|q| q.shield).unwrap_or(0),
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
+        "ants": my_ants,
         "tick": world.tick,
         "tickRate": c.tick_rate,
         "worldW": world.world_w,
@@ -113,6 +176,8 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
             "BUBBLE_R":   c.bubble_r,
             "DAILY_ANTS": c.daily_ants,
             "LEVEL_CAP":  c.xp_level_cap,
+            "LIFESPAN":   c.lifespan,
+            "ARMY_CAP":   c.army_cap,
         }
     }).to_string()
 }
@@ -142,6 +207,9 @@ pub struct RawView {
     /// In-rect ants (id,x,y,dx,dy,owner,kind); fog visibility applied in `finish_view`.
     ants: Vec<(u32, i32, i32, i8, i8, u32, u8)>,
     queens: Vec<QueenLite>,
+    /// LOD step: tiles per served grid cell. 1 = normal 1:1; >1 = zoomed-out overview where
+    /// each `owners` cell samples one tile every `lod_step` tiles (the territory pyramid).
+    lod_step: i32,
 }
 
 /// Phase A (under the World read lock): extract the minimal owned data for one client's
@@ -154,32 +222,48 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
 
     let x0 = v.x0.max(0);
     let y0 = v.y0.max(0);
-    let w  = (v.x1.min(ww) - x0).min(MAX_DIM).max(0) as usize;
-    let h  = (v.y1.min(wh) - y0).min(MAX_DIM).max(0) as usize;
-    let x1 = x0 + w as i32;
-    let y1 = y0 + h as i32;
-    if w == 0 || h == 0 { return None; }
+    let fw = (v.x1.min(ww) - x0).max(0);   // full requested tile span (clamped to world)
+    let fh = (v.y1.min(wh) - y0).max(0);
+    if fw == 0 || fh == 0 { return None; }
+
+    // LOD step: when the requested span exceeds MAX_DIM, downsample so the served grid stays
+    // ≤ MAX_DIM cells/axis (each cell = `step` tiles). step == 1 is the normal 1:1 path.
+    let step = (((fw.max(fh) as usize + MAX_DIM as usize - 1) / MAX_DIM as usize).max(1)) as i32;
+    let lod  = step > 1;
+
+    // Zoomed-out ants-only frames carry nothing (ants are sub-pixel) — skip them entirely.
+    if lod && !include_tiles { return None; }
+
+    let w  = (((fw + step - 1) / step) as usize).clamp(1, MAX_DIM as usize);
+    let h  = (((fh + step - 1) / step) as usize).clamp(1, MAX_DIM as usize);
+    let x1 = x0 + (w as i32) * step;
+    let y1 = y0 + (h as i32) * step;
 
     let is_admin = world.auth.is_admin_id(player_id);
 
-    // In-rect ants (fog filtering deferred to finish_view).
-    let ants: Vec<(u32, i32, i32, i8, i8, u32, u8)> = world.ants.iter()
-        .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
-        .map(|a| (a.id, a.x, a.y, a.dx, a.dy, a.owner, a.kind))
-        .collect();
+    // In-rect ants (fog filtering deferred to finish_view). None while zoomed out (LOD).
+    let ants: Vec<(u32, i32, i32, i8, i8, u32, u8)> = if lod {
+        Vec::new()
+    } else {
+        world.ants.iter()
+            .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
+            .map(|a| (a.id, a.x, a.y, a.dx, a.dy, a.owner, a.kind))
+            .collect()
+    };
 
-    // Tiles + fog ownership slice + queens only matter on tile frames.
+    // Tiles + fog ownership slice + queens only matter on tile frames. At LOD, each grid cell
+    // samples the tile `step` apart (nearest-sample territory pyramid); fog runs on the grid.
     let (pad, pw, ph, owners, queens) = if include_tiles {
         let pad = PAD as usize;
         let pw = w + 2 * pad;
         let ph = h + 2 * pad;
         let mut owners = vec![0u32; pw * ph];
         for py in 0..ph {
-            let wy = y0 - pad as i32 + py as i32;
+            let wy = y0 + (py as i32 - pad as i32) * step;
             if wy < 0 || wy >= wh { continue; }
             let row = py * pw;
             for px in 0..pw {
-                let wx = x0 - pad as i32 + px as i32;
+                let wx = x0 + (px as i32 - pad as i32) * step;
                 if wx < 0 || wx >= ww { continue; }
                 owners[row + px] = world.tiles.get(wx as u32, wy as u32);
             }
@@ -207,7 +291,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
 
     Some(RawView {
         x0, y0, w, h, tick: world.tick, include_tiles, player_id, is_admin,
-        pad, pw, ph, owners, ants, queens,
+        pad, pw, ph, owners, ants, queens, lod_step: step,
     })
 }
 
@@ -260,7 +344,10 @@ pub fn finish_view(raw: &RawView, palette: &Value) -> String {
     let queens: Vec<Value> = raw.queens.iter()
         .filter_map(|q| {
             if !q.reveal {
-                let qi = ((q.y - raw.y0).max(0) as usize) * raw.w + ((q.x - raw.x0).max(0) as usize);
+                // Map world → served grid cell (÷ lod_step) before sampling fog.
+                let gx = (((q.x - raw.x0) / raw.lod_step).max(0) as usize).min(raw.w.saturating_sub(1));
+                let gy = (((q.y - raw.y0) / raw.lod_step).max(0) as usize).min(raw.h.saturating_sub(1));
+                let qi = gy * raw.w + gx;
                 if fog.get(qi).copied().unwrap_or(100) >= 100 { return None; }
             }
             let mut obj = json!({
@@ -277,6 +364,7 @@ pub fn finish_view(raw: &RawView, palette: &Value) -> String {
     json!({
         "t": "view",
         "x0": raw.x0, "y0": raw.y0, "w": raw.w, "h": raw.h,
+        "lod": raw.lod_step,
         "tiles": tiles_b64,
         "fog":   fog_b64,
         "ants":  ants,

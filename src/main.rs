@@ -3,6 +3,7 @@ mod config;
 mod fog;
 mod handlers;
 mod network;
+mod regions;
 mod server;
 mod simulation;
 mod tile_map;
@@ -23,6 +24,10 @@ extern "system" { fn timeBeginPeriod(uPeriod: u32) -> u32; }
 async fn main() {
     #[cfg(windows)]
     unsafe { timeBeginPeriod(1); }
+
+    // Parse + project region data (metros + country geojson) once, before serving — so the
+    // first queen placement never pays the geojson parse under the world lock.
+    regions::init();
 
     let world: WorldState = Arc::new(RwLock::new(World::new()));
 

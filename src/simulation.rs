@@ -7,7 +7,14 @@ use crate::config::{
     cfg, queen_size_for_level, level_for_xp, current_ms, ENEMY_HUES,
     BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE,
 };
-use crate::world::{Ant, Player, Queen, QueenHit, World, XpGrant};
+use crate::world::{Ant, MetroHolder, Player, Queen, QueenHit, World, XpGrant};
+
+// ---- Discovery + metro-holder throttles ----
+const HOLDER_INTERVAL:    u64   = 500;  // ~10 s @ 50 Hz — king-of-the-hill recompute cadence
+const HOLDER_STRIDE:      u32   = 4;    // sample every 4th cell in each axis (scaling care)
+const DISCOVERY_INTERVAL: u64   = 50;   // ~1 s — visited-region sampling cadence
+const DISCOVERY_SAMPLE_N: usize = 64;   // ants sampled per pass (round-robin, army-size-independent)
+const COMPACT_INTERVAL:   u64   = 1500; // ~30 s @ 50 Hz — Dense→Uniform tile-RAM compaction sweep
 
 // ---- Direction helpers ----------------------------------------------------
 
@@ -76,12 +83,12 @@ pub fn flush_xp(world: &mut World) {
 // ---- Kill queen -----------------------------------------------------------
 
 pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reason: &str) {
-    let (qx, qy) = {
+    let (qx, qy, victim_level, peak_tiles, victim_region, victim_kills) = {
         let Some(q) = world.queens.get_mut(&loser_id) else { return };
         if q.dead { return; }
         q.dead = true;
         q.cached_tiles = 0;
-        (q.x, q.y)
+        (q.x, q.y, q.level, q.tiles_ever_held, q.region.clone(), q.kills)
     };
     world.queen_map_dirty = true;
 
@@ -97,11 +104,24 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     let now = current_ms();
     if let Some(p) = world.players.get_mut(&loser_id) {
         p.prestige += 1;
+        // Fold the fallen queen's life into account-level lifetime stats (USER-vs-QUEEN compare).
+        p.lifetime_kills += victim_kills;
+        p.lifetime_peak_tiles = p.lifetime_peak_tiles.max(peak_tiles);
         if !p.npc {
             p.ants_avail  = daily;
             p.next_refill = now + 24 * 3600 * 1000;
         }
     }
+
+    // Capture the fallen queen's life stats for the player's death-screen summary.
+    let (secs_alive, new_prestige, credits) = match world.players.get(&loser_id) {
+        Some(p) => (
+            p.queen_placed_at.map(|t| now.saturating_sub(t) / 1000).unwrap_or(0),
+            p.prestige,
+            p.credits,
+        ),
+        None => (0, 0, 0),
+    };
 
     let near_msg = json!({"t":"queen-killed","x":qx,"y":qy}).to_string();
     world.broadcast_near(qx, qy, &near_msg);
@@ -109,7 +129,27 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     let loser_name = world.players.get(&loser_id)
         .map(|p| p.username.clone())
         .unwrap_or_else(|| loser_id.to_string());
-    world.broadcast(&json!({"t":"event","msg":format!("♛ {loser_name} has fallen! ({reason})")}).to_string());
+    let victim_color = world.players.get(&loser_id)
+        .map(|p| p.color.clone()).unwrap_or_else(|| "#888".into());
+    let (killer_name, killer_color) = match killer_id {
+        Some(kid) => {
+            let kp = world.players.get(&kid);
+            (kp.map(|p| p.username.clone()), kp.map(|p| p.color.clone()))
+        }
+        None => (None, None),
+    };
+    // Structured kill → drives the CS1.6-style killfeed (top-right). Replaces the old
+    // global "has fallen" toast so deaths aren't double-announced.
+    world.broadcast(&json!({
+        "t":"kill",
+        "killer":      killer_name.clone(),
+        "killerColor": killer_color,
+        "victim":      loser_name,
+        "victimColor": victim_color,
+        "victimLevel": victim_level,
+        "cause":       reason,
+        "x": qx, "y": qy,
+    }).to_string());
 
     if let Some(kid) = killer_id {
         if let Some(kq) = world.queens.get_mut(&kid) { kq.kills += 1; }
@@ -123,7 +163,18 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     }
 
     world.ants.retain(|a| a.owner != loser_id);
-    world.send_to(loser_id, json!({"t":"queen-dead"}).to_string());
+    world.send_to(loser_id, json!({
+        "t":"queen-dead",
+        "peakTiles": peak_tiles,
+        "kills":     victim_kills,
+        "level":     victim_level,
+        "secsAlive": secs_alive,
+        "region":    victim_region,
+        "prestige":  new_prestige,
+        "credits":   credits,
+        "killer":    killer_name,
+        "cause":     reason,
+    }).to_string());
 }
 
 // ---- Wipe world -----------------------------------------------------------
@@ -187,6 +238,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         bubble_r, last_attacker: None, dead: false,
         tiles_ever_held: 0, cached_tiles: 0, npc: true,
         shield: 0, shield_expiry: None,
+        region: crate::regions::region_for(cx, cy),
     });
     world.players.insert(id, Player {
         id, username: format!("NPC_{id}"), color: hue,
@@ -195,6 +247,8 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         npc: true, view: None, tx: None, view_tx: None, conn_gen: 0,
         prestige: 0, credits: 0, last_sent_dirty: 0,
         defenders: Vec::new(),
+        visited_countries: Default::default(), visited_continents: Default::default(),
+        lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
     });
     world.queen_map_dirty = true;
 
@@ -234,15 +288,17 @@ pub fn tick_world(world: &mut World) {
     world.get_queen_map();
 
     // --- Occasional dedup (every 64 ticks): removes stacked same-owner same-direction ants ---
+    // Parallel sort (rayon) keeps this O(n log n) pass off the critical path at 100k ants;
+    // the dedup itself stays serial (it only walks the now-sorted vec once).
     if world.tick % 64 == 0 && !world.ants.is_empty() {
-        world.ants.sort_unstable_by_key(|a| (a.owner, a.x, a.y, a.dx as i32, a.dy as i32));
+        world.ants.par_sort_unstable_by_key(|a| (a.owner, a.x, a.y, a.dx as i32, a.dy as i32));
         world.ants.dedup_by_key(|a| (a.owner, a.x, a.y, a.dx, a.dy));
     }
 
     // --- Spatial sort every 50 ticks: group ants by 256×256 chunk for cache locality ---
     if world.tick % 50 == 0 && !world.ants.is_empty() {
         let chunk_w = world.world_w / 256 + 1;
-        world.ants.sort_unstable_by_key(|a| {
+        world.ants.par_sort_unstable_by_key(|a| {
             let cx = a.x as u32 / 256;
             let cy = a.y as u32 / 256;
             cy * chunk_w + cx
@@ -603,19 +659,37 @@ pub fn tick_world(world: &mut World) {
             if !has_defenders { continue; }
             let queen_data = world.queens.get(&def_pid)
                 .filter(|q| !q.dead)
-                .map(|q| (q.x + q.size as i32 / 2, q.y + q.size as i32 / 2));
-            let Some((qcx, qcy)) = queen_data else { continue };
+                .map(|q| (q.x, q.y, q.size as i32));
+            let Some((qx, qy, qsize)) = queen_data else { continue };
+            let qcx = qx + qsize / 2;
+            let qcy = qy + qsize / 2;
             world.players.get_mut(&def_pid).unwrap().defenders.retain(|&exp| exp > now);
             if world.players.get(&def_pid).map(|p| p.defenders.is_empty()).unwrap_or(true) { continue; }
-            let enemy_near = world.ants.iter().any(|a| {
-                a.owner != def_pid
-                    && (a.x - qcx).abs() <= def_range
-                    && (a.y - qcy).abs() <= def_range
-            });
-            if !enemy_near { continue; }
+            // Nearest in-range enemy ant — the defender deploys toward it.
+            let mut nearest: Option<(i32, i32, i32)> = None; // (chebyshev, ex, ey)
+            for a in world.ants.iter() {
+                if a.owner == def_pid { continue; }
+                let ed = (a.x - qcx).abs().max((a.y - qcy).abs());
+                if ed <= def_range && nearest.map_or(true, |(d, _, _)| ed < d) {
+                    nearest = Some((ed, a.x, a.y));
+                }
+            }
+            let Some((_, ex, ey)) = nearest else { continue };
             world.players.get_mut(&def_pid).unwrap().defenders.remove(0);
-            let ax = (qcx + 1).min(ww - 1);
-            world.ants.push(Ant::new(rand::random::<u32>(), def_pid, ax, qcy, 1, 0, def_lifespan));
+            // Spawn one tile OUTSIDE the queen footprint on the side facing the enemy, heading
+            // outward — so the defender never lands on queen tiles (which left it stuck once the
+            // queen's footprint grew with level).
+            let (dx, dy) = (ex - qcx, ey - qcy);
+            let (sx, sy, adx, ady) = if dx.abs() >= dy.abs() {
+                if dx >= 0 { (qx + qsize, qcy, 1i8, 0i8) } else { (qx - 1, qcy, -1i8, 0i8) }
+            } else if dy >= 0 {
+                (qcx, qy + qsize, 0i8, 1i8)
+            } else {
+                (qcx, qy - 1, 0i8, -1i8)
+            };
+            let sx = sx.clamp(0, ww - 1);
+            let sy = sy.clamp(0, wh - 1);
+            world.ants.push(Ant::new(rand::random::<u32>(), def_pid, sx, sy, adx, ady, def_lifespan));
             let ev = json!({"t":"event","msg":"DEFENDER ACTIVATED!"}).to_string();
             world.send_to(def_pid, ev);
         }
@@ -634,7 +708,7 @@ pub fn tick_world(world: &mut World) {
                 ((qa.x, qa.y, qa.size, qa.level, qa.hp), (qb.x, qb.y, qb.size, qb.level, qb.hp))
             };
             let min_dist = (qa_data.2 as f64 + qb_data.2 as f64) / 2.0 + 1.0;
-            let dx = qa_data.0 - qb_data.0; let dy = qa_data.1 - qb_data.1;
+            let dx = (qa_data.0 - qb_data.0) as i64; let dy = (qa_data.1 - qb_data.1) as i64;
             if ((dx * dx + dy * dy) as f64).sqrt() < min_dist {
                 let (loser, winner) = if qa_data.3 < qb_data.3 || (qa_data.3 == qb_data.3 && qa_data.4 < qb_data.4) {
                     (a, b)
@@ -656,12 +730,72 @@ pub fn tick_world(world: &mut World) {
     }
 
     // =========================================================================
-    // Phase 11: Flush XP
+    // Phase 11: Flush XP + throttled discovery / metro-holder upkeep
     // =========================================================================
     flush_xp(world);
+
+    if world.tick % DISCOVERY_INTERVAL == 0 { sample_visited(world); }
+    if world.tick % HOLDER_INTERVAL == 0 {
+        recompute_holders(world);
+        world.broadcast(&crate::network::build_region_holders(world));
+    }
+
+    // Season upkeep: sweep Dense chunks that became solid-one-owner (via clash conversions,
+    // which bypass the inline fill-compaction) back into Uniform — keeps tile RAM proportional
+    // to the painted *perimeter* rather than area over a month of churn. Cheap; throttled.
+    if world.tick % COMPACT_INTERVAL == 0 {
+        world.tiles.compact_pass();
+    }
 }
 
 // ---- Helpers ----------------------------------------------------------------
+
+/// Throttled discovery: sample up to `DISCOVERY_SAMPLE_N` live ants round-robin, map each to its
+/// country + continent, and union into the owning account's visited sets. Cost is independent of
+/// army size (fixed sample cap). NPC ants are skipped (no discovery view).
+fn sample_visited(world: &mut World) {
+    let n = world.ants.len();
+    if n == 0 { return; }
+    let take = DISCOVERY_SAMPLE_N.min(n);
+    let mut idx = world.visit_sample_cursor % n;
+    // Collect (owner, x, y) for real players first so we can drop the &ants borrow before mutating.
+    let mut samples: Vec<(u32, i32, i32)> = Vec::with_capacity(take);
+    for _ in 0..take {
+        let a = &world.ants[idx];
+        let is_npc = world.players.get(&a.owner).map_or(true, |p| p.npc);
+        if !is_npc { samples.push((a.owner, a.x, a.y)); }
+        idx += 1; if idx >= n { idx = 0; }
+    }
+    world.visit_sample_cursor = idx;
+    for (owner, x, y) in samples {
+        let (country, continent) = crate::regions::country_and_continent(x, y);
+        if country == "Open Water" || country == "Unknown" { continue; }
+        if let Some(p) = world.players.get_mut(&owner) {
+            p.visited_countries.insert(country);
+            if !continent.is_empty() { p.visited_continents.insert(continent); }
+        }
+    }
+}
+
+/// Throttled king-of-the-hill: for each metro, tally painted-tile owners within its radius (strided
+/// sample) and record the leader. Bounded by the present chunks near each metro (sparse TileMap).
+fn recompute_holders(world: &mut World) {
+    let metros = crate::regions::metros_for_holder();
+    let mut holders: Vec<MetroHolder> = Vec::with_capacity(metros.len());
+    let mut tally: FxHashMap<u32, u64> = FxHashMap::default();
+    let scale = (HOLDER_STRIDE as u64) * (HOLDER_STRIDE as u64);
+    for (name, cx, cy, r2) in metros {
+        tally.clear();
+        world.tiles.tally_owners_in_circle(cx, cy, r2, HOLDER_STRIDE, &mut tally);
+        let best = tally.iter().max_by_key(|(_, &c)| c).map(|(&id, &c)| (id, c));
+        let (owner, tiles) = match best {
+            Some((id, c)) => (Some(id), c * scale),
+            None          => (None, 0),
+        };
+        holders.push(MetroHolder { name, owner, tiles });
+    }
+    world.metro_holders = holders;
+}
 
 /// Fills `out` with (dest_key, ant_index) pairs sorted by dest_key.
 /// Uses `_nx/_ny` (planned destination) when `use_planned` is true, else `x/y` (current).
@@ -678,4 +812,59 @@ fn build_sorted_pairs(out: &mut Vec<(u64, u32)>, ants: &[crate::world::Ant], ww_
         }));
     }
     out.par_sort_unstable_by_key(|&(k, _)| k);
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::world::{Ant, World};
+
+    /// P3 acceptance: a tick must hold its budget at 100k ants. Run with
+    /// `cargo test bench_tick_100k_ants -- --ignored --nocapture`. Asserts mean tick < 20 ms
+    /// (the 50 Hz budget) — visual smoothness then comes from client interpolation (Phase 1).
+    #[test]
+    #[ignore]
+    fn bench_tick_100k_ants() {
+        crate::regions::init();
+        let mut w = World::new();
+        let ww = w.world_w as i32;
+        let wh = w.world_h as i32;
+        let lifespan = crate::config::cfg().lifespan;
+        let n: usize = 100_000;
+
+        // Deterministic LCG so the layout is stable across runs (no Math.random equivalent).
+        let mut seed: u64 = 0x9E3779B97F4A7C15;
+        let mut rng = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) as u32 };
+
+        // Cluster ants in a ~6000×6000 band around center (realistic density: many share chunks)
+        // plus a spread across the four corners so all regions of the tick are exercised.
+        let (cx, cy) = (ww / 2, wh / 2);
+        let dirs = [(0i8, -1i8), (1, 0), (0, 1), (-1, 0)];
+        for i in 0..n {
+            let (bx, by) = match i % 5 {
+                0 => (cx, cy),
+                1 => (ww / 6, wh / 6),
+                2 => (5 * ww / 6, wh / 6),
+                3 => (ww / 6, 5 * wh / 6),
+                _ => (5 * ww / 6, 5 * wh / 6),
+            };
+            let x = (bx + (rng() % 6000) as i32 - 3000).clamp(0, ww - 1);
+            let y = (by + (rng() % 6000) as i32 - 3000).clamp(0, wh - 1);
+            let (dx, dy) = dirs[i % 4];
+            let owner = 100 + (i % 50) as u32; // 50 distinct owners
+            w.ants.push(Ant::new(rng(), owner, x, y, dx, dy, lifespan));
+        }
+
+        for _ in 0..5 { tick_world(&mut w); }           // warm caches / first sorts
+        let iters = 60;
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters { tick_world(&mut w); }
+        let per = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+        let (chunks, uniform, dense, bytes) = w.tiles.stats();
+        println!(
+            "bench_tick_100k_ants: {:.3} ms/tick | ants={} chunks={} (u{} d{}) tileMB={:.2}",
+            per, w.ants.len(), chunks, uniform, dense, bytes as f64 / (1024.0 * 1024.0)
+        );
+        assert!(per < 20.0, "tick {per:.3}ms exceeds the 20ms (50Hz) budget at 100k ants");
+    }
 }

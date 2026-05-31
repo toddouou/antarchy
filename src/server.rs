@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
 use crate::config::cfg;
 use crate::handlers::handle_message;
-use crate::network::{build_leaderboard, build_player_info, finish_view, get_palette, snapshot_view, RawView};
+use crate::network::{build_leaderboard, build_player_info, build_server_stats, finish_view, get_palette, snapshot_view, RawView};
 use crate::simulation::tick_world;
 use crate::world::World;
 
@@ -62,12 +62,40 @@ async fn root_handler(
 
 async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
     let w = app.world.read().await;
+
+    // Tile RAM + chunk stats (the planet-scale memory metric: watch uniform:dense climb).
+    let (chunks, uniform, dense, tile_bytes) = w.tiles.stats();
+    let painted = w.tiles.total_tiles();
+
+    // Tick-window durations p50/p99/max (the CPU-budget metric at load).
+    let mut ring = w.tick_ms_ring.clone();
+    ring.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = |p: f64| -> f32 {
+        if ring.is_empty() { return 0.0; }
+        let i = ((ring.len() as f64 - 1.0) * p).round() as usize;
+        ring[i.min(ring.len() - 1)]
+    };
+    let connected = w.players.values().filter(|p| !p.npc && p.tx.is_some()).count();
+
     let body = serde_json::json!({
-        "tick":     w.tick,
-        "ants":     w.ants.len(),
-        "queens":   w.queens.values().filter(|q| !q.dead).count(),
-        "players":  w.players.values().filter(|p| !p.npc).count(),
-        "uptimeMs": crate::config::current_ms() - w.started_at,
+        "tick":      w.tick,
+        "ants":      w.ants.len(),
+        "queens":    w.queens.values().filter(|q| !q.dead).count(),
+        "players":   w.players.values().filter(|p| !p.npc).count(),
+        "connected": connected,
+        "uptimeMs":  crate::config::current_ms() - w.started_at,
+        "seasonSecs": cfg().season_secs,
+        // Tile store
+        "tilesPainted":   painted,
+        "chunks":         chunks,
+        "uniformChunks":  uniform,
+        "denseChunks":    dense,
+        "tileBytes":      tile_bytes,
+        "tileMB":         (tile_bytes as f64 / (1024.0 * 1024.0) * 100.0).round() / 100.0,
+        // Tick timing (ms)
+        "tickMsP50":  (pct(0.50) * 100.0).round() / 100.0,
+        "tickMsP99":  (pct(0.99) * 100.0).round() / 100.0,
+        "tickMsMax":  (ring.last().copied().unwrap_or(0.0) * 100.0).round() / 100.0,
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)
 }
@@ -188,6 +216,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
         // ---- Exclusive tick window ----
         {
             let mut w = world.blocking_write();
+            let tick_start = Instant::now();
 
             // Drain all pending WebSocket commands before ticking.
             // WS tasks never lock World — they push here, we process here.
@@ -229,10 +258,22 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                     }
                     Ok(Cmd::Disconnect { pid, conn_gen }) => {
                         let uname = w.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
+                        // Snapshot current state for the welcome-back diff (read before the &mut borrow).
+                        let q = w.queens.get(&pid);
+                        let snap = crate::world::AwaySnapshot {
+                            at_ms:    crate::config::current_ms(),
+                            tiles:    q.map(|q| q.cached_tiles).unwrap_or(0),
+                            kills:    q.map(|q| q.kills).unwrap_or(0),
+                            level:    q.map(|q| q.level).unwrap_or(0),
+                            army:     w.ant_counts.get(&pid).copied().unwrap_or(0),
+                            visited_countries: w.players.get(&pid).map(|p| p.visited_countries.len()).unwrap_or(0),
+                            queen_alive: q.map(|q| !q.dead).unwrap_or(false),
+                        };
                         if let Some(p) = w.players.get_mut(&pid) {
                             if p.conn_gen == conn_gen {
                                 p.tx      = None;
                                 p.view_tx = None; // drops sender → write task's view_rx.changed() returns Err
+                                p.away    = Some(snap);
                             }
                         }
                         println!("[disconnect] {uname} ({pid})");
@@ -258,6 +299,18 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                     }
                 }
             }
+
+            // Season rollover: once uptime exceeds the configured season length, wipe the
+            // world and start a fresh season (compaction keeps RAM flat across the churn).
+            let season_secs = cfg().season_secs;
+            if season_secs > 0 && now.saturating_sub(w.started_at) >= season_secs * 1000 {
+                crate::simulation::wipe_world(&mut w);
+                w.started_at = now;
+                w.broadcast(r#"{"t":"event","msg":"◆ NEW SEASON — WORLD RESET"}"#);
+            }
+
+            // Record this tick window's duration for /health p50/p99.
+            w.record_tick_ms(tick_start.elapsed().as_secs_f32() * 1000.0);
         }
 
         // Viewport delivery runs on its own OS thread (`viewport_loop`) so heavy tile/fog
@@ -302,6 +355,7 @@ pub fn viewport_loop(world: WorldState) {
     let mut last_tile_tick: u64 = 0;
     let mut last_me_tick:   u64 = 0;
     let mut last_lb_tick:   u64 = 0;
+    let mut last_stats_tick: u64 = 0;
 
     loop {
         let cycle_start = Instant::now();
@@ -329,6 +383,13 @@ pub fn viewport_loop(world: WorldState) {
                     let lb = build_leaderboard(&w);
                     w.broadcast(&lb);
                     last_lb_tick = tick;
+                }
+
+                // Server stats (~1 Hz) — header bar + admin cards for every client.
+                if tick.saturating_sub(last_stats_tick) >= tr {
+                    let stats = build_server_stats(&w);
+                    w.broadcast(&stats);
+                    last_stats_tick = tick;
                 }
 
                 if !do_clients && !send_me {

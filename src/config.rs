@@ -62,6 +62,13 @@ pub struct Config {
     pub ant_damage: f64,
     /// Passive queen HP regenerated per second while below max. 0 = no regen.
     pub hp_regen: f64,
+    /// Max live workers a single player may field at once (deploy blocked at the cap).
+    /// Also a scale guardrail. High default so it rarely bites; admin-tunable.
+    pub army_cap: i32,
+    /// Season length in seconds. When server uptime exceeds it, the world auto-wipes and a
+    /// fresh season begins (memory stays flat via chunk compaction). Default 30 days; admin
+    /// can lower it for testing. 0 disables the auto-wipe entirely.
+    pub season_secs: u64,
 }
 
 impl Default for Config {
@@ -95,6 +102,8 @@ impl Default for Config {
             levelup_ant_grant: 1,
             ant_damage:        1.0,
             hp_regen:          0.0,
+            army_cap:          1000,
+            season_secs:       30 * 24 * 3600,   // 30-day season
         }
     }
 }
@@ -138,6 +147,8 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("spawn_pan",        10.0,    10_000.0),
     ("ant_damage",        0.1,        50.0),
     ("hp_regen",          0.0,       100.0),
+    ("army_cap",          1.0, 1_000_000.0),
+    ("season_secs",       0.0, 31_536_000.0),   // 0 (off) … 365 days
 ];
 
 /// Returns the clamped value, or None if key is unknown.
@@ -164,6 +175,8 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "spawn_pan"         => c.spawn_pan          = v,
         "ant_damage"        => c.ant_damage         = v,
         "hp_regen"          => c.hp_regen           = v,
+        "army_cap"          => c.army_cap           = v as i32,
+        "season_secs"       => c.season_secs        = v as u64,
         _ => return None,
     }
     Some(v)
@@ -188,6 +201,8 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
         ("spawn_pan",         d.spawn_pan),
         ("ant_damage",        d.ant_damage),
         ("hp_regen",          d.hp_regen),
+        ("army_cap",          d.army_cap as f64),
+        ("season_secs",       d.season_secs as f64),
     ];
     let mut out = Vec::with_capacity(vals.len());
     let mut c = cfg_write();
@@ -207,6 +222,8 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     c.spawn_pan          = d.spawn_pan;
     c.ant_damage         = d.ant_damage;
     c.hp_regen           = d.hp_regen;
+    c.army_cap           = d.army_cap;
+    c.season_secs        = d.season_secs;
     drop(c);
     for &(k, v) in vals { out.push((k, v)); }
     out

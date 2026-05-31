@@ -47,12 +47,13 @@ pub fn handle_message(
             is_admin: false, color_chosen: true,
         });
         world.auth.save();
-        create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, false, tx.clone());
+        let welcome = create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, false, tx.clone());
         *player_id = Some(id);
         let me = build_player_info(world, id);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
+        if let Some(w) = welcome { let _ = tx.send(w); }
         return;
     }
 
@@ -64,12 +65,13 @@ pub fn handle_message(
         let Some(rec) = rec else { let _ = tx.send(err("Invalid credentials")); return; };
         if rec.password_hash != hash_pw(pw) { let _ = tx.send(err("Invalid credentials")); return; }
         if world.auth.banned.contains(&u) { let _ = tx.send(err("BANNED")); return; }
-        create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
+        let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
         *player_id = Some(rec.id);
         let me = build_player_info(world, rec.id);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
+        if let Some(w) = welcome { let _ = tx.send(w); }
         return;
     }
 
@@ -146,8 +148,8 @@ pub fn handle_message(
             let _ = tx.send(err("Out of bounds")); return;
         }
         for (_, q) in world.queens.iter().filter(|(_, q)| !q.dead) {
-            let ddx = q.x + q.size as i32 / 2 - x;
-            let ddy = q.y + q.size as i32 / 2 - y;
+            let ddx = (q.x + q.size as i32 / 2 - x) as i64;
+            let ddy = (q.y + q.size as i32 / 2 - y) as i64;
             let min_dist = q.bubble_r;
             if ((ddx*ddx + ddy*ddy) as f64).sqrt() < min_dist {
                 let _ = tx.send(err("Too close to another queen")); return;
@@ -157,14 +159,21 @@ pub fn handle_message(
         let max_hp = c.hp_base;
         let bubble_r = c.bubble_r;
         drop(c);
+        let (q_country, q_cont) = crate::regions::country_and_continent(x, y);
         if let Some(p) = world.players.get_mut(&pid) {
             p.queen_placed_at = Some(current_ms());
+            p.queens_fielded += 1;
+            if q_country != "Open Water" && q_country != "Unknown" {
+                p.visited_countries.insert(q_country);
+                if !q_cont.is_empty() { p.visited_continents.insert(q_cont); }
+            }
         }
         world.queens.insert(pid, Queen {
             x, y, size, hp: max_hp, max_hp, level: 1, xp: 0.0, kills: 0,
             bubble_r, last_attacker: None, dead: false,
             tiles_ever_held: 0, cached_tiles: 0, npc: false,
             shield: 0, shield_expiry: None,
+            region: crate::regions::region_for(x, y),
         });
         world.queen_map_dirty = true;
         world.dirty_tick = world.tick; // tiles are about to change
@@ -187,6 +196,8 @@ pub fn handle_message(
             None => return,
         };
         if ants_avail <= 0 { let _ = tx.send(err("No ants available")); return; }
+        let army = world.ant_counts.get(&pid).copied().unwrap_or(0) as i32;
+        if army >= c.army_cap { let _ = tx.send(err("Army at capacity")); return; }
         let queen_data = world.queens.get(&pid)
             .filter(|q| !q.dead)
             .map(|q| (q.x, q.y, q.size, q.bubble_r));
@@ -201,7 +212,7 @@ pub fn handle_message(
         world.get_queen_map();
         let ck = world.cell_key(x, y);
         if world.queen_map.contains_key(&ck) { let _ = tx.send(err("Cannot place on a queen")); return; }
-        let dxq = x - (qx + qs as i32 / 2); let dyq = y - (qy + qs as i32 / 2);
+        let dxq = (x - (qx + qs as i32 / 2)) as i64; let dyq = (y - (qy + qs as i32 / 2)) as i64;
         let dist_q = ((dxq*dxq + dyq*dyq) as f64).sqrt();
         let in_bubble = dist_q <= bubble_r;
         let tile = world.tiles.get(x as u32, y as u32);
@@ -355,7 +366,7 @@ pub fn handle_message(
                     }
                 }
                 // Update queen position
-                if let Some(q) = world.queens.get_mut(&tid) { q.x = nx; q.y = ny; }
+                if let Some(q) = world.queens.get_mut(&tid) { q.x = nx; q.y = ny; q.region = crate::regions::region_for(nx, ny); }
                 // Paint new body tiles
                 for dy in 0..sz as i32 {
                     for dx in 0..sz as i32 {
@@ -632,8 +643,8 @@ pub fn handle_message(
                 let mut too_close = false;
                 for (&qid, q) in world.queens.iter().filter(|(_, q)| !q.dead) {
                     if qid == pid { continue; }
-                    let ddx = q.x + q.size as i32 / 2 - x;
-                    let ddy = q.y + q.size as i32 / 2 - y;
+                    let ddx = (q.x + q.size as i32 / 2 - x) as i64;
+                    let ddy = (q.y + q.size as i32 / 2 - y) as i64;
                     if ((ddx*ddx + ddy*ddy) as f64).sqrt() < q.bubble_r { too_close = true; break; }
                 }
                 drop(c);
@@ -646,7 +657,7 @@ pub fn handle_message(
                         }
                     }
                 }
-                if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; }
+                if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
                 for dy in 0..sz as i32 {
                     for dx in 0..sz as i32 { world.tiles.set((x+dx) as u32, (y+dy) as u32, pid); }
                 }
@@ -664,6 +675,8 @@ pub fn handle_message(
                 let queen_data = world.queens.get(&pid).filter(|q| !q.dead)
                     .map(|q| (q.x, q.y, q.size, q.bubble_r));
                 let Some((qx, qy, qs, bubble_r)) = queen_data else { let _ = tx.send(err("Need a live queen")); return; };
+                let army = world.ant_counts.get(&pid).copied().unwrap_or(0) as i32;
+                if army >= cfg().army_cap { let _ = tx.send(err("Army at capacity")); return; }
                 let x   = msg["x"].as_i64().unwrap_or(-1) as i32;
                 let y   = msg["y"].as_i64().unwrap_or(-1) as i32;
                 let vdx = msg["dx"].as_i64().unwrap_or(0) as i8;
@@ -672,7 +685,7 @@ pub fn handle_message(
                 if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
                 world.get_queen_map();
                 if world.queen_map.contains_key(&world.cell_key(x, y)) { let _ = tx.send(err("Cannot place on a queen")); return; }
-                let dxq = x - (qx + qs as i32/2); let dyq = y - (qy + qs as i32/2);
+                let dxq = (x - (qx + qs as i32/2)) as i64; let dyq = (y - (qy + qs as i32/2)) as i64;
                 let in_bubble = ((dxq*dxq+dyq*dyq) as f64).sqrt() <= bubble_r;
                 let tile = world.tiles.get(x as u32, y as u32);
                 if in_bubble { if tile != 0 && tile != pid { let _ = tx.send(err("Enemy tile inside bubble")); return; } }
@@ -688,8 +701,13 @@ pub fn handle_message(
             "shield" => {
                 let queen_alive = world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false);
                 if !queen_alive { let _ = tx.send(err("Need a live queen")); return; }
-                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
                 let now = current_ms();
+                // One shield at a time — block stacking until it depletes or expires.
+                let active = world.queens.get(&pid)
+                    .map(|q| q.shield > 0 && q.shield_expiry.map_or(false, |e| e > now))
+                    .unwrap_or(false);
+                if active { let _ = tx.send(err("Shield already active")); return; }
+                if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
                 if let Some(q) = world.queens.get_mut(&pid) {
                     q.shield = q.max_hp;
                     q.shield_expiry = Some(now + SHIELD_MS);
@@ -747,31 +765,66 @@ fn create_or_reconnect_player(
     id: u32, username: &str, color: &str, hue_idx: i32,
     _is_admin: bool,
     tx: UnboundedSender<String>,
-) {
+) -> Option<String> {
     use crate::config::current_ms;
     let c = cfg();
     let daily = c.daily_ants;
     drop(c);
     let now = current_ms();
 
-    if let Some(p) = world.players.get_mut(&id) {
-        p.conn_gen += 1;
-        p.tx = Some(tx);
+    // Metro list for the header region switcher (name + centre tile to fly to).
+    let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
+
+    if world.players.contains_key(&id) {
+        // Reconnect: reattach + bump conn_gen, and take the disconnect snapshot for welcome-back.
+        let away = {
+            let p = world.players.get_mut(&id).unwrap();
+            p.conn_gen += 1;
+            p.tx = Some(tx);
+            p.away.take()
+        };
         println!("[reconnect] {username} ({})", id);
-    } else {
-        world.players.insert(id, Player {
-            id, username: username.to_string(), color: color.to_string(),
-            hue_idx,
-            ants_avail: daily,
-            next_refill: now + 24 * 3600 * 1000,
-            queen_placed_at: None,
-            npc: false, view: None,
-            tx: Some(tx), view_tx: None,
-            conn_gen: 1,
-            prestige: 0, credits: 0,
-            last_sent_dirty: 0,
-            defenders: Vec::new(),
-        });
-        println!("[connect] {username} ({})", id);
+        return away.and_then(|s| build_welcome_back(world, id, &s, now));
     }
+    world.players.insert(id, Player {
+        id, username: username.to_string(), color: color.to_string(),
+        hue_idx,
+        ants_avail: daily,
+        next_refill: now + 24 * 3600 * 1000,
+        queen_placed_at: None,
+        npc: false, view: None,
+        tx: Some(tx), view_tx: None,
+        conn_gen: 1,
+        prestige: 0, credits: 0,
+        last_sent_dirty: 0,
+        defenders: Vec::new(),
+        visited_countries: Default::default(), visited_continents: Default::default(),
+        lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
+    });
+    println!("[connect] {username} ({})", id);
+    None
+}
+
+/// Build the welcome-back summary from a disconnect snapshot vs the player's current state.
+/// Returns None for trivial gaps (<30 s) or players with no live queen at disconnect.
+fn build_welcome_back(world: &World, id: u32, snap: &crate::world::AwaySnapshot, now: u64) -> Option<String> {
+    let away_ms = now.saturating_sub(snap.at_ms);
+    if !snap.queen_alive || away_ms < 30_000 { return None; }
+    let q = world.queens.get(&id);
+    let queen_died  = q.map_or(true, |q| q.dead);
+    let cur_tiles   = q.map(|q| q.cached_tiles).unwrap_or(0);
+    let cur_kills   = q.map(|q| q.kills).unwrap_or(0);
+    let cur_level   = q.map(|q| q.level).unwrap_or(0);
+    let cur_army    = world.ant_counts.get(&id).copied().unwrap_or(0);
+    let cur_visited = world.players.get(&id).map(|p| p.visited_countries.len()).unwrap_or(0);
+    Some(json!({
+        "t":              "welcome-back",
+        "awayMs":         away_ms,
+        "queenDied":      queen_died,
+        "tilesDelta":     cur_tiles as i64 - snap.tiles as i64,
+        "killsDelta":     cur_kills as i64 - snap.kills as i64,
+        "levelsDelta":    cur_level as i64 - snap.level as i64,
+        "armyDelta":      cur_army as i64 - snap.army as i64,
+        "countriesDelta": cur_visited as i64 - snap.visited_countries as i64,
+    }).to_string())
 }
