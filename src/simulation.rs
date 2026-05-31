@@ -695,25 +695,7 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 9: Queen-queen physical collision
     // =========================================================================
-    let live: Vec<u32> = world.queens.iter().filter(|(_, q)| !q.dead).map(|(&id, _)| id).collect();
-    for i in 0..live.len() {
-        for j in i + 1..live.len() {
-            let (a, b) = (live[i], live[j]);
-            let (qa_data, qb_data) = {
-                let qa = world.queens.get(&a).unwrap();
-                let qb = world.queens.get(&b).unwrap();
-                ((qa.x, qa.y, qa.size, qa.level, qa.hp), (qb.x, qb.y, qb.size, qb.level, qb.hp))
-            };
-            let min_dist = (qa_data.2 as f64 + qb_data.2 as f64) / 2.0 + 1.0;
-            let dx = (qa_data.0 - qb_data.0) as i64; let dy = (qa_data.1 - qb_data.1) as i64;
-            if ((dx * dx + dy * dy) as f64).sqrt() < min_dist {
-                let (loser, winner) = if qa_data.3 < qb_data.3 || (qa_data.3 == qb_data.3 && qa_data.4 < qb_data.4) {
-                    (a, b)
-                } else { (b, a) };
-                kill_queen(world, loser, Some(winner), "collision");
-            }
-        }
-    }
+    resolve_queen_collisions(world);
 
     // =========================================================================
     // Phase 10: HP-zero deaths
@@ -742,6 +724,62 @@ pub fn tick_world(world: &mut World) {
     // to the painted *perimeter* rather than area over a month of churn. Cheap; throttled.
     if world.tick.is_multiple_of(COMPACT_INTERVAL) {
         world.tiles.compact_pass();
+    }
+}
+
+// ---- Queen-queen collision (Phase 9) ----------------------------------------
+
+/// Resolve queen-queen physical overlaps: two live queens collide when their centres are within
+/// `(avg size)/2 + 1` tiles; the lower-level one (tie → lower hp) is killed.
+///
+/// Queens can only touch within a handful of tiles, but a naive all-pairs scan is O(queens²)
+/// (~500k pair tests at 1,000 queens, every tick, even with zero overlaps). Instead we bucket
+/// queens into a coarse grid whose cell is larger than any possible collision distance, then only
+/// compare queens within the same cell and its 8 neighbours — ~O(queens) for spread-out queens.
+fn resolve_queen_collisions(world: &mut World) {
+    use rustc_hash::FxHashMap;
+    // Max centre distance at which any two queens collide: (8+8)/2 + 1 = 9 (size is 2..=8). A cell
+    // of CELL tiles guarantees colliders share a cell or are in adjacent cells.
+    const CELL: i64 = 16;
+    // Snapshot (id, x, y, level, hp, size) once, then bucket — avoids the per-pair HashMap lookups.
+    let qs: Vec<(u32, i32, i32, u16, i32, u8)> = world.queens.iter()
+        .filter(|(_, q)| !q.dead)
+        .map(|(&id, q)| (id, q.x, q.y, q.level, q.hp, q.size))
+        .collect();
+    if qs.len() < 2 { return; }
+
+    let mut grid: FxHashMap<(i64, i64), Vec<usize>> = FxHashMap::default();
+    for (idx, q) in qs.iter().enumerate() {
+        grid.entry((q.1 as i64 / CELL, q.2 as i64 / CELL)).or_default().push(idx);
+    }
+
+    // For each queen, test only candidates in its cell + the 8 neighbours, and only the (a<b)
+    // half to avoid testing a pair twice. Collisions are recorded, then applied after the scan
+    // so kill_queen (which mutates world.queens) never runs mid-iteration.
+    let mut collisions: Vec<(u32, u32)> = Vec::new();   // (loser, winner)
+    for (a_idx, qa) in qs.iter().enumerate() {
+        let (cx, cy) = (qa.1 as i64 / CELL, qa.2 as i64 / CELL);
+        for ny in cy - 1..=cy + 1 {
+            for nx in cx - 1..=cx + 1 {
+                let Some(bucket) = grid.get(&(nx, ny)) else { continue };
+                for &b_idx in bucket {
+                    if b_idx <= a_idx { continue; }      // each unordered pair once
+                    let qb = &qs[b_idx];
+                    let min_dist = (qa.5 as f64 + qb.5 as f64) / 2.0 + 1.0;
+                    let dx = (qa.1 - qb.1) as i64;
+                    let dy = (qa.2 - qb.2) as i64;
+                    if ((dx * dx + dy * dy) as f64).sqrt() < min_dist {
+                        let (loser, winner) = if qa.3 < qb.3 || (qa.3 == qb.3 && qa.4 < qb.4) {
+                            (qa.0, qb.0)
+                        } else { (qb.0, qa.0) };
+                        collisions.push((loser, winner));
+                    }
+                }
+            }
+        }
+    }
+    for (loser, winner) in collisions {
+        kill_queen(world, loser, Some(winner), "collision");
     }
 }
 
@@ -833,6 +871,44 @@ mod tests {
             assert_eq!(w.tiles.get(ww as u32, y), 0, "phantom paint at x=world_w (y={y})");
         }
     }
+
+    fn mk_queen(x: i32, y: i32, level: u16, hp: i32) -> crate::world::Queen {
+        crate::world::Queen { x, y, size: 2, hp, max_hp: 100, level, xp: 0.0, kills: 0,
+            bubble_r: 30.0, last_attacker: None, dead: false, tiles_ever_held: 0, cached_tiles: 0,
+            npc: false, shield: 0, shield_expiry: None, region: String::new() }
+    }
+
+    #[test]
+    fn queen_collision_lower_level_loses_others_untouched() {
+        let mut w = World::new();
+        w.queens.insert(1, mk_queen(100, 100, 5, 100));            // higher level → winner
+        w.queens.insert(2, mk_queen(101, 100, 3, 100));            // 1 tile away → overlaps, loses
+        w.queens.insert(3, mk_queen(500_000, 500_000, 1, 100));    // far away → untouched
+        resolve_queen_collisions(&mut w);
+        assert!(!w.queens.get(&1).unwrap().dead, "higher level survives");
+        assert!( w.queens.get(&2).unwrap().dead, "lower level dies");
+        assert!(!w.queens.get(&3).unwrap().dead, "distant queen untouched");
+    }
+
+    #[test]
+    fn queen_collision_detected_across_cell_boundary() {
+        // The bucketing must still catch colliders that straddle a grid-cell edge.
+        let mut w = World::new();
+        w.queens.insert(1, mk_queen(15, 100, 5, 100));   // cell x=0 (CELL=16)
+        w.queens.insert(2, mk_queen(16, 100, 3, 100));   // cell x=1, 1 tile away → overlaps
+        resolve_queen_collisions(&mut w);
+        assert!(w.queens.get(&2).unwrap().dead, "collision found across the cell boundary");
+    }
+
+    #[test]
+    fn queen_collision_ignores_distant_queens() {
+        let mut w = World::new();
+        w.queens.insert(1, mk_queen(100, 100, 5, 100));
+        w.queens.insert(2, mk_queen(150, 100, 3, 100));  // 50 tiles apart → no collision
+        resolve_queen_collisions(&mut w);
+        assert!(!w.queens.get(&1).unwrap().dead);
+        assert!(!w.queens.get(&2).unwrap().dead);
+    }
 }
 
 #[cfg(test)]
@@ -887,5 +963,89 @@ mod bench {
             per, w.ants.len(), chunks, uniform, dense, bytes as f64 / (1024.0 * 1024.0)
         );
         assert!(per < 20.0, "tick {per:.3}ms exceeds the 20ms (50Hz) budget at 100k ants");
+    }
+
+    /// Scale acceptance for the OTHER axis: 1,000 live queens + 100k ants. The 100k-ant bench
+    /// above runs with zero queens, so it never exercises Phase 9 (queen-queen collision), which
+    /// is O(queens²). Queens here are spread far apart (no actual collisions — the realistic case),
+    /// yet the pair scan still runs over all ~500k pairs every tick. Run with
+    /// `cargo test bench_tick_1k_queens_100k_ants --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_tick_1k_queens_100k_ants() {
+        use crate::world::{Player, Queen};
+        crate::regions::init();
+        let mut w = World::new();
+        let ww = w.world_w as i32;
+        let wh = w.world_h as i32;
+        let lifespan = crate::config::cfg().lifespan;
+
+        const COLS: i32 = 40;
+        const ROWS: i32 = 25;            // 40×25 = 1000 queens
+        let qx = |j: i32| (ww * ((j % COLS) + 1)) / (COLS + 1);
+        let qy = |j: i32| (wh * ((j / COLS) + 1)) / (ROWS + 1);
+
+        for j in 0..1000u32 {
+            let id = 1000 + j;
+            let (x, y) = (qx(j as i32), qy(j as i32));
+            w.queens.insert(id, Queen { x, y, size: 2, hp: 100, max_hp: 100, level: 1, xp: 0.0,
+                kills: 0, bubble_r: 30.0, last_attacker: None, dead: false, tiles_ever_held: 0,
+                cached_tiles: 0, npc: false, shield: 0, shield_expiry: None, region: String::new() });
+            w.players.insert(id, Player { id, username: String::new(), color: String::new(),
+                hue_idx: 0, ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
+                view: None, tx: None, view_tx: None, conn_gen: 0, prestige: 0, credits: 0,
+                defenders: Vec::new(), visited_countries: Default::default(),
+                visited_continents: Default::default(), lifetime_kills: 0, lifetime_peak_tiles: 0,
+                queens_fielded: 0, away: None });
+        }
+        w.queen_map_dirty = true;
+
+        let mut seed: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut rng = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) as u32 };
+        let dirs = [(0i8, -1i8), (1, 0), (0, 1), (-1, 0)];
+        for i in 0..100_000usize {
+            let j = (i % 1000) as i32;                       // ants clustered near their owner queen
+            let x = (qx(j) + (rng() % 400) as i32 - 200).clamp(0, ww - 1);
+            let y = (qy(j) + (rng() % 400) as i32 - 200).clamp(0, wh - 1);
+            let (dx, dy) = dirs[i % 4];
+            w.ants.push(Ant::new(rng(), 1000 + j as u32, x, y, dx, dy, lifespan));
+        }
+
+        for _ in 0..5 { tick_world(&mut w); }
+        let iters = 60;
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters { tick_world(&mut w); }
+        let per = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+        let live = w.queens.values().filter(|q| !q.dead).count();
+        println!("bench_tick_1k_queens_100k_ants: {per:.3} ms/tick | queens(live)={live} ants={}", w.ants.len());
+        assert!(per < 20.0, "tick {per:.3}ms exceeds the 20ms (50Hz) budget at 1k queens / 100k ants");
+    }
+
+    /// Isolated cost of Phase 9 alone at 1,000 spread-out (non-colliding) queens — the metric the
+    /// spatial bucketing targets. Run with
+    /// `cargo test bench_queen_collisions_1k --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_queen_collisions_1k() {
+        use crate::world::Queen;
+        let mut w = World::new();
+        let ww = w.world_w as i32;
+        let wh = w.world_h as i32;
+        const COLS: i32 = 40;
+        const ROWS: i32 = 25;
+        for j in 0..1000i32 {
+            let x = (ww * ((j % COLS) + 1)) / (COLS + 1);
+            let y = (wh * ((j / COLS) + 1)) / (ROWS + 1);
+            w.queens.insert(1000 + j as u32, Queen { x, y, size: 2, hp: 100, max_hp: 100, level: 1,
+                xp: 0.0, kills: 0, bubble_r: 30.0, last_attacker: None, dead: false,
+                tiles_ever_held: 0, cached_tiles: 0, npc: false, shield: 0, shield_expiry: None,
+                region: String::new() });
+        }
+        let iters = 2000;
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters { resolve_queen_collisions(&mut w); }
+        let per_us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+        let live = w.queens.values().filter(|q| !q.dead).count();
+        println!("bench_queen_collisions_1k: {per_us:.2} us/call | queens={live}");
     }
 }
