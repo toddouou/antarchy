@@ -63,18 +63,20 @@
   .hbtn.on { background:var(--ink); }
   .hbtn.on .lb { color:var(--yel); }
 
-  /* KILLFEED (CS1.6-style, top-right, newest on top, fades) */
-  #killfeed { position:fixed; top:60px; right:12px; z-index:60; display:flex;
-    flex-direction:column; gap:4px; align-items:flex-end; pointer-events:none; }
-  .kf-row { font-family:'Press Start 2P',monospace; font-size:8px; line-height:1;
-    background:rgba(13,13,13,.82); color:#f5f3ec; border:1px solid rgba(255,255,255,.16);
-    padding:6px 9px; display:flex; align-items:center; gap:7px; white-space:nowrap;
-    box-shadow:2px 2px 0 rgba(0,0,0,.35); animation:kfIn .16s ease-out; }
+  /* KILLFEED (CS1.6-style, top-right, newest on top, fades) — boxy panel style to match UI */
+  #killfeed { position:fixed; top:62px; right:14px; z-index:60; display:flex;
+    flex-direction:column; gap:6px; align-items:flex-end; pointer-events:none; }
+  .kf-row { font-family:'Press Start 2P',monospace; font-size:9px; line-height:1;
+    background:var(--bg2); color:var(--ink); border:2px solid var(--ink);
+    padding:8px 11px; display:flex; align-items:center; gap:8px; white-space:nowrap;
+    box-shadow:3px 3px 0 0 var(--ink); animation:kfIn .18s ease-out; }
   .kf-row.kf-out { animation:kfOut .5s ease-in forwards; }
-  .kf-x { color:var(--red); font-size:9px; }
-  .kf-elim { color:var(--dim); }
-  @keyframes kfIn  { from{opacity:0;transform:translateX(22px);} to{opacity:1;transform:none;} }
-  @keyframes kfOut { to{opacity:0;transform:translateX(22px);} }
+  .kf-name { display:inline-flex; align-items:center; gap:5px; }
+  .kf-sw { width:10px; height:10px; border:1px solid var(--ink); flex:none; }
+  .kf-x { color:var(--red); font-size:12px; }
+  .kf-elim { color:var(--red); font-size:8px; letter-spacing:.05em; }
+  @keyframes kfIn  { from{opacity:0;transform:translateX(26px);} to{opacity:1;transform:none;} }
+  @keyframes kfOut { to{opacity:0;transform:translateX(26px);} }
 
   /* WORKERS panel */
   .wk-types { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:8px; }
@@ -238,14 +240,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
   #dir-overlay { position:absolute; pointer-events:none; display:none; z-index:50; }
   .ovr { position:absolute; pointer-events:none; font-family:'Press Start 2P',monospace; font-size:8px; }
-  .compass { top:12px; left:12px; background:var(--bg2); border:2px solid var(--ink);
-    padding:8px 10px; box-shadow:3px 3px 0 0 var(--ink); }
-  .coord { color:var(--red); }
-  .zooml { color:var(--dim); margin-top:4px; }
-  .tick-ind { top:12px; right:12px; background:var(--bg2); border:2px solid var(--ink);
-    padding:8px 10px; display:flex; align-items:center; gap:6px; box-shadow:3px 3px 0 0 var(--ink); }
-  .pulse { width:8px; height:8px; background:var(--grn); animation:blink .5s steps(2) infinite; }
-  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+  .coord { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--red); }
+  .zooml { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:4px; }
   .place-prompt { bottom:28px; left:50%; transform:translateX(-50%); background:var(--red);
     color:#fff; border:2px solid var(--ink); padding:12px 20px;
     font-family:'Press Start 2P',monospace; font-size:10px;
@@ -258,8 +254,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     box-shadow:4px 4px 0 0 var(--red); }
   .toast.show { opacity:1; }
 
-  /* INSPECT — folded into the compass coordinate overlay (top-left) */
-  #compass { max-width:240px; }
+  /* INSPECT — folded into the POSITION panel (left sidebar) */
   .insp-div { border-top:2px dashed var(--line); margin:7px 0 5px; }
   #inspect-section { pointer-events:none; }
   .inspect-header { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--red);
@@ -453,6 +448,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     display:flex; align-items:center; padding:0 12px; gap:16px;
     font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); }
   footer .dot { animation:blink .5s steps(2) infinite; }
+  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
   footer .dot.ok { color:var(--grn); }
   footer .dot.bad { color:var(--red); }
   footer .right { margin-left:auto; }
@@ -679,6 +675,21 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     </div>
   </div>
 
+  <div class="panel">
+    <div class="ptitle">POSITION</div>
+    <div class="pbody">
+      <div class="coord" id="ovr-coord">— — —</div>
+      <div class="zooml">ZOOM <span id="ovr-zoom">1.00X</span> · CELL <span id="ovr-cell">8PX</span></div>
+      <div class="zooml" id="ovr-tile" style="color:var(--yel);display:none;"></div>
+      <!-- Target/inspect display folded into the POSITION panel -->
+      <div id="inspect-section" style="display:none;">
+        <div class="insp-div"></div>
+        <div class="inspect-header" id="inspect-type"></div>
+        <div id="inspect-rows"></div>
+      </div>
+    </div>
+  </div>
+
   <button class="btn ghost" id="btn-recenter" style="margin-bottom:5px;">⊕ CENTER QUEEN</button>
 </aside>
 
@@ -689,23 +700,6 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <polygon points="24,4 30,18 18,18" fill="#ff2e3f"/>
   </svg></div>
 
-  <div class="ovr compass" id="compass">
-    <div class="coord" id="ovr-coord">— — —</div>
-    <div class="zooml">ZOOM <span id="ovr-zoom">1.00X</span> · CELL <span id="ovr-cell">8PX</span></div>
-    <div class="zooml" id="ovr-tile" style="color:var(--yel);display:none;"></div>
-    <!-- Target/inspect display folded into the coordinate window -->
-    <div id="inspect-section" style="display:none;">
-      <div class="insp-div"></div>
-      <div class="inspect-header" id="inspect-type"></div>
-      <div id="inspect-rows"></div>
-    </div>
-  </div>
-  <button id="btn-mute" style="position:absolute;bottom:14px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle audio">♪</button>
-  <button id="btn-map-toggle" style="position:absolute;bottom:48px;right:14px;background:none;border:1px solid rgba(255,255,255,0.25);color:#f5f3ec;font-family:monospace;font-size:14px;cursor:pointer;padding:3px 7px;border-radius:3px;opacity:0.7;z-index:20;" title="Toggle map (M)">🗺</button>
-  <div class="ovr tick-ind">
-    <div class="pulse"></div>
-    <span><span id="ovr-hz">20</span>HZ · T<span id="ovr-tick">0</span></span>
-  </div>
   <div class="ovr place-prompt" id="prompt" style="display:none;">CLICK TO PLACE</div>
   <div class="toast" id="toast"></div>
   <div id="killfeed"></div>
@@ -1874,6 +1868,10 @@ function lbFullRow(e, rank){
 }
 function renderLbWindow(){
   const el=$('win-body'); if(!el) return;
+  // Preserve scroll across live leaderboard updates: the innerHTML rebuild below recreates
+  // .lbw-list from scratch, which would otherwise snap scrollTop back to 0 on every broadcast.
+  const prevList=el.querySelector('.lbw-list');
+  const prevScroll=prevList?prevList.scrollTop:0;
   let list = lbRegionFilter ? lbAll.filter(e=>e.region===lbRegionFilter) : lbAll;
   const regions=[...new Set(lbAll.map(e=>e.region).filter(Boolean))].sort();
   let html='<div class="lb-tabs"><span class="lb-tab'+(!lbRegionFilter?' on':'')+'" onclick="lbSetRegion(null)">ALL</span>';
@@ -1891,6 +1889,8 @@ function renderLbWindow(){
   if (me && !meShown){ const idx=list.findIndex(e=>e.id===me.id); if(idx>=0) html+='<div class="lb-sep">· · ·</div>'+lbFullRow(list[idx], idx+1); }
   html+='</div>';
   el.innerHTML=html;
+  const newList=el.querySelector('.lbw-list');
+  if(newList) newList.scrollTop=prevScroll;
 }
 // ---- Region switcher (header) ----
 let regionMetros=[], regionHolders=[];
@@ -2079,13 +2079,14 @@ function kfEsc(s){ return String(s==null?'':s).replace(/[<>&]/g,c=>({'<':'&lt;',
 function pushKill(m) {
   const kf=$('killfeed'); if (!kf) return;
   const row=document.createElement('div'); row.className='kf-row';
-  const vc=m.victimColor||'#bbb';
+  const sw=c=>`<span class="kf-sw" style="background:${c||'#bbb'}"></span>`;
   if (m.killer) {
-    const kc=m.killerColor||'#bbb';
-    row.innerHTML=`<span style="color:${kc}">♛ ${kfEsc(m.killer)}</span>`
-      +`<span class="kf-x">⚔</span><span style="color:${vc}">${kfEsc(m.victim)}</span>`;
+    row.innerHTML=`<span class="kf-name">${sw(m.killerColor)}♛ ${kfEsc(m.killer)}</span>`
+      +`<span class="kf-x">⚔</span>`
+      +`<span class="kf-name">${sw(m.victimColor)}${kfEsc(m.victim)}</span>`;
   } else {
-    row.innerHTML=`<span class="kf-x">☠</span><span style="color:${vc}">${kfEsc(m.victim)}</span>`
+    row.innerHTML=`<span class="kf-x">☠</span>`
+      +`<span class="kf-name">${sw(m.victimColor)}${kfEsc(m.victim)}</span>`
       +`<span class="kf-elim">ELIMINATED</span>`;
   }
   kf.prepend(row);
@@ -2485,9 +2486,6 @@ function doGeolocate() {
 
 function toggleMap() {
   mapVisible = !mapVisible;
-  const btn = $('btn-map-toggle');
-  btn.style.background = mapVisible ? 'none' : 'rgba(255,184,0,0.3)';
-  btn.style.opacity = mapVisible ? '0.7' : '1';
   tileCacheVw = null;
 }
 
@@ -2836,8 +2834,6 @@ function render() {
   $('ovr-coord').textContent = `(${cdx>=0?'+':''}${cdx}, ${cdy>=0?'+':''}${cdy})`;
   $('ovr-zoom').textContent=view.zoom.toFixed(2)+'X';
   $('ovr-cell').textContent=cp.toFixed(0)+'PX';
-  $('ovr-hz').textContent=(me?.tickRate||50).toFixed(0);
-  $('ovr-tick').textContent=me?.tick||0;
   // Hover tile info (Q5)
   const ti=$('ovr-tile');
   if (hover && vw) {
@@ -3790,19 +3786,6 @@ document.addEventListener('keydown', e => {
 
 /* Apply saved user settings (sfx / music / scanlines / master volume) before audio starts */
 applySettings();
-
-/* Mute toggle */
-let _muteState = localStorage.getItem('hive-muted') === '1';
-if (_muteState) { AudioEngine.setMute(true); $('btn-mute').textContent = '♪̶'; $('btn-mute').style.opacity = '0.4'; }
-$('btn-map-toggle').onclick = toggleMap;
-$('btn-mute').onclick = () => {
-  _muteState = !_muteState;
-  AudioEngine.setMute(_muteState);
-  AudioEngine.click();
-  $('btn-mute').textContent = _muteState ? '♪̶' : '♪';
-  $('btn-mute').style.opacity = _muteState ? '0.4' : '1';
-  localStorage.setItem('hive-muted', _muteState ? '1' : '0');
-};
 
 connect();
 requestAnimationFrame(loop);
