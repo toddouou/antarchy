@@ -1190,6 +1190,11 @@ let panTarget=null;     // {x,y} smooth camera fly target, null when idle
 let vw=null;
 let palette={0:'#ffffff'};
 let WORLD={w:2048, h:2048, geo:null, spawnX:1024, spawnY:1024, spawnPan:100};
+// Camera "home" used pre-spawn (and whenever geolocation is unavailable / denied / blocked):
+// tile coords of Mostar, Bosnia under the default projection (capitol 0,0, spawn = grid centre).
+// Granting location overrides this with the player's real city; this is purely the fallback so a
+// geo-less player lands on a real city instead of the grid centre, which maps to ocean at (0,0).
+const SPAWN_FALLBACK={x:824080, y:174648};
 let mode='idle';
 let hover=null;
 let panLocked=true;
@@ -1637,7 +1642,7 @@ function handle(msg) {
         view.zoom=zoomTarget=1.0;
         updateDeployBtn();
       } else {
-        view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+        view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
         view.zoom=zoomTarget=1.0;
         setTimeout(()=>{
           mode='place-queen'; cvs.classList.add('placing');
@@ -1757,7 +1762,7 @@ function handle(msg) {
     case 'world-wiped':
       toast('[ADMIN] WORLD WIPED');
       me={...me, queen:null, stats:{tiles:0,secs:0,kills:0,score:0}, antsAvail:5};
-      view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+      view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
       view.zoom=zoomTarget=1.0;
       stopForbiddenPoll();
       if (!me.isAdmin) {
@@ -2271,7 +2276,7 @@ function showDeathScreen(m){
 function redeployQueen(){
   AudioEngine.click();
   $('death-screen').classList.remove('vis');
-  view.x=WORLD.spawnX; view.y=WORLD.spawnY; panLocked=true;
+  view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
   view.zoom=zoomTarget=1.0;
   mode='place-queen'; cvs.classList.add('placing');
   hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
@@ -2464,7 +2469,18 @@ function doGeolocate() {
       panTarget = { x: coords.x, y: coords.y };
       toast('NAVIGATING TO YOUR LOCATION');
     }
-  }, () => toast('GEO: PERMISSION DENIED'), { timeout: 8000 });
+  }, () => {
+    // Location not found / denied / blocked. The initial (pre-spawn) auto-locate settles the
+    // camera on the Mostar fallback; the manual "FIND MY CITY" button just notifies (no yank).
+    if (initialGeolocate) {
+      view.x = SPAWN_FALLBACK.x; view.y = SPAWN_FALLBACK.y;
+      initialGeolocate = false;
+      clampView(); pushView();
+      toast('LOCATION UNAVAILABLE · CENTERED ON MOSTAR');
+    } else {
+      toast('GEO: PERMISSION DENIED');
+    }
+  }, { timeout: 8000 });
 }
 
 function toggleMap() {
