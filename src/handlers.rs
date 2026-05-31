@@ -177,11 +177,7 @@ pub fn handle_message(
         });
         world.queen_map_dirty = true;
         world.dirty_tick = world.tick; // tiles are about to change
-        for dy in 0..size as i32 {
-            for dx in 0..size as i32 {
-                world.tiles.set((x + dx) as u32, (y + dy) as u32, pid);
-            }
-        }
+        world.paint_queen_body(x, y, size, pid);
         let _ = tx.send(json!({"t":"queen-placed","x":x,"y":y}).to_string());
         let _ = tx.send(json!({"t":"event","msg":"QUEEN PLACED · DEPLOY ANTS WITHIN BUBBLE"}).to_string());
         return;
@@ -357,22 +353,9 @@ pub fn handle_message(
                 // Read old position — borrow released immediately after .map()
                 let old_pos = world.queens.get(&tid).map(|q| (q.x, q.y, q.size));
                 let Some((ox, oy, sz)) = old_pos else { return };
-                // Clear old body tiles (no queen borrow active)
-                for dy in 0..sz as i32 {
-                    for dx in 0..sz as i32 {
-                        if world.tiles.get((ox+dx) as u32, (oy+dy) as u32) == tid {
-                            world.tiles.set((ox+dx) as u32, (oy+dy) as u32, 0);
-                        }
-                    }
-                }
-                // Update queen position
+                world.clear_queen_body(ox, oy, sz, tid);
                 if let Some(q) = world.queens.get_mut(&tid) { q.x = nx; q.y = ny; q.region = crate::regions::region_for(nx, ny); }
-                // Paint new body tiles
-                for dy in 0..sz as i32 {
-                    for dx in 0..sz as i32 {
-                        world.tiles.set((nx+dx) as u32, (ny+dy) as u32, tid);
-                    }
-                }
+                world.paint_queen_body(nx, ny, sz, tid);
                 world.queen_map_dirty = true;
             }
             "ban-player" => {
@@ -650,17 +633,9 @@ pub fn handle_message(
                 drop(c);
                 if too_close { let _ = tx.send(err("Too close to another queen")); return; }
                 if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
-                for dy in 0..sz as i32 {
-                    for dx in 0..sz as i32 {
-                        if world.tiles.get((ox+dx) as u32, (oy+dy) as u32) == pid {
-                            world.tiles.set((ox+dx) as u32, (oy+dy) as u32, 0);
-                        }
-                    }
-                }
+                world.clear_queen_body(ox, oy, sz, pid);
                 if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
-                for dy in 0..sz as i32 {
-                    for dx in 0..sz as i32 { world.tiles.set((x+dx) as u32, (y+dy) as u32, pid); }
-                }
+                world.paint_queen_body(x, y, sz, pid);
                 world.queen_map_dirty = true; world.dirty_tick = world.tick;
                 let _ = tx.send(json!({"t":"shop-ok","item":"relocate","x":x,"y":y}).to_string());
             }

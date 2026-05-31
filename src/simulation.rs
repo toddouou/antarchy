@@ -252,11 +252,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
     });
     world.queen_map_dirty = true;
 
-    for dy in 0..npc_size as i32 {
-        for dx in 0..npc_size as i32 {
-            world.tiles.set((cx + dx) as u32, (cy + dy) as u32, id);
-        }
-    }
+    world.paint_queen_body(cx, cy, npc_size, id);
 
     let spread = [
         (0i32, -(npc_size as i32 + 1), 0i8, -1i8),

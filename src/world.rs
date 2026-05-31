@@ -285,4 +285,62 @@ impl World {
             }
         }
     }
+
+    /// Paint a queen's `size`×`size` body at (`x`,`y`) as owned by `owner`, clamped to the
+    /// world so a body near the edge can never write phantom out-of-world tiles. Used by
+    /// every queen placement / move (place-queen, spawn_npc, admin move, shop relocate).
+    pub fn paint_queen_body(&mut self, x: i32, y: i32, size: u8, owner: u32) {
+        let (ww, wh) = (self.world_w as i32, self.world_h as i32);
+        for dy in 0..size as i32 {
+            for dx in 0..size as i32 {
+                let (px, py) = (x + dx, y + dy);
+                if px < 0 || py < 0 || px >= ww || py >= wh { continue; }
+                self.tiles.set(px as u32, py as u32, owner);
+            }
+        }
+    }
+
+    /// Clear a queen's body, erasing only cells still owned by `owner` (so a move never
+    /// wipes a neighbour's overlapping tiles). Clamped to the world like `paint_queen_body`.
+    pub fn clear_queen_body(&mut self, x: i32, y: i32, size: u8, owner: u32) {
+        let (ww, wh) = (self.world_w as i32, self.world_h as i32);
+        for dy in 0..size as i32 {
+            for dx in 0..size as i32 {
+                let (px, py) = (x + dx, y + dy);
+                if px < 0 || py < 0 || px >= ww || py >= wh { continue; }
+                if self.tiles.get(px as u32, py as u32) == owner {
+                    self.tiles.set(px as u32, py as u32, 0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count(w: &World, owner: u32) -> i64 { w.tiles.counts.get(&owner).copied().unwrap_or(0) }
+
+    #[test]
+    fn paint_and_clear_queen_body() {
+        let mut w = World::new();
+        w.paint_queen_body(10, 20, 3, 42);
+        assert_eq!(count(&w, 42), 9);
+        assert_eq!(w.tiles.get(12, 22), 42);
+        // A neighbour overwrites one body cell; clear must spare it.
+        w.tiles.set(11, 21, 7);
+        w.clear_queen_body(10, 20, 3, 42);
+        assert_eq!(count(&w, 42), 0);
+        assert_eq!(w.tiles.get(11, 21), 7, "neighbour tile preserved");
+    }
+
+    #[test]
+    fn paint_queen_body_clamps_at_world_edge() {
+        let mut w = World::new();
+        let (ww, wh) = (w.world_w as i32, w.world_h as i32);
+        w.paint_queen_body(ww - 1, wh - 1, 4, 5);   // only the corner cell is in-bounds
+        assert_eq!(count(&w, 5), 1, "only in-bounds cells painted");
+        assert_eq!(w.tiles.get(ww as u32, wh as u32), 0, "no phantom tile past the edge");
+    }
 }
