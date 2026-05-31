@@ -131,7 +131,11 @@ via `cfg()` / `cfg_write()`. Admin-panel sliders mutate it through `apply_admin_
 
 - **Tile encoding**: `tiles.get(x, y)` returns `0` (unclaimed) or the owner's numeric player id.
   Internally cells are compact `u16` palette indices (`palette[idx] → id`, recycled when a count
-  hits 0); the public API still speaks raw ids, so callers are unchanged.
+  hits 0); the public API still speaks raw ids, so callers are unchanged. **On the wire**,
+  `finish_view` re-indexes each tile frame into a **per-frame local palette** (`tileIds[local] = id`,
+  `0` = unclaimed), so the `u16` tile blob is bounded by the owners *visible in that viewport*, never
+  the lifetime id count — the client maps `tileIds` back to real ids on receipt. (This replaced the
+  old `min(0xFFFF)` clamp, which collided every id > 65,535.)
 - **Tile counts**: all tile mutations must go through `tiles.set(x, y, new_owner)` — it keeps
   `TileMap.counts` (player id → exact count) in sync and drops empty chunks. Never mutate chunk
   cells directly.
@@ -177,8 +181,6 @@ PORT=8090 CARGO_TARGET_DIR=target-dev cargo test --release bench_ -- --ignored -
 - **Palette fan-out**: `finish_view` clones the full palette into every client's tile frame →
   O(players²) work at high connected counts. Fix: send the palette only on change, cache it client-side.
 - **Leaderboard payload**: the full live-queen list is broadcast every 20 ticks; should be top-N.
-- **Wire tile ids**: tile blobs send raw player ids clamped to `u16` (`min(0xFFFF)`), so ids
-  > 65,535 collide on the wire within a single long-running season. Fix: send palette *indices*.
 
 ## Client ↔ geography
 

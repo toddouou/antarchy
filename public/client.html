@@ -1218,7 +1218,7 @@ let tileCacheDirty=false;
 let tileCacheCamX=-1, tileCacheCamY=-1;
 // Fixed-size sliding tile cache — covers a 2048×2048 tile window, shifts when view moves beyond it
 const TILE_CACHE_W=2048, TILE_CACHE_H=2048;
-let tileCache=null;  // Uint16Array(TILE_CACHE_W*TILE_CACHE_H), allocated after login
+let tileCache=null;  // Uint32Array(TILE_CACHE_W*TILE_CACHE_H) of player ids, allocated after login
 let fogCache=null;   // Uint8Array(...)
 let cacheOriX=0, cacheOriY=0; // world coord of cache[0,0]
 let mapVisible=true;
@@ -1618,7 +1618,7 @@ function handle(msg) {
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
       waterCache.clear();
-      tileCache=new Uint16Array(TILE_CACHE_W*TILE_CACHE_H);
+      tileCache=new Uint32Array(TILE_CACHE_W*TILE_CACHE_H);
       fogCache=new Uint8Array(TILE_CACHE_W*TILE_CACHE_H).fill(100);
       cacheOriX=Math.max(0,(WORLD.spawnX||0)-(TILE_CACHE_W>>1));
       cacheOriY=Math.max(0,(WORLD.spawnY||0)-(TILE_CACHE_H>>1));
@@ -1677,7 +1677,14 @@ function handle(msg) {
         break;
       }
       const tBytes=b64ToBytes(msg.tiles);
-      msg.tiles=new Uint16Array(tBytes.buffer, tBytes.byteOffset, tBytes.byteLength>>1);
+      // Wire values are per-frame LOCAL palette indices (bounded by visible owners). Map each
+      // back to its stable player id via tileIds[local]=id, so the sliding cache and every
+      // downstream reader keep working on real ids (no >65535 wire clamp anymore).
+      const _local=new Uint16Array(tBytes.buffer, tBytes.byteOffset, tBytes.byteLength>>1);
+      const _tids=msg.tileIds||[0];
+      const _ids=new Uint32Array(_local.length);
+      for (let i=0;i<_local.length;i++) _ids[i]=_tids[_local[i]]||0;
+      msg.tiles=_ids;
       msg.fog=b64ToBytes(msg.fog);
       if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
       { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }

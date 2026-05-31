@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 
 use crate::config::{cfg, total_xp_for_level, calc_score, current_ms};
@@ -320,12 +321,38 @@ pub fn finish_view(raw: &RawView, palette: &Value) -> String {
     let fog_b64 = B64.encode(&fog);
 
     // Tile blob: inner w×h of the padded slice, little-endian u16 → base64.
+    //
+    // The wire value is a *per-frame local palette index*, not the raw player id: each distinct
+    // owner id visible in this viewport gets a small sequential index (0 = unclaimed), and
+    // `tile_ids[index] = id` is sent so the client maps back to the true id. This bounds the wire
+    // value by the number of *visible* owners (≈ live queens), so it can never overflow u16 — the
+    // old `id.min(0xFFFF)` clamp collided every id > 65,535 onto one value, mis-rendering every
+    // high-id player's territory once a season minted that many accounts. `owners` itself stays
+    // true ids, so the fog transform above is unaffected.
+    let mut id_to_local: FxHashMap<u32, u16> = FxHashMap::default();
+    id_to_local.insert(0, 0);                 // unclaimed → local 0
+    let mut tile_ids: Vec<u32> = vec![0];     // tile_ids[0] = 0 (unclaimed)
     let mut tile_bytes: Vec<u8> = Vec::with_capacity(raw.w * raw.h * 2);
     for yi in 0..raw.h {
         let row = (yi + raw.pad) * raw.pw + raw.pad;
         for xi in 0..raw.w {
-            let v = raw.owners[row + xi].min(0xFFFF) as u16;
-            tile_bytes.extend_from_slice(&v.to_le_bytes());
+            let id = raw.owners[row + xi];
+            let local = match id_to_local.get(&id) {
+                Some(&l) => l,
+                None => {
+                    // Defensive: distinct *live* owners can't realistically approach 65,535, but
+                    // if they ever did, share index 0xFFFF rather than wrapping the u16.
+                    if tile_ids.len() >= 0xFFFF {
+                        0xFFFF
+                    } else {
+                        let l = tile_ids.len() as u16;
+                        id_to_local.insert(id, l);
+                        tile_ids.push(id);
+                        l
+                    }
+                }
+            };
+            tile_bytes.extend_from_slice(&local.to_le_bytes());
         }
     }
     let tiles_b64 = B64.encode(&tile_bytes);
@@ -370,6 +397,50 @@ pub fn finish_view(raw: &RawView, palette: &Value) -> String {
         "ants":  ants,
         "queens": queens,
         "tick":  raw.tick,
+        "tileIds": tile_ids,
         "palette": palette.clone(),
     }).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tile blob must round-trip owner ids > 65,535 through the per-frame local palette.
+    /// The old `id.min(0xFFFF)` clamp collapsed every such id onto 65,535 on the wire.
+    #[test]
+    fn tile_blob_round_trips_ids_above_u16_via_local_palette() {
+        // 2×2 view, no padding; admin → fog is skipped (it doesn't touch the blob anyway).
+        let owners = vec![0u32, 70_000, 65_535, 70_000];
+        let raw = RawView {
+            x0: 0, y0: 0, w: 2, h: 2,
+            tick: 1,
+            include_tiles: true,
+            player_id: 999,
+            is_admin: true,
+            pad: 0, pw: 2, ph: 2,
+            owners: owners.clone(),
+            ants: Vec::new(),
+            queens: Vec::new(),
+            lod_step: 1,
+        };
+
+        let frame = finish_view(&raw, &json!({}));
+        let v: Value = serde_json::from_str(&frame).unwrap();
+
+        let tile_ids: Vec<u32> = v["tileIds"].as_array().unwrap()
+            .iter().map(|x| x.as_u64().unwrap() as u32).collect();
+        assert_eq!(tile_ids[0], 0, "local index 0 must stay unclaimed");
+
+        let bytes = B64.decode(v["tiles"].as_str().unwrap()).unwrap();
+        assert_eq!(bytes.len(), owners.len() * 2);
+        for (cell, chunk) in bytes.chunks_exact(2).enumerate() {
+            let local = u16::from_le_bytes([chunk[0], chunk[1]]) as usize;
+            assert_eq!(tile_ids[local], owners[cell],
+                "cell {cell}: local index {local} must map back to the true owner id");
+        }
+
+        // The >65,535 owner survived end-to-end (the bug this fixes).
+        assert!(tile_ids.contains(&70_000));
+    }
 }

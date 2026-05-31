@@ -78,6 +78,7 @@ async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
     let connected = w.players.values().filter(|p| !p.npc && p.tx.is_some()).count();
 
     let body = serde_json::json!({
+        "version":   env!("CARGO_PKG_VERSION"),
         "tick":      w.tick,
         "ants":      w.ants.len(),
         "queens":    w.queens.values().filter(|q| !q.dead).count(),
