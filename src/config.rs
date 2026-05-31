@@ -34,6 +34,16 @@ pub const HIGHWAY_LEN:    i32 = 150;  // diagonal road length (tiles)
 pub const HIGHWAY_NEAR:   i32 = 30;   // start must be within this many tiles of friendly territory
 pub const BRUTE_DMG_MULT: f32 = 3.0;  // brute queen-damage multiplier
 
+/// Lifetime tile-count milestones (rounded "nice numbers"), ascending. Each is awarded **once per
+/// queen** — the first tick its peak tile count (`tiles_ever_held`) reaches the threshold. The XP
+/// per milestone scales with its 1-based index (`xp_tile_award × index`), so later milestones pay
+/// a bit more. See `tick_world` Phase 4.
+pub const TILE_MILESTONES: &[u64] = &[
+    10_000, 25_000, 50_000, 100_000, 250_000, 500_000,
+    1_000_000, 2_500_000, 5_000_000, 10_000_000,
+    25_000_000, 50_000_000, 100_000_000, 250_000_000, 500_000_000, 1_000_000_000,
+];
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
@@ -45,7 +55,10 @@ pub struct Config {
     pub tick_rate: u32,
     pub lifespan: u32,
     pub bubble_r: f64,
+    /// Queen max-HP at level 1 (the low anchor of the exponential HP curve).
     pub hp_base: i32,
+    /// Queen max-HP at the level cap (the high anchor of the exponential HP curve).
+    pub hp_max: i32,
     pub convert_pct: f64,
     pub daily_ants: i32,
     pub save_file: String,
@@ -55,7 +68,7 @@ pub struct Config {
     pub xp_base: f64,
     pub xp_exp: f64,
     pub xp_level_cap: u16,
-    pub xp_tile_milestone: u64,
+    /// Base XP for the *first* tile milestone; milestone `i` (1-based) grants `xp_tile_award × i`.
     pub xp_tile_award: f64,
     pub xp_kill: f64,
     pub xp_convert: f64,
@@ -86,7 +99,8 @@ impl Default for Config {
             tick_rate:         50,
             lifespan:   4_320_000,
             bubble_r:          30.0,
-            hp_base:           100,
+            hp_base:            10,
+            hp_max:        100_000,
             convert_pct:       0.65,
             daily_ants:        5,
             save_file: "world.snapshot".to_string(),
@@ -96,8 +110,7 @@ impl Default for Config {
             xp_base:         500.0,
             xp_exp:            2.2,
             xp_level_cap:    100,
-            xp_tile_milestone: 500,
-            xp_tile_award:    25.0,
+            xp_tile_award:   250.0,
             xp_kill:        5000.0,
             xp_convert:        5.0,
             xp_heal:           1.0,
@@ -138,13 +151,13 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("lifespan",       1000.0, 8_640_000.0),
     ("bubble_r",          5.0,     5_000.0),
     ("hp_base",           1.0, 1_000_000.0),
+    ("hp_max",            1.0, 1_000_000_000.0),
     ("convert_pct",       0.1,         1.0),
     ("daily_ants",        0.0,     1_000.0),
     ("xp_base",           1.0, 1_000_000.0),
     ("xp_exp",            0.5,         5.0),
     ("xp_kill",           0.0, 1_000_000.0),
     ("xp_convert",        0.0,    10_000.0),
-    ("xp_tile_milestone", 1.0,   100_000.0),
     ("xp_tile_award",     0.0,    10_000.0),
     ("levelup_ant_grant", 0.0,       100.0),
     ("spawn_pan",        10.0,    10_000.0),
@@ -166,13 +179,13 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "lifespan"          => c.lifespan           = v as u32,
         "bubble_r"          => c.bubble_r           = v,
         "hp_base"           => c.hp_base            = v as i32,
+        "hp_max"            => c.hp_max             = v as i32,
         "convert_pct"       => c.convert_pct        = v,
         "daily_ants"        => c.daily_ants         = v as i32,
         "xp_base"           => c.xp_base            = v,
         "xp_exp"            => c.xp_exp             = v,
         "xp_kill"           => c.xp_kill            = v,
         "xp_convert"        => c.xp_convert         = v,
-        "xp_tile_milestone" => c.xp_tile_milestone  = v as u64,
         "xp_tile_award"     => c.xp_tile_award      = v,
         "levelup_ant_grant" => c.levelup_ant_grant  = v as i32,
         "spawn_pan"         => c.spawn_pan          = v,
@@ -192,13 +205,13 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
         ("lifespan",          d.lifespan as f64),
         ("bubble_r",          d.bubble_r),
         ("hp_base",           d.hp_base as f64),
+        ("hp_max",            d.hp_max as f64),
         ("convert_pct",       d.convert_pct),
         ("daily_ants",        d.daily_ants as f64),
         ("xp_base",           d.xp_base),
         ("xp_exp",            d.xp_exp),
         ("xp_kill",           d.xp_kill),
         ("xp_convert",        d.xp_convert),
-        ("xp_tile_milestone", d.xp_tile_milestone as f64),
         ("xp_tile_award",     d.xp_tile_award),
         ("levelup_ant_grant", d.levelup_ant_grant as f64),
         ("spawn_pan",         d.spawn_pan),
@@ -213,13 +226,13 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     c.lifespan           = d.lifespan;
     c.bubble_r           = d.bubble_r;
     c.hp_base            = d.hp_base;
+    c.hp_max             = d.hp_max;
     c.convert_pct        = d.convert_pct;
     c.daily_ants         = d.daily_ants;
     c.xp_base            = d.xp_base;
     c.xp_exp             = d.xp_exp;
     c.xp_kill            = d.xp_kill;
     c.xp_convert         = d.xp_convert;
-    c.xp_tile_milestone  = d.xp_tile_milestone;
     c.xp_tile_award      = d.xp_tile_award;
     c.levelup_ant_grant  = d.levelup_ant_grant;
     c.spawn_pan          = d.spawn_pan;
@@ -240,6 +253,19 @@ pub fn queen_size_for_level(lvl: u16) -> u8 {
     else if lvl >= 25 { 4 }
     else if lvl >= 10 { 3 }
     else { 2 }
+}
+
+/// Queen max-HP for a level. HP grows **exponentially** between two anchors: `hp_base` at level 1
+/// and `hp_max` at the level cap (`xp_level_cap`). With the defaults this is 10 HP at L1 →
+/// 100,000 HP at L100. `lvl` is clamped to `[1, cap]`.
+pub fn max_hp_for_level(lvl: u16, cfg: &Config) -> i32 {
+    let cap  = cfg.xp_level_cap.max(2);
+    let lvl  = lvl.clamp(1, cap);
+    let base = cfg.hp_base.max(1) as f64;
+    if lvl <= 1 { return base as i32; }
+    let top  = (cfg.hp_max as f64).max(base);
+    let t    = (lvl - 1) as f64 / (cap - 1) as f64;   // 0..=1 across [1, cap]
+    (base * (top / base).powf(t)).round() as i32
 }
 
 pub fn total_xp_for_level(n: u16, cfg: &Config) -> f64 {

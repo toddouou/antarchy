@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::config::{
     cfg, level_for_xp, current_ms, ENEMY_HUES,
-    BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE,
+    BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE, TILE_MILESTONES,
 };
 use crate::world::{Ant, MetroHolder, Player, Queen, QueenHit, World, XpGrant};
 
@@ -53,8 +53,12 @@ pub fn flush_xp(world: &mut World) {
             let old_lvl = q.level;
             let new_lvl = level_for_xp(q.xp, &c);
             if new_lvl > old_lvl {
+                let old_max = q.max_hp;
                 q.set_level(new_lvl, &c);
-                q.hp     = q.max_hp.min(q.hp + c.hp_base);
+                // Grant the new HP headroom as healing: a full queen stays full, a damaged one
+                // keeps its damage but gains the level's added pool (a flat +hp_base would be
+                // negligible against the exponential curve).
+                q.hp = (q.hp + (q.max_hp - old_max).max(0)).min(q.max_hp);
                 Some((old_lvl, new_lvl))
             } else {
                 None
@@ -225,6 +229,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
     };
     let lifespan = c.lifespan;
     let bubble_r = c.bubble_r;
+    let npc_hp   = crate::config::max_hp_for_level(1, &c);   // level-1 queen HP
     let ww = world.world_w as i32;
     let wh = world.world_h as i32;
     drop(c);
@@ -232,7 +237,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
     let npc_size: u8 = 2;
     world.queens.insert(id, Queen {
         x: cx, y: cy, size: npc_size,
-        hp: 100, max_hp: 100, level: 1, xp: 0.0, kills: 0,
+        hp: npc_hp, max_hp: npc_hp, level: 1, xp: 0.0, kills: 0,
         bubble_r, last_attacker: None, dead: false,
         tiles_ever_held: 0, cached_tiles: 0, npc: true,
         shield: 0, shield_expiry: None,
@@ -318,23 +323,51 @@ pub fn tick_world(world: &mut World) {
                         return (hits, xp);
                     }
 
-                    let cur = tiles.get(ant.x as u32, ant.y as u32);
-
-                    let (mut ndx, mut ndy) = if cur == 0 {
-                        turn_ccw(ant.dx, ant.dy)
-                    } else if cur == ant.owner {
-                        turn_cw(ant.dx, ant.dy)
+                    let (mut ndx, mut ndy) = if ant.kind == 1 {
+                        // Brute Langton variant over the 2×2 footprint at the current position:
+                        //   all friendly → 90° CW · all white → 90° CCW · mixed → straight.
+                        // The footprint is always (re)painted friendly in Phase 3, so every case
+                        // leaves the block owned by the brute.
+                        let mut all_friendly = true;
+                        let mut all_white    = true;
+                        for bdy in 0i32..2 {
+                            for bdx in 0i32..2 {
+                                let (bx, by) = (ant.x + bdx, ant.y + bdy);
+                                if bx >= ww || by >= wh { continue; }   // skip off-edge cells
+                                let t = tiles.get(bx as u32, by as u32);
+                                if t != ant.owner { all_friendly = false; }
+                                if t != 0         { all_white    = false; }
+                            }
+                        }
+                        if all_friendly {
+                            turn_cw(ant.dx, ant.dy)
+                        } else if all_white {
+                            turn_ccw(ant.dx, ant.dy)
+                        } else {
+                            (ant.dx, ant.dy)
+                        }
                     } else {
-                        (ant.dx, ant.dy)
+                        let cur = tiles.get(ant.x as u32, ant.y as u32);
+                        if cur == 0 {
+                            turn_ccw(ant.dx, ant.dy)
+                        } else if cur == ant.owner {
+                            turn_cw(ant.dx, ant.dy)
+                        } else {
+                            (ant.dx, ant.dy)
+                        }
                     };
 
-                    let mut nx = ant.x + ndx as i32;
-                    let mut ny = ant.y + ndy as i32;
+                    // Brutes hop a whole 2×2 (step 2) so consecutive footprints never overlap —
+                    // each step reads a fresh set of 4 cells. Stepping 1 would re-read 2 of its
+                    // own just-painted cells → permanent "mixed → straight" highway loop.
+                    let step = if ant.kind == 1 { 2 } else { 1 };
+                    let mut nx = ant.x + ndx as i32 * step;
+                    let mut ny = ant.y + ndy as i32 * step;
 
                     if nx < 0 || nx >= ww || ny < 0 || ny >= wh {
                         ndx = -ndx; ndy = -ndy;
-                        nx = (ant.x + ndx as i32).clamp(0, ww - 1);
-                        ny = (ant.y + ndy as i32).clamp(0, wh - 1);
+                        nx = (ant.x + ndx as i32 * step).clamp(0, ww - 1);
+                        ny = (ant.y + ndy as i32 * step).clamp(0, wh - 1);
                     }
 
                     if ant.kind == 1 {
@@ -402,7 +435,10 @@ pub fn tick_world(world: &mut World) {
             }
             world.xp_queue.push(XpGrant { player_id: hit.attacker, amount: heal_xp, reason: "heal", x: 0, y: 0 });
         } else {
-            *damage_map.entry(hit.queen_id).or_insert(0.0) += c.ant_damage * hit.dmg_mult as f64;
+            // An ant's bite equals its queen's level; brutes carry a 3× multiplier (dmg_mult).
+            // `ant_damage` stays as a global admin scalar (default 1.0).
+            let atk_lvl = world.queens.get(&hit.attacker).map(|q| q.level).unwrap_or(1).max(1) as f64;
+            *damage_map.entry(hit.queen_id).or_insert(0.0) += c.ant_damage * atk_lvl * hit.dmg_mult as f64;
             last_attacker_map.insert(hit.queen_id, hit.attacker);
         }
     }
@@ -454,14 +490,16 @@ pub fn tick_world(world: &mut World) {
         for j in gstart..gi {
             let idx = world.scratch_pairs[j].1 as usize;
             // Copy out ant data to release immutable borrow before mutable borrow below
-            let (ax, ay, anx, any, andx, andy) = {
+            let (ax, ay, anx, any, andx, andy, akind) = {
                 let a = &world.ants[idx];
-                (a.x, a.y, a._nx, a._ny, a._ndx, a._ndy)
+                (a.x, a.y, a._nx, a._ny, a._ndx, a._ndy, a.kind)
             };
             if anx == ax && any == ay { continue; }
+            // Keep brutes on their 2×2 lattice: the collision nudge moves 2 as well, not 1.
+            let step = if akind == 1 { 2 } else { 1 };
             let (cdx, cdy) = turn_cw(andx, andy);
-            let mut cx = ax + cdx as i32;
-            let mut cy = ay + cdy as i32;
+            let mut cx = ax + cdx as i32 * step;
+            let mut cy = ay + cdy as i32 * step;
             if cx < 0 || cx >= ww || cy < 0 || cy >= wh { cx = ax; cy = ay; }
             if world.queen_map.contains_key(&(cy as u64 * ww_u64 + cx as u64)) { cx = ax; cy = ay; }
             let a = &mut world.ants[idx];
@@ -518,37 +556,38 @@ pub fn tick_world(world: &mut World) {
     }
 
     // =========================================================================
-    // Phase 4: Tile milestone XP + cache update
+    // Phase 4: Tile milestones (one-time per queen) + cached-tile update
     // =========================================================================
-    let milestone  = c.xp_tile_milestone;
+    // A milestone fires the first tick a queen's peak tile count (`tiles_ever_held`) reaches a
+    // rounded threshold (10k, 25k, 50k, 100k, …). Each grants `xp_tile_award × index` XP — no
+    // toast: the queued XP surfaces only as the floating "+N XP" on the queen + ping
+    // (flush_xp → "xp-gain"). Because it keys off the high-water mark, each threshold pays out once.
     let tile_award = c.xp_tile_award;
     let queen_ids: Vec<u32> = world.queens.keys().copied().collect();
     for pid in queen_ids {
         let tiles   = world.tiles.counts.get(&pid).copied().unwrap_or(0).max(0) as u64;
         let is_npc  = world.players.get(&pid).map(|p| p.npc).unwrap_or(true);
 
-        let milestone_gain = {
+        // (xp, qx, qy) for each milestone newly crossed this tick — usually empty or one entry.
+        let grants: Vec<(f64, i32, i32)> = {
             let Some(q) = world.queens.get_mut(&pid) else { continue };
             if q.dead { continue; }
             q.cached_tiles = tiles;
-            if !is_npc && tiles > q.tiles_ever_held {
+            if is_npc || tiles <= q.tiles_ever_held {
+                Vec::new()
+            } else {
                 let prev = q.tiles_ever_held;
                 q.tiles_ever_held = tiles;
-                let m_before = prev  / milestone;
-                let m_now    = tiles / milestone;
-                if m_now > m_before {
-                    let gained = (m_now - m_before) as f64 * tile_award;
-                    Some((gained, q.x + q.size as i32 / 2, q.y + q.size as i32 / 2))
-                } else { None }
-            } else { None }
+                let (qx, qy) = (q.x + q.size as i32 / 2, q.y + q.size as i32 / 2);
+                TILE_MILESTONES.iter().enumerate()
+                    .filter(|&(_, &t)| prev < t && t <= tiles)   // crossed this milestone this tick
+                    .map(|(i, _)| (tile_award * (i + 1) as f64, qx, qy))
+                    .collect()
+            }
         };
 
-        if let Some((gained, qx, qy)) = milestone_gain {
+        for (gained, qx, qy) in grants {
             world.xp_queue.push(XpGrant { player_id: pid, amount: gained, reason: "milestone", x: qx, y: qy });
-            let tx = world.players.get(&pid).and_then(|p| p.tx.clone());
-            if let Some(tx) = tx {
-                let _ = tx.send(json!({"t":"event","msg":format!("TILE MILESTONE: +{} XP!", gained as i64)}).to_string());
-            }
         }
     }
 
@@ -872,10 +911,101 @@ mod tests {
         }
     }
 
+    /// The brute's Langton variant turns by its 2×2 footprint: all-friendly → 90° CW,
+    /// all-white → 90° CCW, mixed → straight. Brutes act on even ticks, so we step to tick 2.
+    #[test]
+    fn brute_turns_by_2x2_footprint() {
+        crate::regions::init();
+        let lifespan = crate::config::cfg().lifespan;
+        let owner = 7u32;
+
+        // Heading of the lone brute after its first acting (even) tick, given a paint setup.
+        let dir_after = |paint: &dyn Fn(&mut World, i32, i32)| -> (i8, i8) {
+            let mut w = World::new();
+            let (cx, cy) = (w.world_w as i32 / 2, w.world_h as i32 / 2);
+            paint(&mut w, cx, cy);
+            w.ants.push(Ant::new_kind(1, owner, cx, cy, 1, 0, lifespan, 1)); // heading east
+            tick_world(&mut w);  // tick 1 (odd)  — brute idle
+            tick_world(&mut w);  // tick 2 (even) — brute acts
+            let a = &w.ants[0];
+            (a.dx, a.dy)
+        };
+
+        // Behavior 3 — all white → CCW: turn_ccw(1,0) = (0,-1).
+        assert_eq!(dir_after(&|_w, _x, _y| {}), (0, -1), "all-white footprint turns CCW");
+
+        // Behavior 1 — all friendly → CW: turn_cw(1,0) = (0,1).
+        assert_eq!(dir_after(&|w, x, y| {
+            for dy in 0..2 { for dx in 0..2 { w.tiles.set((x + dx) as u32, (y + dy) as u32, owner); } }
+        }), (0, 1), "all-friendly footprint turns CW");
+
+        // Behavior 2 — mixed (one friendly cell, rest white) → straight: heading stays (1,0).
+        assert_eq!(dir_after(&|w, x, y| {
+            w.tiles.set(x as u32, y as u32, owner);
+        }), (1, 0), "mixed footprint goes straight");
+    }
+
+    /// A brute hops a full 2×2 (2 tiles) per acting step, so each new footprint reads fresh cells
+    /// (the fix for the 1-tile overlap → straight-line "highway loop"). Contrast: normal ants step 1.
+    #[test]
+    fn brute_hops_two_tiles() {
+        crate::regions::init();
+        let lifespan = crate::config::cfg().lifespan;
+        let mut w = World::new();
+        let (cx, cy) = (w.world_w as i32 / 2, w.world_h as i32 / 2);
+
+        // Brute on an all-white field; a normal ant from the same spot for contrast.
+        w.ants.push(Ant::new_kind(1, 7, cx, cy, 1, 0, lifespan, 1)); // [0] brute, east
+        w.ants.push(Ant::new(2, 8, cx, cy, 1, 0, lifespan));         // [1] normal, east
+        tick_world(&mut w);  // tick 1 (odd)  — brute idle
+        tick_world(&mut w);  // tick 2 (even) — brute acts
+
+        let b = &w.ants[0];
+        assert_eq!((b.x - cx).abs() + (b.y - cy).abs(), 2, "brute hops exactly 2 tiles");
+        // Axis-aligned hop (one axis by 2, the other unchanged).
+        assert!((b.x == cx) ^ (b.y == cy), "brute hop stays axis-aligned");
+    }
+
     fn mk_queen(x: i32, y: i32, level: u16, hp: i32) -> crate::world::Queen {
         crate::world::Queen { x, y, size: 2, hp, max_hp: 100, level, xp: 0.0, kills: 0,
             bubble_r: 30.0, last_attacker: None, dead: false, tiles_ever_held: 0, cached_tiles: 0,
             npc: false, shield: 0, shield_expiry: None, region: String::new() }
+    }
+
+    fn mk_player(id: u32) -> crate::world::Player {
+        crate::world::Player {
+            id, username: String::new(), color: String::new(), hue_idx: 0,
+            ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
+            view: None, tx: None, view_tx: None, conn_gen: 0, prestige: 0, credits: 0,
+            defenders: Vec::new(), visited_countries: Default::default(),
+            visited_continents: Default::default(), lifetime_kills: 0,
+            lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
+        }
+    }
+
+    /// A tile milestone fires once when peak tiles first reach a threshold, and never again.
+    /// With no ants, milestone XP is the only XP source, so the queen's xp isolates the award.
+    #[test]
+    fn tile_milestone_awards_once_per_threshold() {
+        crate::regions::init();
+        let award = crate::config::cfg().xp_tile_award;
+        let mut w = World::new();
+        let pid = 5u32;
+        w.players.insert(pid, mk_player(pid));
+        w.queens.insert(pid, mk_queen(2000, 2000, 1, 100));  // far from the painted block
+        w.queen_map_dirty = true;
+
+        // Paint exactly 10,000 tiles → crosses the first milestone (index 0 → award × 1).
+        for y in 0..100u32 { for x in 0..100u32 { w.tiles.set(x, y, pid); } }
+        assert_eq!(w.tiles.counts.get(&pid).copied().unwrap_or(0), 10_000);
+
+        tick_world(&mut w);
+        let xp = w.queens.get(&pid).unwrap().xp;
+        assert_eq!(xp, award, "first milestone (10k) grants xp_tile_award");
+
+        // No new ground gained → the threshold must not pay out a second time.
+        tick_world(&mut w);
+        assert_eq!(w.queens.get(&pid).unwrap().xp, xp, "milestone is one-time per queen");
     }
 
     #[test]

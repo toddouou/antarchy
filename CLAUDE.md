@@ -42,7 +42,8 @@ src/
                          dedicated OS threads, runs the axum HTTP/WS server on the tokio runtime
   config.rs            — Config struct + global cfg()/cfg_write() (OnceLock<RwLock>), ADMIN_CLAMP,
                          apply_admin_param, reset_to_defaults, queen_size_for_level,
-                         total_xp_for_level, level_for_xp, calc_score, current_ms; shop prices +
+                         max_hp_for_level, total_xp_for_level, level_for_xp, calc_score,
+                         current_ms; shop prices +
                          tunables (CREDIT_CAP, PRICE_*, BRUTE_DMG_MULT, DEFENDER_RANGE, …)
   world.rs             — World aggregate + Ant/Queen/Player/PlayerView/XpGrant/QueenHit/
                          MetroHolder/AwaySnapshot structs; send_to/broadcast/broadcast_near;
@@ -145,6 +146,14 @@ via `cfg()` / `cfg_write()`. Admin-panel sliders mutate it through `apply_admin_
   the tick. Call `flush_xp` explicitly after any out-of-tick award.
 - **Queen size grows with level** (`queen_size_for_level`). Always change level via
   `Queen::set_level` (sets level → size → max_hp together) so the queen-cell map can't desync.
+  `max_hp` follows an **exponential** curve (`max_hp_for_level`) anchored at `hp_base` (L1) and
+  `hp_max` (the level cap) — defaults 10 HP @ L1 → 100,000 HP @ L100. Level-ups grant the added HP
+  headroom (the `max_hp` delta), not a flat amount.
+- **Ant damage scales with level**: each bite deals `ant_damage × attacker-queen-level`; **brutes**
+  carry a `BRUTE_DMG_MULT` (3×) on top. `ant_damage` (default 1.0) is the global admin scalar.
+- **Brute movement** is a 2×2-footprint Langton variant: footprint all-friendly → 90° CW,
+  all-white → 90° CCW, otherwise (mixed/enemy) → straight; the footprint is always repainted
+  friendly. Brutes act on even ticks only.
 - **Queen bodies**: paint/clear footprints via `World::paint_queen_body` / `clear_queen_body`
   (both clamp to the world). Worker-placement legality lives in `validate_worker_placement`.
 - **Fog**: admins receive an all-zero fog field (no fog) from `compute_fog_field_slice`.

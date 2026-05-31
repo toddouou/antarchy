@@ -151,7 +151,7 @@ pub fn handle_message(
             let _ = tx.send(err("Too close to another queen")); return;
         }
         let size = queen_size_for_level(1);
-        let max_hp = c.hp_base;
+        let max_hp = crate::config::max_hp_for_level(1, &c);
         let bubble_r = c.bubble_r;
         drop(c);
         let (q_country, q_cont) = crate::regions::country_and_continent(x, y);
@@ -262,8 +262,8 @@ pub fn handle_message(
                 // Read queen state first, drop borrow, then mutate separately
                 let queen_state = world.queens.get(&target_id)
                     .filter(|q| !q.dead)
-                    .map(|q| (q.level, q.hp));
-                let Some((cur_level, cur_hp)) = queen_state else { return };
+                    .map(|q| (q.level, q.hp, q.max_hp));
+                let Some((cur_level, cur_hp, old_max)) = queen_state else { return };
                 if cur_level >= c.xp_level_cap { return; }
                 let new_xp  = total_xp_for_level(cur_level + 1, &c);
                 let new_lvl = level_for_xp(new_xp, &c);
@@ -271,7 +271,7 @@ pub fn handle_message(
                 if let Some(ql) = world.queens.get_mut(&target_id) {
                     ql.xp    = new_xp;
                     ql.set_level(new_lvl, &c);
-                    ql.hp    = ql.max_hp.min(cur_hp + c.hp_base);
+                    ql.hp    = (cur_hp + (ql.max_hp - old_max).max(0)).min(ql.max_hp);
                 }
                 if ants_gained > 0 {
                     if let Some(tp) = world.players.get_mut(&target_id) {

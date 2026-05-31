@@ -126,7 +126,6 @@ pub fn build_player_info(world: &World, player_id: u32) -> String {
             "level": q.level, "dead": q.dead,
             "tiles": tiles,
             "tilesEverHeld": q.tiles_ever_held,
-            "milestones": q.tiles_ever_held / c.xp_tile_milestone.max(1),
             "xp": xp as i64,
             "xpThisLevel": xp_this as i64,
             "xpNextLevel": xp_next as i64,

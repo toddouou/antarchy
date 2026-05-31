@@ -1,5 +1,6 @@
 /target
 /target-dev
+/target-check
 users.json
 *.snapshot
 world.snapshot

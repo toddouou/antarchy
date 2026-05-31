@@ -4,7 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
 use crate::auth::Auth;
-use crate::config::{queen_size_for_level, Config};
+use crate::config::{max_hp_for_level, queen_size_for_level, Config};
 use crate::tile_map::TileMap;
 
 // ---- Ant ------------------------------------------------------------------
@@ -84,7 +84,7 @@ impl Queen {
     pub fn set_level(&mut self, lvl: u16, c: &Config) {
         self.level  = lvl;
         self.size   = queen_size_for_level(lvl);
-        self.max_hp = c.hp_base * lvl as i32;
+        self.max_hp = max_hp_for_level(lvl, c);
     }
 }
 
@@ -389,6 +389,6 @@ mod tests {
         q.set_level(25, &c);
         assert_eq!(q.level, 25);
         assert_eq!(q.size, queen_size_for_level(25));
-        assert_eq!(q.max_hp, c.hp_base * 25);
+        assert_eq!(q.max_hp, max_hp_for_level(25, &c));
     }
 }
