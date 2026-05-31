@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
 use crate::auth::Auth;
+use crate::config::{queen_size_for_level, Config};
 use crate::tile_map::TileMap;
 
 // ---- Ant ------------------------------------------------------------------
@@ -74,6 +75,17 @@ pub struct Queen {
     /// on placement / relocate / admin-move. Drives the leaderboard region column + tabs.
     #[serde(default)]
     pub region:         String,
+}
+
+impl Queen {
+    /// Apply a level change consistently: set `level`, derive the footprint `size`, and the
+    /// `max_hp` ceiling. Callers still set `hp`/`xp`/ant grants per their own policy. Centralising
+    /// this stops a caller changing `level` but forgetting `size` (which desyncs the queen map).
+    pub fn set_level(&mut self, lvl: u16, c: &Config) {
+        self.level  = lvl;
+        self.size   = queen_size_for_level(lvl);
+        self.max_hp = c.hp_base * lvl as i32;
+    }
 }
 
 // ---- Player ---------------------------------------------------------------
@@ -368,5 +380,15 @@ mod tests {
         assert!(w.too_close_to_queen(1010, 1000, 0),  "inside the bubble");
         assert!(!w.too_close_to_queen(1100, 1000, 0), "outside the bubble");
         assert!(!w.too_close_to_queen(1010, 1000, 1), "excluded queen ignored");
+    }
+
+    #[test]
+    fn set_level_derives_size_and_max_hp() {
+        let c = crate::config::cfg().clone();
+        let mut q = mk_queen(0, 0, 30.0);
+        q.set_level(25, &c);
+        assert_eq!(q.level, 25);
+        assert_eq!(q.size, queen_size_for_level(25));
+        assert_eq!(q.max_hp, c.hp_base * 25);
     }
 }

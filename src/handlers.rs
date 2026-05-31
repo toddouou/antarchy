@@ -286,9 +286,7 @@ pub fn handle_message(
                 let ants_gained = (new_lvl as i32 - cur_level as i32).max(0) * c.levelup_ant_grant;
                 if let Some(ql) = world.queens.get_mut(&target_id) {
                     ql.xp    = new_xp;
-                    ql.level = new_lvl;
-                    ql.size  = queen_size_for_level(new_lvl);
-                    ql.max_hp = c.hp_base * new_lvl as i32;
+                    ql.set_level(new_lvl, &c);
                     ql.hp    = ql.max_hp.min(cur_hp + c.hp_base);
                 }
                 if ants_gained > 0 {
@@ -309,14 +307,11 @@ pub fn handle_message(
                     .map(|q| (q.level, q.xp, q.hp));
                 let Some((cur_level, cur_xp, cur_hp)) = queen_state else { return };
                 let new_level = cur_level - 1;
-                let new_max_hp = c.hp_base * new_level as i32;
                 let floor = total_xp_for_level(new_level, &c);
                 let ceil  = total_xp_for_level(new_level + 1, &c) - 1.0;
                 if let Some(qd) = world.queens.get_mut(&target_id) {
-                    qd.level  = new_level;
-                    qd.size   = queen_size_for_level(new_level);
-                    qd.max_hp = new_max_hp;
-                    qd.hp     = cur_hp.min(new_max_hp);
+                    qd.set_level(new_level, &c);
+                    qd.hp     = cur_hp.min(qd.max_hp);
                     qd.xp     = cur_xp.clamp(floor, ceil);
                 }
                 world.queen_map_dirty = true;
@@ -400,10 +395,8 @@ pub fn handle_message(
         if let Some(q) = world.queens.get_mut(&tid) {
             if !q.dead {
                 let old_lvl = q.level;
-                q.level   = level;
+                q.set_level(level, &c);
                 q.xp      = total_xp_for_level(level, &c);
-                q.size     = queen_size_for_level(level);
-                q.max_hp  = c.hp_base * level as i32;
                 q.hp      = q.hp.min(q.max_hp);
                 let ants_delta = (level as i32 - old_lvl as i32).max(0) * c.levelup_ant_grant;
                 if ants_delta > 0 {
@@ -432,9 +425,7 @@ pub fn handle_message(
                 let new_lvl = level_for_xp(q.xp, &c);
                 if new_lvl > q.level {
                     let ants_delta = (new_lvl as i32 - q.level as i32).max(0) * c.levelup_ant_grant;
-                    q.level   = new_lvl;
-                    q.size     = queen_size_for_level(new_lvl);
-                    q.max_hp  = c.hp_base * new_lvl as i32;
+                    q.set_level(new_lvl, &c);
                     q.hp      = q.max_hp;
                     world.queen_map_dirty = true;
                     if ants_delta > 0 {

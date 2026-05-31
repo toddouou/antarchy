@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use serde_json::json;
 
 use crate::config::{
-    cfg, queen_size_for_level, level_for_xp, current_ms, ENEMY_HUES,
+    cfg, level_for_xp, current_ms, ENEMY_HUES,
     BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE,
 };
 use crate::world::{Ant, MetroHolder, Player, Queen, QueenHit, World, XpGrant};
@@ -53,9 +53,7 @@ pub fn flush_xp(world: &mut World) {
             let old_lvl = q.level;
             let new_lvl = level_for_xp(q.xp, &c);
             if new_lvl > old_lvl {
-                q.level  = new_lvl;
-                q.size   = queen_size_for_level(new_lvl);
-                q.max_hp = c.hp_base * new_lvl as i32;
+                q.set_level(new_lvl, &c);
                 q.hp     = q.max_hp.min(q.hp + c.hp_base);
                 Some((old_lvl, new_lvl))
             } else {
