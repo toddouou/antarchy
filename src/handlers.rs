@@ -795,7 +795,6 @@ fn create_or_reconnect_player(
         tx: Some(tx), view_tx: None,
         conn_gen: 1,
         prestige: 0, credits: 0,
-        last_sent_dirty: 0,
         defenders: Vec::new(),
         visited_countries: Default::default(), visited_continents: Default::default(),
         lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0, away: None,

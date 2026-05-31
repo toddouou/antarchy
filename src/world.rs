@@ -96,7 +96,6 @@ pub struct Player {
     pub conn_gen:        u64,
     pub prestige:        u32,
     pub credits:         u64,
-    pub last_sent_dirty: u64,
     /// Queued shop defenders: each entry is an expiry timestamp (ms). When an enemy
     /// worker nears this player's queen, one is consumed to spawn a free distraction ant.
     pub defenders:       Vec<u64>,

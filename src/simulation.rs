@@ -245,7 +245,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         hue_idx: hue_idx as i32,
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
         npc: true, view: None, tx: None, view_tx: None, conn_gen: 0,
-        prestige: 0, credits: 0, last_sent_dirty: 0,
+        prestige: 0, credits: 0,
         defenders: Vec::new(),
         visited_countries: Default::default(), visited_continents: Default::default(),
         lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
@@ -349,7 +349,9 @@ pub fn tick_world(world: &mut World) {
                         let mut hit_queens: Vec<u32> = Vec::new();
                         for bdy in 0i32..2 {
                             for bdx in 0i32..2 {
-                                let dest_key = (ny + bdy) as u64 * ww_u64 + (nx + bdx) as u64;
+                                let (bx, by) = (nx + bdx, ny + bdy);
+                                if bx >= ww || by >= wh { continue; }  // never index past the world edge
+                                let dest_key = by as u64 * ww_u64 + bx as u64;
                                 if let Some(&queen_id) = queen_map.get(&dest_key) {
                                     if queen_id != ant.owner && !hit_queens.contains(&queen_id) {
                                         hit_queens.push(queen_id);
@@ -488,8 +490,9 @@ pub fn tick_world(world: &mut World) {
                 if is_even {
                     for bdy in 0i32..2 {
                         for bdx in 0i32..2 {
-                            let bx = (ant.x + bdx) as u32;
-                            let by = (ant.y + bdy) as u32;
+                            let (bxi, byi) = (ant.x + bdx, ant.y + bdy);
+                            if bxi >= ww || byi >= wh { continue; }  // never paint past the world edge
+                            let (bx, by) = (bxi as u32, byi as u32);
                             if world.tiles.get(bx, by) != ant.owner {
                                 world.tiles.set(bx, by, ant.owner);
                             }
@@ -812,6 +815,30 @@ fn build_sorted_pairs(out: &mut Vec<(u64, u32)>, ants: &[crate::world::Ant], ww_
         }));
     }
     out.par_sort_unstable_by_key(|&(k, _)| k);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::{Ant, World};
+
+    /// Boundary regression: a brute's 2×2 footprint must never paint (or probe a queen cell)
+    /// past the east/south world edge. Before the clamp it wrote a phantom tile at x == world_w
+    /// and, via the `y*W + x` key, aliased onto row y+1 column 0. See tick_world Phase 1/3.
+    #[test]
+    fn brute_does_not_paint_past_world_edge() {
+        crate::regions::init();
+        let mut w = World::new();
+        let ww = w.world_w as i32;
+        let lifespan = crate::config::cfg().lifespan;
+        // Brute one tile shy of the east edge; its 2×2 block reaches x == world_w.
+        w.ants.push(Ant::new_kind(1, 100, ww - 1, 100, 1, 0, lifespan, 1));
+        for _ in 0..6 { tick_world(&mut w); }      // brutes act on even ticks
+        assert!(w.tiles.total_tiles() > 0, "brute should have painted in-bounds tiles");
+        for y in 99..103u32 {
+            assert_eq!(w.tiles.get(ww as u32, y), 0, "phantom paint at x=world_w (y={y})");
+        }
+    }
 }
 
 #[cfg(test)]

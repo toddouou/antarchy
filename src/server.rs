@@ -233,7 +233,6 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                         if let Some(id) = pid {
                             if let Some(p) = w.players.get_mut(&id) {
                                 p.view_tx = Some(view_tx);
-                                p.last_sent_dirty = 0; // force a full viewport send on login
                             }
                         }
                         let result = pid.map(|id| {
