@@ -38,9 +38,10 @@ async fn main() {
         (c.port, c.world_w, c.world_h, c.spawn_x, c.spawn_y, c.tick_rate)
     };
 
+    let ver = env!("CARGO_PKG_VERSION");
     println!(r"
 ╔════════════════════════════════════════╗
-║  ▲ HIVE-SIM v0.2 — Rust engine        ║
+║  ▲ HIVE-SIM v{ver} — Rust engine      ║
 ║  http://localhost:{port:<5}               ║
 ║  world: {world_w}×{world_h}  ║
 ║  spawn: ({spawn_x},{spawn_y})   ║
