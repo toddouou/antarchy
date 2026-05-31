@@ -314,6 +314,17 @@ impl World {
             }
         }
     }
+
+    /// True if (`x`,`y`) lies within any live OTHER queen's bubble. Shared by place-queen
+    /// and shop relocate to enforce the no-overlap spacing rule.
+    pub fn too_close_to_queen(&self, x: i32, y: i32, exclude: u32) -> bool {
+        self.queens.iter().filter(|(_, q)| !q.dead).any(|(&qid, q)| {
+            if qid == exclude { return false; }
+            let ddx = (q.x + q.size as i32 / 2 - x) as i64;
+            let ddy = (q.y + q.size as i32 / 2 - y) as i64;
+            ((ddx * ddx + ddy * ddy) as f64).sqrt() < q.bubble_r
+        })
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +332,12 @@ mod tests {
     use super::*;
 
     fn count(w: &World, owner: u32) -> i64 { w.tiles.counts.get(&owner).copied().unwrap_or(0) }
+
+    fn mk_queen(x: i32, y: i32, bubble_r: f64) -> Queen {
+        Queen { x, y, size: 2, hp: 100, max_hp: 100, level: 1, xp: 0.0, kills: 0,
+            bubble_r, last_attacker: None, dead: false, tiles_ever_held: 0, cached_tiles: 0,
+            npc: false, shield: 0, shield_expiry: None, region: String::new() }
+    }
 
     #[test]
     fn paint_and_clear_queen_body() {
@@ -342,5 +359,14 @@ mod tests {
         w.paint_queen_body(ww - 1, wh - 1, 4, 5);   // only the corner cell is in-bounds
         assert_eq!(count(&w, 5), 1, "only in-bounds cells painted");
         assert_eq!(w.tiles.get(ww as u32, wh as u32), 0, "no phantom tile past the edge");
+    }
+
+    #[test]
+    fn too_close_to_queen_respects_bubble_and_exclude() {
+        let mut w = World::new();
+        w.queens.insert(1, mk_queen(1000, 1000, 30.0));
+        assert!(w.too_close_to_queen(1010, 1000, 0),  "inside the bubble");
+        assert!(!w.too_close_to_queen(1100, 1000, 0), "outside the bubble");
+        assert!(!w.too_close_to_queen(1010, 1000, 1), "excluded queen ignored");
     }
 }

@@ -147,13 +147,8 @@ pub fn handle_message(
         if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 {
             let _ = tx.send(err("Out of bounds")); return;
         }
-        for (_, q) in world.queens.iter().filter(|(_, q)| !q.dead) {
-            let ddx = (q.x + q.size as i32 / 2 - x) as i64;
-            let ddy = (q.y + q.size as i32 / 2 - y) as i64;
-            let min_dist = q.bubble_r;
-            if ((ddx*ddx + ddy*ddy) as f64).sqrt() < min_dist {
-                let _ = tx.send(err("Too close to another queen")); return;
-            }
+        if world.too_close_to_queen(x, y, pid) {
+            let _ = tx.send(err("Too close to another queen")); return;
         }
         let size = queen_size_for_level(1);
         let max_hp = c.hp_base;
@@ -621,17 +616,9 @@ pub fn handle_message(
                 let Some((ox, oy, sz)) = old_pos else { let _ = tx.send(err("Need a live queen")); return; };
                 let x = msg["x"].as_i64().unwrap_or(-1) as i32;
                 let y = msg["y"].as_i64().unwrap_or(-1) as i32;
-                let c = cfg(); let ww = world.world_w as i32; let wh = world.world_h as i32;
+                let ww = world.world_w as i32; let wh = world.world_h as i32;
                 if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 { let _ = tx.send(err("Out of bounds")); return; }
-                let mut too_close = false;
-                for (&qid, q) in world.queens.iter().filter(|(_, q)| !q.dead) {
-                    if qid == pid { continue; }
-                    let ddx = (q.x + q.size as i32 / 2 - x) as i64;
-                    let ddy = (q.y + q.size as i32 / 2 - y) as i64;
-                    if ((ddx*ddx + ddy*ddy) as f64).sqrt() < q.bubble_r { too_close = true; break; }
-                }
-                drop(c);
-                if too_close { let _ = tx.send(err("Too close to another queen")); return; }
+                if world.too_close_to_queen(x, y, pid) { let _ = tx.send(err("Too close to another queen")); return; }
                 if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
                 world.clear_queen_body(ox, oy, sz, pid);
                 if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
