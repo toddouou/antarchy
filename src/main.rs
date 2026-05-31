@@ -31,14 +31,12 @@ async fn main() {
 
     let world: WorldState = Arc::new(RwLock::new(World::new()));
 
-    let c = cfg();
-    let port    = c.port;
-    let world_w = c.world_w;
-    let world_h = c.world_h;
-    let spawn_x = c.spawn_x;
-    let spawn_y = c.spawn_y;
-    let tick    = c.tick_rate;
-    drop(c);
+    // Scope the config read-guard so it is provably dropped before the `.await` below
+    // (an RwLockReadGuard must not be held across an await point).
+    let (port, world_w, world_h, spawn_x, spawn_y, tick) = {
+        let c = cfg();
+        (c.port, c.world_w, c.world_h, c.spawn_x, c.spawn_y, c.tick_rate)
+    };
 
     println!(r"
 ╔════════════════════════════════════════╗

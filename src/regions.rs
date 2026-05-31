@@ -109,8 +109,10 @@ fn build() -> Regions {
 
                 let (mut mnx, mut mny, mut mxx, mut mxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
                 for poly in &polygons { for ring in poly { for &(lon, lat) in ring {
-                    if lon < mnx { mnx = lon; } if lon > mxx { mxx = lon; }
-                    if lat < mny { mny = lat; } if lat > mxy { mxy = lat; }
+                    if lon < mnx { mnx = lon; }
+                    if lon > mxx { mxx = lon; }
+                    if lat < mny { mny = lat; }
+                    if lat > mxy { mxy = lat; }
                 }}}
                 countries.push(Country { name, continent, min_lon: mnx, min_lat: mny,
                     max_lon: mxx, max_lat: mxy, polygons });
@@ -173,7 +175,7 @@ pub fn region_and_continent(x: i32, y: i32) -> (String, String) {
         let dx = (x - m.cx) as i64;
         let dy = (y - m.cy) as i64;
         let d2 = dx * dx + dy * dy;
-        if d2 <= m.r2 && best.map_or(true, |(_, bd)| d2 < bd) {
+        if d2 <= m.r2 && best.is_none_or(|(_, bd)| d2 < bd) {
             best = Some((m, d2));
         }
     }

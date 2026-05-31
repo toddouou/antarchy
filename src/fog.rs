@@ -26,7 +26,7 @@ pub fn compute_fog_field_slice(
     }
 
     const D1: f32 = 1.0;
-    const D2: f32 = 1.4142;
+    const D2: f32 = std::f32::consts::SQRT_2;
 
     // Forward pass (top-left → bottom-right)
     for py in 0..ph {

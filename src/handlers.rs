@@ -92,7 +92,7 @@ pub fn handle_message(
             p.color = color.clone();
             p.hue_idx = hue_idx;
         }
-        if let Some(u) = world.auth.users.get_mut(&ADMIN_USERNAME.to_string()) {
+        if let Some(u) = world.auth.users.get_mut(ADMIN_USERNAME) {
             u.color = color;
             u.hue_idx = hue_idx;
             u.color_chosen = true;
@@ -704,7 +704,7 @@ pub fn handle_message(
                 let now = current_ms();
                 // One shield at a time — block stacking until it depletes or expires.
                 let active = world.queens.get(&pid)
-                    .map(|q| q.shield > 0 && q.shield_expiry.map_or(false, |e| e > now))
+                    .map(|q| q.shield > 0 && q.shield_expiry.is_some_and(|e| e > now))
                     .unwrap_or(false);
                 if active { let _ = tx.send(err("Shield already active")); return; }
                 if let Some(p) = world.players.get_mut(&pid) { p.credits -= price; }
@@ -756,7 +756,6 @@ pub fn handle_message(
             let cfg_msg = json!({"t":"cfg","key":key.to_uppercase(),"value":value}).to_string();
             world.broadcast(&cfg_msg);
         }
-        return;
     }
 }
 
@@ -811,7 +810,7 @@ fn build_welcome_back(world: &World, id: u32, snap: &crate::world::AwaySnapshot,
     let away_ms = now.saturating_sub(snap.at_ms);
     if !snap.queen_alive || away_ms < 30_000 { return None; }
     let q = world.queens.get(&id);
-    let queen_died  = q.map_or(true, |q| q.dead);
+    let queen_died  = q.is_none_or(|q| q.dead);
     let cur_tiles   = q.map(|q| q.cached_tiles).unwrap_or(0);
     let cur_kills   = q.map(|q| q.kills).unwrap_or(0);
     let cur_level   = q.map(|q| q.level).unwrap_or(0);

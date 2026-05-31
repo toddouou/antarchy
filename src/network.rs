@@ -228,7 +228,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
 
     // LOD step: when the requested span exceeds MAX_DIM, downsample so the served grid stays
     // ≤ MAX_DIM cells/axis (each cell = `step` tiles). step == 1 is the normal 1:1 path.
-    let step = (((fw.max(fh) as usize + MAX_DIM as usize - 1) / MAX_DIM as usize).max(1)) as i32;
+    let step = ((fw.max(fh) as usize).div_ceil(MAX_DIM as usize).max(1)) as i32;
     let lod  = step > 1;
 
     // Zoomed-out ants-only frames carry nothing (ants are sub-pixel) — skip them entirely.

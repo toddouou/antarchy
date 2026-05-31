@@ -19,6 +19,9 @@ pub const CREDIT_CAP: u64 = 100;
 pub const PRICE_HIGHWAY:  u64 = 10;
 pub const PRICE_RELOCATE: u64 = 20;
 pub const PRICE_DEFENDER: u64 = 1;
+/// Reserved for the WIP alliance feature; the shop "alliance" item is a no-charge stub
+/// (handlers.rs) until alliances ship.
+#[allow(dead_code)]
 pub const PRICE_ALLIANCE: u64 = 80;
 pub const PRICE_BRUTE:    u64 = 20;
 pub const PRICE_SHIELD:   u64 = 10;

@@ -36,6 +36,9 @@ impl Ant {
     pub fn new(id: u32, owner: u32, x: i32, y: i32, dx: i8, dy: i8, lifespan: u32) -> Self {
         Ant::new_kind(id, owner, x, y, dx, dy, lifespan, 0)
     }
+    // A worker carries position, heading, lifespan, and kind; grouping them into a struct
+    // would just be unpacked again at the single call site, so allow the wide signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_kind(id: u32, owner: u32, x: i32, y: i32, dx: i8, dy: i8, lifespan: u32, kind: u8) -> Self {
         Ant { id, owner, x, y, dx, dy, age: 0, lifespan, highway_ticks: 0, kind,
               _nx: x, _ny: y, _ndx: dx, _ndy: dy }
@@ -77,6 +80,8 @@ pub struct Queen {
 
 #[derive(Debug)]
 pub struct Player {
+    /// Redundant with the `players` map key; kept for clarity/Debug. Not read directly.
+    #[allow(dead_code)]
     pub id:              u32,
     pub username:        String,
     pub color:           String,

@@ -290,13 +290,13 @@ pub fn tick_world(world: &mut World) {
     // --- Occasional dedup (every 64 ticks): removes stacked same-owner same-direction ants ---
     // Parallel sort (rayon) keeps this O(n log n) pass off the critical path at 100k ants;
     // the dedup itself stays serial (it only walks the now-sorted vec once).
-    if world.tick % 64 == 0 && !world.ants.is_empty() {
+    if world.tick.is_multiple_of(64) && !world.ants.is_empty() {
         world.ants.par_sort_unstable_by_key(|a| (a.owner, a.x, a.y, a.dx as i32, a.dy as i32));
         world.ants.dedup_by_key(|a| (a.owner, a.x, a.y, a.dx, a.dy));
     }
 
     // --- Spatial sort every 50 ticks: group ants by 256×256 chunk for cache locality ---
-    if world.tick % 50 == 0 && !world.ants.is_empty() {
+    if world.tick.is_multiple_of(50) && !world.ants.is_empty() {
         let chunk_w = world.world_w / 256 + 1;
         world.ants.par_sort_unstable_by_key(|a| {
             let cx = a.x as u32 / 256;
@@ -308,7 +308,7 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 1: Plan moves — Rayon parallel, no Mutex, fold/reduce for accumulation
     // =========================================================================
-    let is_even = world.tick % 2 == 0;
+    let is_even = world.tick.is_multiple_of(2);
     let (hits, xp_grants) = {
         let tiles     = &world.tiles;
         let queen_map = &world.queen_map;
@@ -595,8 +595,8 @@ pub fn tick_world(world: &mut World) {
         let dom_count = counts.get(&dom).copied().unwrap_or(0);
         if total > 0 && dom_count as f64 / total as f64 >= convert_pct {
             let mut converted = false;
-            for j in cstart..ci {
-                let idx = pairs[j].1 as usize;
+            for &(_, idx) in &pairs[cstart..ci] {
+                let idx = idx as usize;
                 if world.ants[idx].owner != dom {
                     world.ants[idx].owner = dom;
                     converted = true;
@@ -627,7 +627,7 @@ pub fn tick_world(world: &mut World) {
     // Phase 8: Passive queen HP regen (c.hp_regen HP per second) + shield expiry
     // =========================================================================
     let ticks_per_sec = c.tick_rate.max(1) as u64;
-    if c.hp_regen > 0.0 && world.tick % ticks_per_sec == 0 {
+    if c.hp_regen > 0.0 && world.tick.is_multiple_of(ticks_per_sec) {
         let gain = c.hp_regen.round() as i32;
         if gain > 0 {
             for q in world.queens.values_mut() {
@@ -635,7 +635,7 @@ pub fn tick_world(world: &mut World) {
             }
         }
     }
-    if world.tick % 50 == 0 {
+    if world.tick.is_multiple_of(50) {
         let now = current_ms();
         for q in world.queens.values_mut() {
             if let Some(exp) = q.shield_expiry {
@@ -647,7 +647,7 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 8b: Defender trigger (throttled every 25 ticks)
     // =========================================================================
-    if world.tick % 25 == 0 && !world.ants.is_empty() {
+    if world.tick.is_multiple_of(25) && !world.ants.is_empty() {
         let now = current_ms();
         let def_range = DEFENDER_RANGE;
         let def_lifespan = c.lifespan;
@@ -670,7 +670,7 @@ pub fn tick_world(world: &mut World) {
             for a in world.ants.iter() {
                 if a.owner == def_pid { continue; }
                 let ed = (a.x - qcx).abs().max((a.y - qcy).abs());
-                if ed <= def_range && nearest.map_or(true, |(d, _, _)| ed < d) {
+                if ed <= def_range && nearest.is_none_or(|(d, _, _)| ed < d) {
                     nearest = Some((ed, a.x, a.y));
                 }
             }
@@ -734,8 +734,8 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     flush_xp(world);
 
-    if world.tick % DISCOVERY_INTERVAL == 0 { sample_visited(world); }
-    if world.tick % HOLDER_INTERVAL == 0 {
+    if world.tick.is_multiple_of(DISCOVERY_INTERVAL) { sample_visited(world); }
+    if world.tick.is_multiple_of(HOLDER_INTERVAL) {
         recompute_holders(world);
         world.broadcast(&crate::network::build_region_holders(world));
     }
@@ -743,7 +743,7 @@ pub fn tick_world(world: &mut World) {
     // Season upkeep: sweep Dense chunks that became solid-one-owner (via clash conversions,
     // which bypass the inline fill-compaction) back into Uniform — keeps tile RAM proportional
     // to the painted *perimeter* rather than area over a month of churn. Cheap; throttled.
-    if world.tick % COMPACT_INTERVAL == 0 {
+    if world.tick.is_multiple_of(COMPACT_INTERVAL) {
         world.tiles.compact_pass();
     }
 }
@@ -762,7 +762,7 @@ fn sample_visited(world: &mut World) {
     let mut samples: Vec<(u32, i32, i32)> = Vec::with_capacity(take);
     for _ in 0..take {
         let a = &world.ants[idx];
-        let is_npc = world.players.get(&a.owner).map_or(true, |p| p.npc);
+        let is_npc = world.players.get(&a.owner).is_none_or(|p| p.npc);
         if !is_npc { samples.push((a.owner, a.x, a.y)); }
         idx += 1; if idx >= n { idx = 0; }
     }
