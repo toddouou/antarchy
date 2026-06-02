@@ -27,9 +27,20 @@ uptime; tile-store stats (`tilesPainted`/`chunks`/`uniformChunks`/`denseChunks`/
 timing (`tickMsP50`/`tickMsP99`/`tickMsMax`); `seasonSecs`.
 **World info:** `curl http://localhost:8080/world-info` (world size, spawn, geo projection).
 
-**Fresh start:** the world is never loaded from disk — every run starts empty. Accounts also reset
-each restart (`Auth::load` exists but is unused); the admin account (`ADMIN` / `admin`) is
-recreated at startup. `users.json` is written by `Auth::save` but is not read back.
+**Persistence:** state is **restored on startup** (`src/persist.rs`). Two files live under the
+directory from the `HIVE_DATA_DIR` env var (default = working dir; on Railway point it at a mounted
+Volume, e.g. `HIVE_DATA_DIR=/data`, or it won't survive a redeploy):
+- `world.snapshot` — gzip-compressed JSON of tiles, ants, queens, players (durable fields only),
+  `next_player_id`, `tick`, `started_at`. Written atomically (temp file + rename).
+- `users.json` — accounts + ban list (`Auth::save`/`Auth::load`, now `{users, banned}`).
+
+The world autosaves every ~60 s (in `sim_loop`) and on shutdown (Ctrl-C / SIGTERM handler in
+`main.rs` — covers Railway redeploys). On boot, `main` calls `Auth::load` + `persist::load`/`restore`;
+a missing/corrupt/wrong-version snapshot → fresh empty world + admin-only auth. The admin account
+(`ADMIN` / `admin`) is always recreated if absent. **The only thing that clears the world is the
+admin panel's type-"WIPE" button** — the automatic season wipe is disabled by default
+(`season_secs = 0`). That admin wipe also deletes all non-admin accounts and force-logs-out connected
+players (`wipe_world_and_users`); the season-rollover path still uses the milder `wipe_world`.
 
 ## File layout
 
@@ -67,9 +78,11 @@ src/
   handlers.rs          — handle_message: all WebSocket message dispatch (incl. shop-buy);
                          validate_worker_placement; create_or_reconnect_player; welcome-back
   auth.rs              — Auth (users + banned), hash_pw (SHA-256 + "hive-salt"),
-                         save/load users.json, admin account
+                         save/load users.json ({users,banned}), admin account
+  persist.rs           — world snapshot save/load/restore: gzip JSON of tiles/ants/queens/players/
+                         counters → world.snapshot (atomic temp+rename); pairs with Auth's users.json
   server.rs            — axum routes (root_handler / health / world-info), WS connection +
-                         rate limit, Cmd queue, sim_loop, viewport_loop (separate OS thread)
+                         rate limit, Cmd queue, sim_loop (incl. ~60s autosave), viewport_loop (OS thread)
 public/
   client.html          — single-file canvas client; embedded into the binary via include_str!
 data/
@@ -78,7 +91,7 @@ data/
 ```
 
 **Dependency chain:** `config` → {`auth`, `tile_map`, `regions`} → `world` → {`fog`, `network`,
-`simulation`, `handlers`} → `server` → `main`.
+`simulation`, `handlers`, `persist`} → `server` → `main`.
 
 ## Architecture
 

@@ -208,6 +208,69 @@ pub fn wipe_world(world: &mut World) {
     world.broadcast(r#"{"t":"event","msg":"[ADMIN] WORLD WIPED · ALL QUEENS REMOVED"}"#);
 }
 
+/// Admin-only destructive wipe (the panel's type-"WIPE" button): clears the map **and** deletes
+/// every non-admin account. Connected non-admins are force-logged-out to the login screen; the
+/// ADMIN account + its live session are retained (reset to a clean slate). The now-empty world is
+/// persisted immediately so a later restart can't reload pre-wipe state.
+pub fn wipe_world_and_users(world: &mut World) {
+    // 1. Clear the map + world counters.
+    world.tiles.clear();
+    world.ants.clear();
+    world.queens.clear();
+    world.queen_map.clear();
+    world.queen_map_dirty = false;
+    world.tick = 0;
+    world.next_player_id = 100;
+    world.started_at = current_ms();
+
+    let daily = cfg().daily_ants;
+    let now = current_ms();
+
+    // 2. Remove every non-admin player: force-logout, drop channels, then delete the record.
+    let remove: Vec<u32> = world.players.iter()
+        .filter(|(&id, _)| !world.auth.is_admin_id(id))
+        .map(|(&id, _)| id)
+        .collect();
+    for id in remove {
+        if let Some(p) = world.players.get_mut(&id) {
+            if let Some(tx) = &p.tx {
+                let _ = tx.send(r#"{"t":"force-logout","reason":"WORLD WIPED"}"#.to_string());
+            }
+            p.tx = None;
+            p.view_tx = None;
+        }
+        world.players.remove(&id);
+    }
+
+    // 3. Reset any retained (admin) player to a clean slate and clear their map view.
+    for p in world.players.values_mut() {
+        p.ants_avail      = daily;
+        p.next_refill     = now + 24 * 3600 * 1000;
+        p.queen_placed_at = None;
+        p.credits         = 0;
+        p.prestige        = 0;
+        p.defenders.clear();
+        p.visited_countries.clear();
+        p.visited_continents.clear();
+        p.lifetime_kills      = 0;
+        p.lifetime_peak_tiles = 0;
+        p.queens_fielded      = 0;
+        p.away                = None;
+        if let Some(tx) = &p.tx {
+            let _ = tx.send(r#"{"t":"world-wiped"}"#.to_string());
+        }
+    }
+
+    // 4. Reset accounts to admin-only (also clears the ban list).
+    world.auth.reset_to_admin_only();
+
+    // 5. Persist the empty world immediately so the on-disk snapshot reflects the wipe.
+    let path = cfg().save_file.clone();
+    if let Err(e) = crate::persist::save(world, &path) {
+        eprintln!("[persist] post-wipe save failed: {e}");
+    }
+}
+
 // ---- Spawn NPC ------------------------------------------------------------
 
 pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, spawn_y: Option<i32>) {
@@ -247,7 +310,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         id, username: format!("NPC_{id}"), color: hue,
         hue_idx: hue_idx as i32,
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
-        npc: true, view: None, tx: None, view_tx: None, conn_gen: 0,
+        npc: true, view: None, tx: None, view_tx: None, ctl_tx: None, bin: false, conn_gen: 0,
         prestige: 0, credits: 0,
         defenders: Vec::new(),
         visited_countries: Default::default(), visited_continents: Default::default(),
@@ -755,7 +818,11 @@ pub fn tick_world(world: &mut World) {
     if world.tick % DISCOVERY_INTERVAL == 0 { sample_visited(world); }
     if world.tick % HOLDER_INTERVAL == 0 {
         recompute_holders(world);
-        world.broadcast(&crate::network::build_region_holders(world));
+        let holders = crate::network::build_region_holders(world);
+        world.broadcast_ctl(
+            &crate::network::ctl_frame(crate::network::CTL_REGION_HOLDERS, &holders),
+            &holders,
+        );
     }
 
     // Season upkeep: sweep Dense chunks that became solid-one-owner (via clash conversions,
@@ -976,7 +1043,7 @@ mod tests {
         crate::world::Player {
             id, username: String::new(), color: String::new(), hue_idx: 0,
             ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
-            view: None, tx: None, view_tx: None, conn_gen: 0, prestige: 0, credits: 0,
+            view: None, tx: None, view_tx: None, ctl_tx: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
             defenders: Vec::new(), visited_countries: Default::default(),
             visited_continents: Default::default(), lifetime_kills: 0,
             lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
@@ -1123,7 +1190,7 @@ mod bench {
                 cached_tiles: 0, npc: false, shield: 0, shield_expiry: None, region: String::new() });
             w.players.insert(id, Player { id, username: String::new(), color: String::new(),
                 hue_idx: 0, ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
-                view: None, tx: None, view_tx: None, conn_gen: 0, prestige: 0, credits: 0,
+                view: None, tx: None, view_tx: None, ctl_tx: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
                 defenders: Vec::new(), visited_countries: Default::default(),
                 visited_continents: Default::default(), lifetime_kills: 0, lifetime_peak_tiles: 0,
                 queens_fielded: 0, away: None });

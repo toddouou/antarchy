@@ -954,6 +954,13 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     </div>
     <div class="slider-g">
       <div class="slider-l">
+        <span>ANT RATE <span class="sinfo" data-tip="How many times per second ant positions are sent to each player (the big bandwidth/egress cost). Lower = much cheaper; the client smoothly interpolates between updates so ants still crawl. 50 = effectively no interpolation. Default 15.">?</span></span>
+        <span class="v"><span id="v-ah">15</span>/s</span>
+      </div>
+      <input type="range" id="s-ah" min="5" max="60" step="1" value="15">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l">
         <span>CONVERT % <span class="sinfo" data-tip="Majority threshold for ant clash resolution. When 65% of ants on a tile are the same owner, minority ants are converted.">?</span></span>
         <span class="v"><span id="v-cp">65</span>%</span>
       </div>
@@ -1162,6 +1169,7 @@ const CFG_SLIDER_MAP = {
   CONVERT_PCT:       { sid:'s-cp',   vid:'v-cp',  scale:100 }, // server 0-1 → slider 0-100
   DAILY_ANTS:        { sid:'s-da',   vid:'v-da'   },
   ANT_DAMAGE:        { sid:'s-ad',   vid:'v-ad'   },
+  ANT_HZ:            { sid:'s-ah',   vid:'v-ah'   },
 };
 function applyCfgSlider(key, val) {
   const m = CFG_SLIDER_MAP[key]; if (!m) return;
@@ -1204,9 +1212,18 @@ const tileCtx=tileCanvas.getContext('2d',{alpha:true});
 // LOD overview offscreen (1px-per-super-cell) for zoomed-out territory pyramid frames
 const lodCanvas=document.createElement('canvas');
 const lodCtx=lodCanvas.getContext('2d',{alpha:true});
-let tileCacheVw=null, tileCachePlacing=false, tileCacheMapVis=true;
+let tileCachePlacing=false, tileCacheMapVis=true;
 let tileCacheDirty=false;
-let tileCacheCamX=-1, tileCacheCamY=-1;
+// Built overlay region (world coords + size in tiles) backing the persistent 1:1 tile canvas.
+// Panning within this region is a free re-blit; we only rebuild on data/mode change or when the
+// visible window leaves the region. builtCamW=-1 forces a rebuild.
+let builtCamX0=0, builtCamY0=0, builtCamW=-1, builtCamH=-1;
+let tileImg=null;                  // persistent ImageData for the 1:1 overlay (reused each rebuild)
+let lodImg=null, lodBuiltVw=null;  // persistent ImageData + last-drawn vw for the LOD overlay
+// Binary view protocol: server sends deflate-compressed keyframe/delta tile frames. clientGrid is
+// the authoritative served grid (global ids) we patch deltas into; reset on (re)connect/wipe.
+let clientGrid=null;
+const _td=new TextDecoder();
 // Fixed-size sliding tile cache — covers a 2048×2048 tile window, shifts when view moves beyond it
 const TILE_CACHE_W=2048, TILE_CACHE_H=2048;
 let tileCache=null;  // Uint32Array(TILE_CACHE_W*TILE_CACHE_H) of player ids, allocated after login
@@ -1261,9 +1278,23 @@ function toRGB(hex) {
   if (h.length===3) h=h.split('').map(c=>c+c).join('');
   return rgbCache[hex]=[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
 }
+// Fog tints territory toward a neutral grey (not transparency alone) so fogged enemy land reads
+// as a grey haze instead of fading into the basemap. Tunable in one place.
+const FOG_GREY=[120,124,132];   // tiles blend toward this grey under fog
+const FOG_QUEEN=[88,92,100];    // queens blend toward this grey under fog
 function fogBlend(hex, t) {
   const [r,g,b]=toRGB(hex);
-  return `rgb(${(r*(1-t)+10*t)|0},${(g*(1-t)+8*t)|0},${(b*(1-t)+24*t)|0})`;
+  return `rgb(${(r*(1-t)+FOG_QUEEN[0]*t)|0},${(g*(1-t)+FOG_QUEEN[1]*t)|0},${(b*(1-t)+FOG_QUEEN[2]*t)|0})`;
+}
+// Write a fog-greyed RGBA tile pixel into ImageData `d` at byte offset `o`. rgb=[r,g,b] owner
+// colour, baseAlpha=0..255 pre-fog alpha, fog=0..99 (fog>=100 is culled by the callers).
+function fogTile(d, o, rgb, baseAlpha, fog) {
+  if (fog<=0) { d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2]; d[o+3]=baseAlpha; return; }
+  const t=fog/100, it=1-t;
+  d[o]  =(rgb[0]*it+FOG_GREY[0]*t)|0;
+  d[o+1]=(rgb[1]*it+FOG_GREY[1]*t)|0;
+  d[o+2]=(rgb[2]*it+FOG_GREY[2]*t)|0;
+  d[o+3]=Math.round(baseAlpha*(1-0.5*t));
 }
 
 
@@ -1299,10 +1330,12 @@ function getNearColored(v) {
 
 function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap=true) {
   if (tileCanvas.width !== camW || tileCanvas.height !== camH) {
-    tileCanvas.width = camW; tileCanvas.height = camH;
+    tileCanvas.width = camW; tileCanvas.height = camH; tileImg = null;
   }
-  const img = tileCtx.createImageData(camW, camH);
-  const d = img.data;
+  // Reuse the ImageData buffer across rebuilds — allocating a fresh multi-MB buffer every frame
+  // was the main source of pan jank. fill(0) is a fast memset that clears the previous paint.
+  if (!tileImg) tileImg = tileCtx.createImageData(camW, camH);
+  const d = tileImg.data; d.fill(0);
   for (let row=0; row<camH; row++) {
     const wy = camY0 + row;
     if (wy < 0 || wy >= WORLD.h) continue;
@@ -1319,23 +1352,12 @@ function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap
       if (t === 0) continue;
       const fog = fogCache[ci];
       if (fog >= 100) continue;
-      const o = (row*camW+col)*4;
-      const [r,g,b] = toRGB(palette[t]||'#9b3027');
-      d[o]=r; d[o+1]=g; d[o+2]=b;
       const isOwn = t === myId;
-      let baseAlpha;
-      if (placing) {
-        baseAlpha = isOwn ? 230 : 38;
-      } else if (isOwn) {
-        baseAlpha = 255;
-      } else {
-        baseAlpha = showMap ? 102 : 255;
-      }
-      const fogFactor = fog === 0 ? 1.0 : Math.max(0, 1 - fog/100);
-      d[o+3] = Math.round(baseAlpha * fogFactor);
+      const baseAlpha = placing ? (isOwn?230:38) : (isOwn?255:(showMap?102:255));
+      fogTile(d, (row*camW+col)*4, toRGB(palette[t]||'#9b3027'), baseAlpha, fog);
     }
   }
-  tileCtx.putImageData(img, 0, 0);
+  tileCtx.putImageData(tileImg, 0, 0);
   tileCachePlacing = placing;
   tileCacheMapVis = showMap;
   tileCacheDirty = false;
@@ -1571,14 +1593,153 @@ function connect() {
     const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
     if (u&&p) {
       $('li-u').value=u; $('li-p').value=p;
-      if (reconnecting||sessionStorage.getItem('hive-active')) { send({t:'login',username:u,password:p}); }
+      if (reconnecting||sessionStorage.getItem('hive-active')) { send({t:'login',username:u,password:p,bin:1}); }
     }
   };
-  ws.onclose=()=>{ $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true; setTimeout(connect,1500); };
+  ws.onclose=()=>{ $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true; clientGrid=null; setTimeout(connect,1500); };
   ws.onerror=()=>{ $('cstat').textContent='ERROR'; };
-  ws.onmessage=e=>handle(JSON.parse(e.data));
+  ws.binaryType='arraybuffer';
+  // Text frames → handle(). Binary frames route on byte 0: <16 = viewport (tile/ant) → handleViewBin();
+  // >=16 = compressed CONTROL (me/leaderboard/stats/region-holders) → inflate → handle().
+  ws.onmessage=e=>{
+    if (typeof e.data==='string') { handle(JSON.parse(e.data)); return; }
+    if (new Uint8Array(e.data,0,1)[0] >= 16) handleCtlBin(e.data); else handleViewBin(e.data);
+  };
 }
 function send(o) { if (ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+/* ===================================================================
+   BINARY VIEWPORT FRAMES  (deflate-compressed keyframe / delta protocol)
+   Envelope: [u8 kind][payload].  kind 0 = ants-only (raw JSON),
+   1 = tile keyframe, 2 = tile delta (both deflate-raw compressed).
+   =================================================================== */
+async function inflateRaw(u8){
+  const ds=new DecompressionStream('deflate-raw');
+  const stream=new Blob([u8]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+function _sameGeom(h,g){ return g && h.x0===g.x0 && h.y0===g.y0 && h.w===g.w && h.h===g.h && (h.lod||1)===(g.lod||1); }
+function _mergePalette(ids,colors){ if(!ids)return; for(let i=0;i<ids.length;i++){ if(colors&&colors[i]) palette[ids[i]]=colors[i]; } }
+
+// Compressed binary CONTROL frame (kind >=16: me/leaderboard/stats/region-holders). The deflated
+// payload is the same JSON the legacy text path carried, so we just inflate → dispatch via handle().
+async function handleCtlBin(ab){
+  try { const u8=new Uint8Array(ab); const body=await inflateRaw(u8.subarray(1)); handle(JSON.parse(_td.decode(body))); }
+  catch(e){ /* malformed control frame — drop it; the next periodic push recovers */ }
+}
+
+async function handleViewBin(ab){
+  try {
+    const u8=new Uint8Array(ab);
+    const kind=u8[0];
+    if (kind===0) { applyAntsOnly(JSON.parse(_td.decode(u8.subarray(1)))); return; }
+    if (kind===3) {
+      // Packed ants (deflate). Body LE: [i32 x0][i32 y0][u16 w][u16 h][u64 tick][u32 n] + n×19B
+      // records [u32 id][i32 x][i32 y][i8 dx][i8 dy][u32 owner][u8 kind].
+      const pb=await inflateRaw(u8.subarray(1));
+      const pdv=new DataView(pb.buffer, pb.byteOffset, pb.byteLength);
+      const ptick=Number(pdv.getBigUint64(12,true)), pn=pdv.getUint32(20,true);
+      let o=24; const pants=new Array(pn);
+      for (let i=0;i<pn;i++){
+        pants[i]=[pdv.getUint32(o,true),pdv.getInt32(o+4,true),pdv.getInt32(o+8,true),
+                  pdv.getInt8(o+12),pdv.getInt8(o+13),pdv.getUint32(o+14,true),pdv.getUint8(o+18)];
+        o+=19;
+      }
+      applyAntsOnly({ants:pants, tick:ptick});
+      return;
+    }
+    const body=await inflateRaw(u8.subarray(1));
+    const dv=new DataView(body.buffer, body.byteOffset, body.byteLength);
+    const hlen=dv.getUint32(0,true);
+    const header=JSON.parse(_td.decode(body.subarray(4,4+hlen)));
+    const {x0,y0,w,h,tick}=header, lod=header.lod||1, seq=header.seq, n=w*h;
+    if (kind===1) {
+      // Keyframe — full grid. Ignore a strictly-older same-geometry frame (async reorder guard).
+      if (clientGrid && _sameGeom(header,clientGrid) && seq<clientGrid.seq) return;
+      const toff=4+hlen;
+      const local=new Uint16Array(body.buffer, body.byteOffset+toff, n);
+      const tileIds=header.tileIds||[0];
+      _mergePalette(tileIds, header.tileColors);
+      const tiles=new Uint32Array(n);
+      for (let i=0;i<n;i++) tiles[i]=tileIds[local[i]]||0;
+      const fog=body.subarray(toff+n*2, toff+n*2+n);
+      // Retain a COPY of the keyframe fog so `nofog` deltas (fog-on-keyframes-only) can reuse it.
+      clientGrid={x0,y0,w,h,lod,tiles,tileIds:tileIds.slice(),seq,fog:fog.slice()};
+      applyViewFrame({x0,y0,w,h,lod,tick,tiles,fog,ants:header.ants||[],queens:header.queens||[]});
+    } else if (kind===2) {
+      // Delta — patch the prior grid; needs an exact base + matching geometry, else wait for a keyframe.
+      if (!clientGrid || !_sameGeom(header,clientGrid) || header.baseSeq!==clientGrid.seq) return;
+      if (header.tileIdsAdd) for (const id of header.tileIdsAdd) clientGrid.tileIds.push(id);
+      _mergePalette(header.tileIdsAdd, header.tileColorsAdd);
+      // Fog: `bin` deltas omit it (nofog) → reuse the retained keyframe fog; legacy deltas carry it.
+      let fog, coff;
+      if (header.nofog) { fog=clientGrid.fog||new Uint8Array(n); coff=4+hlen; }
+      else { const fogOff=4+hlen; fog=body.subarray(fogOff, fogOff+n); coff=fogOff+n; }
+      const nch=header.nChanged||0, tiles=clientGrid.tiles, tids=clientGrid.tileIds;
+      for (let k=0;k<nch;k++){ const o=coff+k*6; tiles[dv.getUint32(o,true)]=tids[dv.getUint16(o+4,true)]||0; }
+      clientGrid.seq=seq;
+      applyViewFrame({x0,y0,w,h,lod,tick,tiles,fog,ants:header.ants||[],queens:header.queens||[]});
+    }
+  } catch(e){ /* malformed/unsupported frame — drop it; the next keyframe recovers */ }
+}
+
+// Ants-only frame: refresh ant positions without touching tiles/fog. tick-guarded so a late
+// (async-decoded) tile frame can't make ants jump backwards.
+function applyAntsOnly(msg){
+  if (!vw || (vw.tick||0) > msg.tick) return;
+  const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np;
+  vw.ants=msg.ants; vw.tick=msg.tick;
+  const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT;
+}
+
+// Apply a fully-decoded tile frame (keyframe or delta) — fills the sliding cache, HUD, inspect.
+// `f.tiles` is a Uint32 array of global owner ids; `f.fog` a Uint8 array (both w*h).
+function applyViewFrame(f){
+  // If this tile frame decoded out-of-order behind a newer ant frame, keep the newer ants.
+  if (vw && (vw.tick||0) > (f.tick||0)) { f.ants=vw.ants; f.tick=vw.tick; }
+  if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
+  { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
+  vw=f;
+  tileCacheDirty=true;
+  // Only 1:1 frames feed the sliding fine cache; LOD (downsampled) frames are drawn directly from vw.
+  if (tileCache && (f.lod||1) === 1) {
+    const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=f;
+    if (_vx < cacheOriX || _vx+_vw > cacheOriX+TILE_CACHE_W || _vy < cacheOriY || _vy+_vh > cacheOriY+TILE_CACHE_H) {
+      cacheOriX = Math.max(0, _vx - ((TILE_CACHE_W-_vw)>>1));
+      cacheOriY = Math.max(0, _vy - ((TILE_CACHE_H-_vh)>>1));
+      tileCache.fill(0); fogCache.fill(100);
+    }
+    for (let r=0;r<_vh;r++) {
+      const dy=(_vy+r)-cacheOriY; if (dy<0||dy>=TILE_CACHE_H) continue;
+      const dx=_vx-cacheOriX;
+      tileCache.set(_vt.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
+      fogCache.set(_vf.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
+    }
+  }
+  if (me?.color) palette[me.id]=me.color;
+  // Sync HP/level into me.queen from viewport queens so the HUD stays accurate at 1 Hz me updates.
+  if (me?.queen && vw?.queens) {
+    const myQ=vw.queens.find(q=>q.id===me.id);
+    if (myQ) { me.queen.hp=myQ.hp; me.queen.maxHp=myQ.maxHp; me.queen.level=myQ.level; me.shield=myQ.shield; updateHUD(); }
+  }
+  // Refresh inspect panel with live data from this viewport update.
+  if (selectedTarget) {
+    if (selectedTarget.type==='queen') {
+      const fresh=vw.queens.find(q=>q.id===selectedTarget.data.id);
+      if (fresh) selectedTarget.data=fresh;
+    } else if (selectedTarget.type==='tile') {
+      const d=selectedTarget.data;
+      if (d.x>=vw.x0 && d.x<vw.x0+vw.w && d.y>=vw.y0 && d.y<vw.y0+vw.h) {
+        const idx=(d.y-vw.y0)*vw.w+(d.x-vw.x0);
+        const owner=vw.tiles[idx];
+        const color=palette[owner]||'#888';
+        const ownerQ=owner?vw.queens.find(q=>q.id===owner):null;
+        selectedTarget.data={...d,owner,color,username:ownerQ?.username||(owner?'???':null)};
+      }
+    }
+    showInspectBox();
+  }
+}
 
 function handle(msg) {
   switch (msg.t) {
@@ -1613,7 +1774,7 @@ function handle(msg) {
       fogCache=new Uint8Array(TILE_CACHE_W*TILE_CACHE_H).fill(100);
       cacheOriX=Math.max(0,(WORLD.spawnX||0)-(TILE_CACHE_W>>1));
       cacheOriY=Math.max(0,(WORLD.spawnY||0)-(TILE_CACHE_H>>1));
-      tileCacheCamX=tileCacheCamY=-1;
+      builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
       if (me.colorChosen === false) { showStep('admin-color'); return; }
       $('auth-modal').style.display='none';
       $('pname').textContent=me.username;
@@ -1657,77 +1818,7 @@ function handle(msg) {
       if ($('adm-tps')&&me.tickRate) $('adm-tps').textContent=me.tickRate;
       if ($('adm-tick')&&me.tick!=null) $('adm-tick').textContent=me.tick;
       break;
-    case 'view': {
-      if (msg.tiles === undefined) {
-        // Ants-only frame: update ant positions without replacing tiles/fog.
-        if (vw) {
-          const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np;
-          vw.ants=msg.ants; vw.tick=msg.tick;
-          { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
-        }
-        break;
-      }
-      const tBytes=b64ToBytes(msg.tiles);
-      // Wire values are per-frame LOCAL palette indices (bounded by visible owners). Map each
-      // back to its stable player id via tileIds[local]=id, so the sliding cache and every
-      // downstream reader keep working on real ids (no >65535 wire clamp anymore).
-      const _local=new Uint16Array(tBytes.buffer, tBytes.byteOffset, tBytes.byteLength>>1);
-      const _tids=msg.tileIds||[0];
-      const _ids=new Uint32Array(_local.length);
-      for (let i=0;i<_local.length;i++) _ids[i]=_tids[_local[i]]||0;
-      msg.tiles=_ids;
-      msg.fog=b64ToBytes(msg.fog);
-      if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
-      { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
-      vw=msg; palette=msg.palette;
-      tileCacheDirty=true;
-      // Only 1:1 frames feed the sliding fine cache; LOD (downsampled) frames are drawn
-      // directly from `vw` by drawLodTiles — blitting them here would corrupt the cache.
-      if (tileCache && (msg.lod||1) === 1) {
-        const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=msg;
-        // Shift the cache origin if this viewport falls outside the current window
-        if (_vx < cacheOriX || _vx+_vw > cacheOriX+TILE_CACHE_W ||
-            _vy < cacheOriY || _vy+_vh > cacheOriY+TILE_CACHE_H) {
-          cacheOriX = Math.max(0, _vx - ((TILE_CACHE_W-_vw)>>1));
-          cacheOriY = Math.max(0, _vy - ((TILE_CACHE_H-_vh)>>1));
-          tileCache.fill(0);
-          fogCache.fill(100);
-        }
-        for (let r=0;r<_vh;r++) {
-          const dy=(_vy+r)-cacheOriY;
-          if (dy<0||dy>=TILE_CACHE_H) continue;
-          const dx=_vx-cacheOriX;
-          tileCache.set(_vt.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
-          fogCache.set(_vf.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
-        }
-      }
-      if (me?.color) palette[me.id]=me.color;
-      // Sync HP/level into me.queen from viewport queens so HUD stays accurate
-      // even though full me updates are now sent at 1 Hz instead of 25 Hz.
-      if (me?.queen && vw?.queens) {
-        const myQ=vw.queens.find(q=>q.id===me.id);
-        if (myQ) { me.queen.hp=myQ.hp; me.queen.maxHp=myQ.maxHp; me.queen.level=myQ.level; me.shield=myQ.shield; updateHUD(); }
-      }
-      // Refresh inspect panel with live data from this viewport update
-      if (selectedTarget) {
-        if (selectedTarget.type==='queen') {
-          const fresh=vw.queens.find(q=>q.id===selectedTarget.data.id);
-          if (fresh) selectedTarget.data=fresh;
-        } else if (selectedTarget.type==='tile') {
-          const d=selectedTarget.data;
-          // Only refresh when the tile is actually inside this viewport — a linear
-          // bounds check alone would read a neighboring row's tile once it scrolls off.
-          if (d.x>=vw.x0 && d.x<vw.x0+vw.w && d.y>=vw.y0 && d.y<vw.y0+vw.h) {
-            const idx=(d.y-vw.y0)*vw.w+(d.x-vw.x0);
-            const owner=vw.tiles[idx];
-            const color=(vw.palette||palette)[owner]||'#888';
-            const ownerQ=owner?vw.queens.find(q=>q.id===owner):null;
-            selectedTarget.data={...d,owner,color,username:ownerQ?.username||(owner?'???':null)};
-          }
-        }
-        showInspectBox();
-      }
-      break; }
+    // 'view' (tile/ant) frames are binary now — decoded by handleViewBin → applyViewFrame/applyAntsOnly.
     case 'forbidden-zones':
       forbiddenZones = msg.zones || [];
       if (mode==='place-queen') updateSpawnStatus();
@@ -1753,6 +1844,14 @@ function handle(msg) {
       clearInspect();
       showDeathScreen(msg);
       break;
+    case 'force-logout':
+      // Sent on admin WIPE: this account no longer exists. Drop stored creds and return to the
+      // login screen (mirrors the logout button). Brief toast first so the reason is visible.
+      toast((msg.reason||'LOGGED OUT')+' — RE-REGISTER');
+      localStorage.removeItem('hive-u'); localStorage.removeItem('hive-p');
+      sessionStorage.removeItem('hive-active');
+      setTimeout(()=>location.reload(), 1500);
+      break;
     case 'world-wiped':
       toast('[ADMIN] WORLD WIPED');
       me={...me, queen:null, stats:{tiles:0,secs:0,kills:0,score:0}, antsAvail:5};
@@ -1766,11 +1865,14 @@ function handle(msg) {
       }
       vw=null;
       if (tileCache){tileCache.fill(0);fogCache.fill(100);}
-      tileCacheCamX=tileCacheCamY=-1;
+      builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
       break;
     case 'shop-ok':
       AudioEngine.plop();
       toast(`SHOP: ${(msg.item||'').toUpperCase()} PURCHASED`);
+      // Relocate teleports the queen server-side; update our cached position immediately so
+      // CENTER QUEEN (and the keybind) fly to the new spot without waiting for the ~1 Hz `me`.
+      if (msg.item==='relocate' && me?.queen && msg.x!=null) { me.queen.x=msg.x; me.queen.y=msg.y; }
       break;
     case 'ant-placed':
       AudioEngine.plop(); break;
@@ -2169,16 +2271,16 @@ const SERVER_MAX_DIM=800; // must match MAX_DIM in network.rs
 function _computeViewBox() {
   const cp=CELL*view.zoom;
   const W=cvs.width, H=cvs.height;
-  if (cp >= 0.5) {
-    // Zoomed-in: request the visible rect at 1:1, clamped to the server's MAX_DIM.
-    const tx=Math.min(Math.ceil(W/cp)+4, SERVER_MAX_DIM);
-    const ty=Math.min(Math.ceil(H/cp)+4, SERVER_MAX_DIM);
-    const PAD=Math.min(4, Math.floor((SERVER_MAX_DIM-tx)/2), Math.floor((SERVER_MAX_DIM-ty)/2));
-    const x0=Math.floor(view.x-tx/2)-PAD, y0=Math.floor(view.y-ty/2)-PAD;
-    return {x0, y0, x1:x0+tx+PAD*2, y1:y0+ty+PAD*2};
+  const needW=Math.ceil(W/cp)+8, needH=Math.ceil(H/cp)+8; // +8 pad keeps the edges covered
+  if (needW <= SERVER_MAX_DIM && needH <= SERVER_MAX_DIM) {
+    // Whole window fits at 1:1 within the server cap → request the exact visible rect (+pad), no
+    // clamp, so the territory overlay always spans the full window (server returns a lod=1 frame).
+    const x0=Math.floor(view.x-needW/2), y0=Math.floor(view.y-needH/2);
+    return {x0, y0, x1:x0+needW, y1:y0+needH};
   }
-  // Zoomed-out: request the FULL visible rect (may be millions of tiles). The server
-  // downsamples it to a ≤MAX_DIM grid (LOD pyramid) and tags the frame with `lod` step.
+  // Window is larger than the server's 1:1 cap → request the FULL visible rect. The server
+  // downsamples it to a ≤MAX_DIM grid (LOD pyramid) and tags the frame with `lod` step — that
+  // downsampled frame still covers the whole window, so there's no unpainted border at any zoom.
   const fw=Math.max(1,Math.ceil(W/cp)), fh=Math.max(1,Math.ceil(H/cp));
   const x0=Math.floor(view.x-fw/2), y0=Math.floor(view.y-fh/2);
   return {x0, y0, x1:x0+fw, y1:y0+fh};
@@ -2486,7 +2588,7 @@ function doGeolocate() {
 
 function toggleMap() {
   mapVisible = !mapVisible;
-  tileCacheVw = null;
+  tileCacheDirty = true;
 }
 
 // LOD territory overview: paint the downsampled grid into a small offscreen (1px per
@@ -2495,21 +2597,24 @@ function toggleMap() {
 function drawLodTiles(v, cp, W, H) {
   const step=v.lod||1, gw=v.w, gh=v.h, tiles=v.tiles, fog=v.fog;
   if (!gw || !gh || !tiles) return;
-  if (lodCanvas.width!==gw || lodCanvas.height!==gh) { lodCanvas.width=gw; lodCanvas.height=gh; }
-  const img=lodCtx.createImageData(gw, gh), d=img.data;
-  const myId=me?.id||0;
-  for (let i=0; i<gw*gh; i++) {
-    const t=tiles[i];
-    if (t===0) continue;
-    const f=fog?fog[i]:0;
-    if (f>=100) continue;
-    const o=i*4;
-    const [r,g,b]=toRGB(palette[t]||'#9b3027');
-    d[o]=r; d[o+1]=g; d[o+2]=b;
-    const baseA = (t===myId) ? 255 : (mapVisible ? 150 : 255);
-    d[o+3] = Math.round(baseA * (f>0 ? Math.max(0,1-f/100) : 1));
+  if (lodCanvas.width!==gw || lodCanvas.height!==gh) { lodCanvas.width=gw; lodCanvas.height=gh; lodImg=null; lodBuiltVw=null; }
+  // Only repaint the offscreen when the frame actually changed; panning/zooming between the
+  // ~10 Hz frames just re-blits the cached canvas (the positioning below runs every frame).
+  if (v!==lodBuiltVw) {
+    if (!lodImg) lodImg=lodCtx.createImageData(gw, gh);
+    const d=lodImg.data; d.fill(0);
+    const myId=me?.id||0;
+    for (let i=0; i<gw*gh; i++) {
+      const t=tiles[i];
+      if (t===0) continue;
+      const f=fog?fog[i]:0;
+      if (f>=100) continue;
+      const baseA = (t===myId) ? 255 : (mapVisible ? 150 : 255);
+      fogTile(d, i*4, toRGB(palette[t]||'#9b3027'), baseA, f);
+    }
+    lodCtx.putImageData(lodImg, 0, 0);
+    lodBuiltVw=v;
   }
-  lodCtx.putImageData(img, 0, 0);
   const sx = W/2 + (v.x0 - view.x)*cp;
   const sy = H/2 + (v.y0 - view.y)*cp;
   const dw = gw*step*cp, dh = gh*step*cp;
@@ -2555,23 +2660,30 @@ function render() {
   // sliding-cache path. The two are mutually exclusive — lod>1 only occurs below cp 0.5.
   if (vw && (vw.lod||1) > 1) {
     drawLodTiles(vw, cp, W, H);
-  } else if (tileCache && cp >= 0.5) {
-    const MAX_CAM = 600;
-    const camW = Math.min(MAX_CAM, Math.ceil(W/cp) + 6);
-    const camH = Math.min(MAX_CAM, Math.ceil(H/cp) + 6);
-    const camX0 = Math.round(view.x - camW/2);
-    const camY0 = Math.round(view.y - camH/2);
-    const camMoved = tileCacheCamX!==camX0 || tileCacheCamY!==camY0;
-    if (tileCacheDirty || camMoved || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible) {
-      buildTileCache(camX0, camY0, camW, camH, myId, placingMode, mapVisible);
-      tileCacheCamX=camX0; tileCacheCamY=camY0;
-      tileCacheDirty=false;
+  } else if (tileCache) {
+    // 1:1 overlay (lod==1 frame). Build a persistent canvas covering the window plus a margin;
+    // while panning within that built region we only re-blit (no per-pixel rebuild). Rebuild on
+    // data/mode change or when the visible window leaves the built region.
+    const MARGIN = 96;
+    const visW = Math.ceil(W/cp), visH = Math.ceil(H/cp);
+    const camW = Math.min(TILE_CACHE_W, visW + 2*MARGIN);
+    const camH = Math.min(TILE_CACHE_H, visH + 2*MARGIN);
+    const visX0 = view.x - W/(2*cp), visX1 = view.x + W/(2*cp);
+    const visY0 = view.y - H/(2*cp), visY1 = view.y + H/(2*cp);
+    const left = tileCacheDirty || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible
+      || builtCamW!==camW || builtCamH!==camH
+      || visX0<builtCamX0 || visX1>builtCamX0+camW || visY0<builtCamY0 || visY1>builtCamY0+camH;
+    if (left) {
+      builtCamX0 = Math.round(view.x - camW/2);
+      builtCamY0 = Math.round(view.y - camH/2);
+      builtCamW = camW; builtCamH = camH;
+      buildTileCache(builtCamX0, builtCamY0, camW, camH, myId, placingMode, mapVisible);
     }
-    const offX_tile = Math.round(W/2 - (view.x - camX0)*cp);
-    const offY_tile = Math.round(H/2 - (view.y - camY0)*cp);
-    const drawW = Math.round(camW*cp), drawH = Math.round(camH*cp);
+    const offX_tile = Math.round(W/2 - (view.x - builtCamX0)*cp);
+    const offY_tile = Math.round(H/2 - (view.y - builtCamY0)*cp);
+    const drawW = Math.round(builtCamW*cp), drawH = Math.round(builtCamH*cp);
     if (drawW>0 && drawH>0) ctx.drawImage(tileCanvas, offX_tile, offY_tile, drawW, drawH);
-    if ($('d-tiles')) $('d-tiles').textContent = camW * camH;
+    if ($('d-tiles')) $('d-tiles').textContent = builtCamW * builtCamH;
   }
 
   // Debug grid — levels of detail based on zoom
@@ -2733,10 +2845,23 @@ function render() {
     const idx=(ay-v.y0)*v.w+(ax-v.x0);
     const f=(idx>=0&&idx<v.fog.length)?v.fog[idx]:100;
     if (f>=100 && owner!==me?.id) continue;
-    // Interpolate position between previous and current tick
+    // Grid-aware (Manhattan) interpolation: walk along grid lines, not a diagonal chord, so ants
+    // crawl (no corner-cut/slide) even when the ant frame rate is low (Phase 3B). The ant arrives at
+    // (ax,ay) moving along its heading, so the heading axis is the LAST leg, the other axis first.
+    // At 50 Hz the gap is 1 cell on a single axis ⇒ identical to the old straight lerp (no change).
     const prev=prevAntPos.get(aid);
-    const lx = prev ? prev.x+(ax-prev.x)*lerpT : ax;
-    const ly = prev ? prev.y+(ay-prev.y)*lerpT : ay;
+    let lx, ly;
+    if (prev) {
+      const dxT=ax-prev.x, dyT=ay-prev.y;
+      let travel=(Math.abs(dxT)+Math.abs(dyT))*lerpT;     // cells walked so far this gap
+      if (adx!==0) {                                       // heading horizontal → y-leg first, x-leg last
+        const yStep=Math.min(travel,Math.abs(dyT)); ly=prev.y+Math.sign(dyT)*yStep; travel-=yStep;
+        lx=prev.x+Math.sign(dxT)*Math.min(travel,Math.abs(dxT));
+      } else {                                             // heading vertical → x-leg first, y-leg last
+        const xStep=Math.min(travel,Math.abs(dxT)); lx=prev.x+Math.sign(dxT)*xStep; travel-=xStep;
+        ly=prev.y+Math.sign(dyT)*Math.min(travel,Math.abs(dyT));
+      }
+    } else { lx=ax; ly=ay; }
     const px=offX+(lx-v.x0)*cp, py=offY+(ly-v.y0)*cp;
     const ownerColor = palette[owner] || '#9b3027';
     const [rr,gg,bb] = toRGB(ownerColor);
@@ -3361,7 +3486,7 @@ function doLogin() {
   const u=$('li-u').value.trim().toUpperCase(), p=$('li-p').value;
   if (!u||!p) { $('li-err').textContent='FILL BOTH FIELDS'; return; }
   localStorage.setItem('hive-u',u); localStorage.setItem('hive-p',p);
-  send({t:'login', username:u, password:p});
+  send({t:'login', username:u, password:p, bin:1});
 }
 function doRegister() {
   AudioEngine.click();
@@ -3372,7 +3497,7 @@ function doRegister() {
   if (!sel) { $('r-err').textContent='PICK A HUE'; return; }
   const idx=+sel.dataset.idx;
   localStorage.setItem('hive-u',u); localStorage.setItem('hive-p',p);
-  send({t:'register', username:u, password:p, color:HUES[idx], hueIdx:idx});
+  send({t:'register', username:u, password:p, color:HUES[idx], hueIdx:idx, bin:1});
 }
 HUES.forEach((c,i)=>{
   const el=document.createElement('div');
@@ -3663,6 +3788,7 @@ bindSlider('s-hp','HP_BASE','v-hp');
 bindSlider('s-hr','HP_REGEN','v-hr');
 bindSlider('s-sp','SPAWN_PAN','v-sp');
 bindSlider('s-ad','ANT_DAMAGE','v-ad');
+bindSlider('s-ah','ANT_HZ','v-ah');
 bindSlider('s-xpb','XP_BASE','v-xpb');
 bindSlider('s-xpe','XP_EXP','v-xpe');
 bindSlider('s-xpk','XP_KILL','v-xpk');
@@ -3688,7 +3814,7 @@ function updateXpPreview() {
 updateXpPreview();
 
 /* Presets (localStorage) */
-const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','HP_REGEN','SPAWN_PAN','ANT_DAMAGE','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
+const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','HP_REGEN','SPAWN_PAN','ANT_DAMAGE','ANT_HZ','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
 function admSavePreset(slot) {
   const p={};
   for (const k of ADM_PRESET_KEYS) {

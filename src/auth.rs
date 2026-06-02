@@ -22,6 +22,15 @@ pub struct Auth {
     pub banned: HashSet<String>,
 }
 
+/// On-disk form of `Auth` (users.json). Carries both accounts and the ban list so a restart
+/// restores moderation state too. `banned` defaults to empty for forward/backward compatibility.
+#[derive(Debug, Serialize, Deserialize)]
+struct AuthSave {
+    users:  HashMap<String, UserRecord>,
+    #[serde(default)]
+    banned: HashSet<String>,
+}
+
 pub fn hash_pw(pw: &str) -> String {
     let mut h = Sha256::new();
     h.update(format!("{}hive-salt", pw));
@@ -35,9 +44,10 @@ impl Auth {
         auth
     }
 
-    pub fn reset_to_admin_only(&mut self) {
-        self.users.clear();
-        self.users.insert(ADMIN_USERNAME.to_string(), UserRecord {
+    /// The built-in admin account (`ADMIN` / `admin`, id 1). Always present so the operator can
+    /// never be locked out — recreated on fresh start, wipe, or a snapshot that omits it.
+    fn admin_record() -> UserRecord {
+        UserRecord {
             id:            1,
             username:      ADMIN_USERNAME.to_string(),
             password_hash: hash_pw(ADMIN_PASSWORD),
@@ -45,7 +55,14 @@ impl Auth {
             hue_idx:       -1,
             is_admin:      true,
             color_chosen:  false,
-        });
+        }
+    }
+
+    /// Clear all accounts + bans down to just the admin. Used at fresh start and on admin WIPE.
+    pub fn reset_to_admin_only(&mut self) {
+        self.users.clear();
+        self.banned.clear();
+        self.users.insert(ADMIN_USERNAME.to_string(), Self::admin_record());
     }
 
     pub fn save(&self) {
@@ -53,18 +70,23 @@ impl Auth {
             let c = cfg();
             c.save_file.replace("world.snapshot", "users.json")
         };
-        if let Ok(json) = serde_json::to_string_pretty(&self.users) {
+        let data = AuthSave { users: self.users.clone(), banned: self.banned.clone() };
+        if let Ok(json) = serde_json::to_string_pretty(&data) {
             let _ = fs::write(&save_path, json);
         }
     }
 
-    #[allow(dead_code)]
+    /// Load accounts + bans from `users.json` (path derived from the world snapshot path). Falls
+    /// back to admin-only if the file is missing or unreadable; guarantees the admin account exists.
     pub fn load(path: &str) -> Self {
         let mut auth = Auth::default();
         let users_path = path.replace("world.snapshot", "users.json");
         if let Ok(data) = fs::read_to_string(&users_path) {
-            if let Ok(map) = serde_json::from_str::<HashMap<String, UserRecord>>(&data) {
-                auth.users = map;
+            if let Ok(saved) = serde_json::from_str::<AuthSave>(&data) {
+                auth.users  = saved.users;
+                auth.banned = saved.banned;
+                auth.users.entry(ADMIN_USERNAME.to_string())
+                    .or_insert_with(Self::admin_record);
                 return auth;
             }
         }

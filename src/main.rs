@@ -2,7 +2,9 @@ mod auth;
 mod config;
 mod fog;
 mod handlers;
+mod metrics;
 mod network;
+mod persist;
 mod regions;
 mod server;
 mod simulation;
@@ -29,7 +31,16 @@ async fn main() {
     // first queen placement never pays the geojson parse under the world lock.
     regions::init();
 
-    let world: WorldState = Arc::new(RwLock::new(World::new()));
+    // Restore persisted state (accounts + world) so a restart / Railway redeploy resumes where it
+    // left off. Both files live under HIVE_DATA_DIR (see config). Missing/corrupt → fresh start.
+    let mut w = World::new();
+    let save_file = cfg().save_file.clone();
+    w.auth = auth::Auth::load(&save_file);
+    match persist::load(&save_file) {
+        Some(snap) => persist::restore(&mut w, snap),
+        None       => println!("[persist] no snapshot at {save_file} — fresh start"),
+    }
+    let world: WorldState = Arc::new(RwLock::new(w));
 
     // Scope the config read-guard so it is provably dropped before the `.await` below
     // (an RwLockReadGuard must not be held across an await point).
@@ -56,10 +67,62 @@ async fn main() {
     std::thread::spawn(move || sim_loop(world_sim, cmd_rx));
 
     // Viewport delivery on its own OS thread — keeps heavy tile/fog serialization off the
-    // sim thread so the tick cadence stays steady (smooth client interpolation).
+    // sim thread so the tick cadence stays steady (smooth client interpolation). Its parallel
+    // serialization runs on a DEDICATED rayon pool (Phase 2 of the egress rebuild) so
+    // per-connection viewport work can never queue ahead of the 50 Hz tick's move-plan on the
+    // shared global pool — the CPU wall that bunches ticks once hundreds of viewers cluster on a
+    // hot metro. Thread count defaults to ~half the cores (override with HIVE_VIEWPORT_THREADS).
+    let cores = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4);
+    let vp_threads = std::env::var("HIVE_VIEWPORT_THREADS").ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or((cores / 2).max(2))
+        .max(1);
+    let vp_pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(vp_threads)
+            .thread_name(|i| format!("viewport-{i}"))
+            .build()
+            .expect("build dedicated viewport rayon pool"),
+    );
+    println!("[viewport] dedicated rayon pool: {vp_threads} threads (of {cores} cores)");
     let world_vp = world.clone();
-    std::thread::spawn(move || viewport_loop(world_vp));
+    std::thread::spawn(move || viewport_loop(world_vp, vp_pool));
+
+    // Save-on-shutdown: Ctrl-C / SIGTERM (Railway sends SIGTERM on redeploy) flushes the latest
+    // state to disk before exit, so a redeploy loses at most the gap since the last autosave.
+    let world_shutdown = world.clone();
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        let path = cfg().save_file.clone();
+        println!("[persist] shutdown signal — saving snapshot to {path}…");
+        {
+            let w = world_shutdown.write().await;
+            match persist::save(&w, &path) {
+                Ok(())  => println!("[persist] snapshot saved"),
+                Err(e)  => eprintln!("[persist] shutdown save failed: {e}"),
+            }
+        }
+        std::process::exit(0);
+    });
 
     // HTTP + WebSocket server on tokio runtime
     run(world, cmd_tx).await;
+}
+
+/// Resolve when the process receives a shutdown signal: Ctrl-C on any platform, plus SIGTERM on
+/// unix (what container platforms like Railway send before SIGKILL on redeploy/scale-down).
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv()             => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

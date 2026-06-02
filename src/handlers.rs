@@ -7,7 +7,7 @@ use crate::config::{
     current_ms, HUES, ADMIN_USERNAME,
 };
 use crate::network::{build_leaderboard, build_player_info};
-use crate::simulation::{kill_queen, spawn_npc, wipe_world};
+use crate::simulation::{kill_queen, spawn_npc, wipe_world_and_users};
 use crate::world::{Ant, Player, PlayerView, Queen, World};
 
 fn err(msg: &str) -> String {
@@ -49,7 +49,8 @@ pub fn handle_message(
         world.auth.save();
         let welcome = create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, false, tx.clone());
         *player_id = Some(id);
-        let me = build_player_info(world, id);
+        apply_bin_cap(world, id, &msg);
+        let me = build_player_info(world, id, true);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -67,7 +68,8 @@ pub fn handle_message(
         if world.auth.banned.contains(&u) { let _ = tx.send(err("BANNED")); return; }
         let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
         *player_id = Some(rec.id);
-        let me = build_player_info(world, rec.id);
+        apply_bin_cap(world, rec.id, &msg);
+        let me = build_player_info(world, rec.id, true);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -98,7 +100,7 @@ pub fn handle_message(
             u.color_chosen = true;
         }
         world.auth.save();
-        let me = build_player_info(world, pid);
+        let me = build_player_info(world, pid, true);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -299,7 +301,7 @@ pub fn handle_message(
                 world.send_to(target_id, json!({"t":"event","msg":"[ADMIN] LEVEL DOWN"}).to_string());
             }
             "spawn-npc"  => spawn_npc(world, pid, None, None),
-            "wipe-world" => wipe_world(world),
+            "wipe-world" => wipe_world_and_users(world),
             _ => {}
         }
         return;
@@ -703,6 +705,16 @@ fn validate_worker_placement(
     Ok(DIRS.iter().copied().find(|&(a, b)| a == vdx && b == vdy).unwrap_or((0, -1)))
 }
 
+/// Record whether this connection negotiated the Phase-3 binary/compressed protocol. The client
+/// advertises `{"bin":1}` in its login/register payload; we AND it with the server master flag so
+/// `HIVE_BIN_CTL=0` forces legacy text for everyone. A client (e.g. an old tab after a redeploy)
+/// that omits the flag keeps the legacy text/JSON protocol transparently.
+fn apply_bin_cap(world: &mut World, id: u32, msg: &Value) {
+    let bin = msg.get("bin").and_then(Value::as_i64).unwrap_or(0) != 0
+        && crate::config::bin_ctl_enabled();
+    if let Some(p) = world.players.get_mut(&id) { p.bin = bin; }
+}
+
 fn create_or_reconnect_player(
     world: &mut World,
     id: u32, username: &str, color: &str, hue_idx: i32,
@@ -737,6 +749,7 @@ fn create_or_reconnect_player(
         queen_placed_at: None,
         npc: false, view: None,
         tx: Some(tx), view_tx: None,
+        ctl_tx: None, bin: false,
         conn_gen: 1,
         prestige: 0, credits: 0,
         defenders: Vec::new(),

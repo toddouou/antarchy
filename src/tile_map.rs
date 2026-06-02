@@ -1,4 +1,5 @@
 use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
 
 const CHUNK_SHIFT: u32   = 8;
 const CHUNK_SIZE:  usize = 1 << CHUNK_SHIFT;        // 256
@@ -13,6 +14,7 @@ type Idx = u16;
 /// A 256×256 territory chunk. Solid interiors collapse to `Uniform` (a few bytes); only
 /// borders / active frontiers pay the `Dense` array. This makes tile RAM scale with the
 /// *perimeter* of painted territory, not its area — the planet-scale memory fix.
+#[derive(Serialize, Deserialize)]
 enum Chunk {
     /// Every cell in the chunk is this single nonzero index.
     Uniform(Idx),
@@ -28,6 +30,7 @@ enum Chunk {
 /// Indices are recycled through `free` the moment an owner's tile count hits 0, so the live
 /// index space is bounded by the number of *concurrently painting* owners (≤ a few hundred),
 /// never the lifetime id count.
+#[derive(Serialize, Deserialize)]
 pub struct TileMap {
     chunks:    FxHashMap<u64, Chunk>,
     /// player_id → tile count. Public + kept exact per-cell across every chunk transition.
@@ -38,6 +41,14 @@ pub struct TileMap {
     id_to_idx: FxHashMap<u32, Idx>,
     /// Recycled indices, freed when an owner's count reaches 0.
     free:      Vec<Idx>,
+    /// Phase-0 egress instrumentation (runtime-only, never serialized): the last chunk a `set`
+    /// actually mutated, used to count chunk-touch *transitions*.
+    #[serde(skip)]
+    last_touched_chunk: Option<u64>,
+    /// Cumulative chunk-touch transitions — a conservative over-estimate of distinct dirty chunks
+    /// per interval, used to project Phase-6 R2 Class-A write volume.
+    #[serde(skip)]
+    dirty_chunk_touches: u64,
 }
 
 impl Default for TileMap {
@@ -48,6 +59,8 @@ impl Default for TileMap {
             palette:   vec![0u32],          // index 0 = unclaimed
             id_to_idx: FxHashMap::default(),
             free:      Vec::new(),
+            last_touched_chunk: None,
+            dirty_chunk_touches: 0,
         }
     }
 }
@@ -103,6 +116,21 @@ impl TileMap {
         }
     }
 
+    /// Count a chunk-touch transition: bumps the cumulative counter only when a `set` mutates a
+    /// chunk different from the previous mutated one. Single-threaded (writes hold `&mut World`),
+    /// so a plain field is sufficient — no atomics. Conservative for the R2 Class-A projection.
+    #[inline]
+    fn note_dirty(&mut self, key: u64) {
+        if self.last_touched_chunk != Some(key) {
+            self.last_touched_chunk = Some(key);
+            self.dirty_chunk_touches = self.dirty_chunk_touches.wrapping_add(1);
+        }
+    }
+
+    /// Cumulative chunk-touch transitions since boot (an over-estimate of distinct dirty chunks).
+    /// Diff two samples over a window to project Phase-6 R2 Class-A (chunk-upload) volume.
+    pub fn dirty_chunk_touches(&self) -> u64 { self.dirty_chunk_touches }
+
     #[inline]
     pub fn get(&self, x: u32, y: u32) -> u32 {
         match self.chunks.get(&Self::chunk_key(x, y)) {
@@ -140,6 +168,7 @@ impl TileMap {
             };
             let old_owner = self.palette[old_i as usize];
             self.dec_count(old_owner);
+            self.note_dirty(key);
             return;
         }
 
@@ -182,6 +211,7 @@ impl TileMap {
             self.dec_count(old_owner);
         }
         self.inc_count(new_owner);
+        self.note_dirty(key);
     }
 
     pub fn clear(&mut self) {

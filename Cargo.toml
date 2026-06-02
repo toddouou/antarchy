@@ -23,6 +23,7 @@ futures-util      = "0.3"
 rand              = "0.8"
 parking_lot       = "0.12"
 tokio-tungstenite = "0.23"
+flate2            = "1"
 
 [profile.release]
 opt-level      = 3

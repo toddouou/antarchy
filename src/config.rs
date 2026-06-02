@@ -76,6 +76,14 @@ pub struct Config {
     pub xp_highway_tick: f64,
     pub levelup_ant_grant: i32,
     pub ant_damage: f64,
+    /// How many times per second ant-position frames are pushed to each viewer (the egress
+    /// firehose). Lower = cheaper; the client interpolates between frames so motion stays smooth.
+    /// The viewport loop emits one ant frame every `(tick_rate / ant_hz)` ticks. Clamped 5..=60.
+    pub ant_hz: u32,
+    /// Max ants serialized into one viewport frame; above this the in-view set is subsampled by a
+    /// stable id-stride (no per-client flicker). 0 = unlimited. Bounds worst-case dense-battle egress
+    /// without thinning normal play.
+    pub ant_view_cap: u32,
     /// Passive queen HP regenerated per second while below max. 0 = no regen.
     pub hp_regen: f64,
     /// Max live workers a single player may field at once (deploy blocked at the cap).
@@ -117,9 +125,14 @@ impl Default for Config {
             xp_highway_tick:   1.0,
             levelup_ant_grant: 1,
             ant_damage:        1.0,
+            ant_hz:            15,
+            ant_view_cap:      4000,
             hp_regen:          0.0,
             army_cap:          1000,
-            season_secs:       30 * 24 * 3600,   // 30-day season
+            // 0 disables the automatic season wipe: the world now persists indefinitely and is
+            // only cleared by the admin panel's type-"WIPE" button. Admins can re-enable a timed
+            // season via the slider (apply_admin_param) if desired.
+            season_secs:       0,
         }
     }
 }
@@ -133,6 +146,13 @@ fn lock() -> &'static RwLock<Config> {
         // disturbing a server already on the default port. Defaults to 8080 in prod.
         if let Ok(p) = std::env::var("PORT") {
             if let Ok(p) = p.parse::<u16>() { c.port = p; }
+        }
+        // Optional HIVE_DATA_DIR — directory holding the persisted `world.snapshot` + `users.json`.
+        // On Railway, point this at a mounted Volume (e.g. /data) so state survives a redeploy;
+        // without a Volume the container FS is ephemeral. Defaults to the working directory.
+        if let Ok(dir) = std::env::var("HIVE_DATA_DIR") {
+            let dir = dir.trim_end_matches(['/', '\\']);
+            if !dir.is_empty() { c.save_file = format!("{dir}/world.snapshot"); }
         }
         RwLock::new(c)
     })
@@ -162,6 +182,8 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("levelup_ant_grant", 0.0,       100.0),
     ("spawn_pan",        10.0,    10_000.0),
     ("ant_damage",        0.1,        50.0),
+    ("ant_hz",            5.0,        60.0),
+    ("ant_view_cap",      0.0,   100_000.0),
     ("hp_regen",          0.0,       100.0),
     ("army_cap",          1.0, 1_000_000.0),
     ("season_secs",       0.0, 31_536_000.0),   // 0 (off) … 365 days
@@ -190,12 +212,26 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "levelup_ant_grant" => c.levelup_ant_grant  = v as i32,
         "spawn_pan"         => c.spawn_pan          = v,
         "ant_damage"        => c.ant_damage         = v,
+        "ant_hz"            => c.ant_hz             = v as u32,
+        "ant_view_cap"      => c.ant_view_cap       = v as u32,
         "hp_regen"          => c.hp_regen           = v,
         "army_cap"          => c.army_cap           = v as i32,
         "season_secs"       => c.season_secs        = v as u64,
         _ => return None,
     }
     Some(v)
+}
+
+/// Master switch for the Phase-3 binary/compressed wire protocol. The per-connection `bin`
+/// capability (client-advertised `{"bin":1}` at auth) is AND-ed with this, so setting
+/// `HIVE_BIN_CTL=0` (or `off`/`false`/`no`) forces every client back to the legacy uncompressed
+/// text + JSON protocol — an emergency rollback that takes effect on reconnect/redeploy. Read once.
+pub fn bin_ctl_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| match std::env::var("HIVE_BIN_CTL") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"),
+        Err(_) => true,
+    })
 }
 
 pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
@@ -216,6 +252,8 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
         ("levelup_ant_grant", d.levelup_ant_grant as f64),
         ("spawn_pan",         d.spawn_pan),
         ("ant_damage",        d.ant_damage),
+        ("ant_hz",            d.ant_hz as f64),
+        ("ant_view_cap",      d.ant_view_cap as f64),
         ("hp_regen",          d.hp_regen),
         ("army_cap",          d.army_cap as f64),
         ("season_secs",       d.season_secs as f64),

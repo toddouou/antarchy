@@ -104,7 +104,15 @@ pub struct Player {
     pub npc:             bool,
     pub view:            Option<PlayerView>,
     pub tx:              Option<UnboundedSender<String>>,
-    pub view_tx:         Option<watch::Sender<Option<String>>>,
+    pub view_tx:         Option<watch::Sender<Option<Vec<u8>>>>,
+    /// Phase-3 egress: ordered, never-dropped BINARY control channel (compressed `me`/leaderboard/
+    /// stats/region-holders — kinds 16–20). Parallel to `tx`; only fed when `bin` is set.
+    pub ctl_tx:          Option<UnboundedSender<Vec<u8>>>,
+    /// Client advertised the Phase-3 binary/compressed protocol (`{"bin":1}` at auth) **and** the
+    /// server master flag (`config::bin_ctl_enabled`) is on. Gates ant-frame kind 3, fog-on-
+    /// keyframes, and the binary control channel. Old tabs across a redeploy never advertise it →
+    /// they transparently keep the legacy text/JSON protocol (no broken control frames).
+    pub bin:             bool,
     pub conn_gen:        u64,
     pub prestige:        u32,
     pub credits:         u64,
@@ -285,6 +293,20 @@ impl World {
             if let Some(tx) = &p.tx {
                 let _ = tx.send(msg.to_string());
             }
+        }
+    }
+
+    /// Phase-3 control fan-out. `frame` is a pre-built `[kind][deflated json]` binary control frame
+    /// (build it once with `network::ctl_frame`); `json_fallback` is the identical message as raw
+    /// text. Players that negotiated the binary protocol (`bin` + a live `ctl_tx`) get the compressed
+    /// binary frame; everyone else gets the legacy uncompressed text on `tx`. Deflate happens once in
+    /// the caller, so this is the O(connections) fan-out only.
+    pub fn broadcast_ctl(&self, frame: &[u8], json_fallback: &str) {
+        for p in self.players.values() {
+            if p.bin {
+                if let Some(ctl) = &p.ctl_tx { let _ = ctl.send(frame.to_vec()); continue; }
+            }
+            if let Some(tx) = &p.tx { let _ = tx.send(json_fallback.to_string()); }
         }
     }
 
