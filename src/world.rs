@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
@@ -6,6 +9,40 @@ use tokio::sync::watch;
 use crate::auth::Auth;
 use crate::config::{max_hp_for_level, queen_size_for_level, Config};
 use crate::tile_map::TileMap;
+
+/// Phase-4 per-connection egress meter: a sliding byte counter incremented by the WS write task at
+/// each real `ws_tx.send`, and read by `viewport_loop` to decide whether a connection is over its
+/// `EGRESS_CAP_KBPS` budget and must be down-shifted. Lives behind an `Arc` so the write task (tokio)
+/// and the viewport thread share one counter. `window_start_ms` anchors the current rate window.
+#[derive(Debug, Default)]
+pub struct EgressMeter {
+    pub bytes:           AtomicU64,
+    pub window_start_ms: AtomicU64,
+}
+
+impl EgressMeter {
+    /// Record `len` billed bytes at `now_ms`. Rolls a fresh ~1 s window when the current one ages
+    /// out, so `kbps` reads an approximate sliding rate. Lock-free (Relaxed is fine: a slightly
+    /// stale rate only mis-times one down-shift decision, never corrupts state).
+    pub fn add(&self, len: usize, now_ms: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ws = self.window_start_ms.load(Relaxed);
+        if now_ms.saturating_sub(ws) > 1000 {
+            self.window_start_ms.store(now_ms, Relaxed);
+            self.bytes.store(len as u64, Relaxed);
+        } else {
+            self.bytes.fetch_add(len as u64, Relaxed);
+        }
+    }
+
+    /// Approximate current send rate in KB/s over the live window.
+    pub fn kbps(&self, now_ms: u64) -> f64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ws = self.window_start_ms.load(Relaxed);
+        let age = (now_ms.saturating_sub(ws).max(1) as f64) / 1000.0;
+        (self.bytes.load(Relaxed) as f64 / 1024.0) / age
+    }
+}
 
 // ---- Ant ------------------------------------------------------------------
 
@@ -106,8 +143,13 @@ pub struct Player {
     pub tx:              Option<UnboundedSender<String>>,
     pub view_tx:         Option<watch::Sender<Option<Vec<u8>>>>,
     /// Phase-3 egress: ordered, never-dropped BINARY control channel (compressed `me`/leaderboard/
-    /// stats/region-holders — kinds 16–20). Parallel to `tx`; only fed when `bin` is set.
-    pub ctl_tx:          Option<UnboundedSender<Vec<u8>>>,
+    /// stats/region-holders — kinds 16–20). Parallel to `tx`; only fed when `bin` is set. Carries an
+    /// `Arc<[u8]>` (Phase-5) so a broadcast frame is built once and fanned out by refcount-clone, not
+    /// a per-recipient `Vec` copy — the O(connections) control fan-out is the hot path.
+    pub ctl_tx:          Option<UnboundedSender<Arc<[u8]>>>,
+    /// Phase-4 per-connection egress meter (shared with the WS write task). `None` until auth wires
+    /// it on, or for NPCs / never-connected players.
+    pub egress_meter:    Option<Arc<EgressMeter>>,
     /// Client advertised the Phase-3 binary/compressed protocol (`{"bin":1}` at auth) **and** the
     /// server master flag (`config::bin_ctl_enabled`) is on. Gates ant-frame kind 3, fog-on-
     /// keyframes, and the binary control channel. Old tabs across a redeploy never advertise it →
@@ -200,6 +242,9 @@ pub struct World {
     /// Per-owner ant counts, rebuilt each tick after age-out. Used by build_player_info.
     pub ant_counts:      FxHashMap<u32, u32>,
     pub paused:          bool,
+    /// Phase-7: connections whose tab is hidden/backgrounded (client sent `view-pause`). The
+    /// viewport loop skips frame delivery for these → ~0 egress for hidden tabs. Runtime-only.
+    pub paused_views:    FxHashSet<u32>,
     /// Tracks the last tick on which tiles changed; used to skip viewport delivery when idle.
     pub dirty_tick:      u64,
     /// Metro king-of-the-hill holders, recomputed on a throttle (simulation.rs::recompute_holders).
@@ -211,6 +256,10 @@ pub struct World {
     /// write cursor once the ring fills.
     pub tick_ms_ring: Vec<f32>,
     pub tick_ms_pos:  usize,
+    /// Phase-6 snapshot generation tag. Forms the R2 key prefix `snap/{epoch}/…` so a wipe / restart
+    /// serves a fresh tile set instead of a stale cached one. Bumped on wipe + restore; not persisted
+    /// (the canvas is re-uploaded under a fresh epoch each boot). Seconds-resolution time seed.
+    pub epoch: u64,
 }
 
 /// Capacity of the tick-duration ring (≈ a few seconds of history at 50 Hz).
@@ -240,12 +289,20 @@ impl World {
             scratch_pairs:   Vec::new(),
             ant_counts:      FxHashMap::default(),
             paused:          false,
+            paused_views:    FxHashSet::default(),
             dirty_tick:      0,
             metro_holders:   Vec::new(),
             visit_sample_cursor: 0,
             tick_ms_ring:    Vec::with_capacity(TICK_RING_CAP),
             tick_ms_pos:     0,
+            epoch:           current_ms() / 1000,
         }
+    }
+
+    /// Roll the Phase-6 snapshot epoch to a fresh value (seconds since the Unix epoch). Called on
+    /// wipe and on persist-restore so clients never composite a stale season's R2 tiles.
+    pub fn fresh_epoch(&mut self) {
+        self.epoch = crate::config::current_ms() / 1000;
     }
 
     /// Record one tick-window duration into the ring (overwrites oldest once full).
@@ -301,10 +358,11 @@ impl World {
     /// text. Players that negotiated the binary protocol (`bin` + a live `ctl_tx`) get the compressed
     /// binary frame; everyone else gets the legacy uncompressed text on `tx`. Deflate happens once in
     /// the caller, so this is the O(connections) fan-out only.
-    pub fn broadcast_ctl(&self, frame: &[u8], json_fallback: &str) {
+    pub fn broadcast_ctl(&self, frame: Arc<[u8]>, json_fallback: &str) {
         for p in self.players.values() {
             if p.bin {
-                if let Some(ctl) = &p.ctl_tx { let _ = ctl.send(frame.to_vec()); continue; }
+                // refcount-clone of the single built frame — no per-recipient byte copy.
+                if let Some(ctl) = &p.ctl_tx { let _ = ctl.send(frame.clone()); continue; }
             }
             if let Some(tx) = &p.tx { let _ = tx.send(json_fallback.to_string()); }
         }

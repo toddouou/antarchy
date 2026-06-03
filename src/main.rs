@@ -8,6 +8,7 @@ mod persist;
 mod regions;
 mod server;
 mod simulation;
+mod snapshot;
 mod tile_map;
 mod world;
 
@@ -39,6 +40,11 @@ async fn main() {
     match persist::load(&save_file) {
         Some(snap) => persist::restore(&mut w, snap),
         None       => println!("[persist] no snapshot at {save_file} — fresh start"),
+    }
+    // ∥A: when the write-ahead log is enabled, replay any journal recorded since the base snapshot.
+    if config::wal_enabled() {
+        let n = persist::replay_wal(&mut w, &persist::wal_path(&save_file));
+        if n > 0 { println!("[persist] WAL replay: {n} chunk deltas applied"); }
     }
     let world: WorldState = Arc::new(RwLock::new(w));
 
@@ -87,6 +93,15 @@ async fn main() {
     println!("[viewport] dedicated rayon pool: {vp_threads} threads (of {cores} cores)");
     let world_vp = world.clone();
     std::thread::spawn(move || viewport_loop(world_vp, vp_pool));
+
+    // Phase-6 R2 snapshot writer — only when a sink is configured (SNAPSHOT_CDN + creds, or
+    // HIVE_SNAP_DIR). Dormant by default, so the live server pays nothing until R2 is wired up.
+    if snapshot::sink_active() {
+        let world_snap = world.clone();
+        std::thread::spawn(move || server::snapshot_writer_loop(world_snap));
+    } else {
+        println!("[snapshot] disabled (set SNAPSHOT_CDN + R2 creds, or HIVE_SNAP_DIR, to enable)");
+    }
 
     // Save-on-shutdown: Ctrl-C / SIGTERM (Railway sends SIGTERM on redeploy) flushes the latest
     // state to disk before exit, so a redeploy loses at most the gap since the last autosave.

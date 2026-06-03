@@ -188,6 +188,7 @@ pub fn wipe_world(world: &mut World) {
     world.queen_map.clear();
     world.queen_map_dirty = false;
     world.tick = 0;
+    world.fresh_epoch(); // Phase-6: new season → new R2 tile generation (no stale cached tiles)
     let c = cfg();
     let daily = c.daily_ants;
     drop(c);
@@ -222,6 +223,7 @@ pub fn wipe_world_and_users(world: &mut World) {
     world.tick = 0;
     world.next_player_id = 100;
     world.started_at = current_ms();
+    world.fresh_epoch(); // Phase-6: wipe → new R2 tile generation
 
     let daily = cfg().daily_ants;
     let now = current_ms();
@@ -310,7 +312,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         id, username: format!("NPC_{id}"), color: hue,
         hue_idx: hue_idx as i32,
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
-        npc: true, view: None, tx: None, view_tx: None, ctl_tx: None, bin: false, conn_gen: 0,
+        npc: true, view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0,
         prestige: 0, credits: 0,
         defenders: Vec::new(),
         visited_countries: Default::default(), visited_continents: Default::default(),
@@ -820,7 +822,7 @@ pub fn tick_world(world: &mut World) {
         recompute_holders(world);
         let holders = crate::network::build_region_holders(world);
         world.broadcast_ctl(
-            &crate::network::ctl_frame(crate::network::CTL_REGION_HOLDERS, &holders),
+            std::sync::Arc::from(crate::network::ctl_frame(crate::network::CTL_REGION_HOLDERS, &holders)),
             &holders,
         );
     }
@@ -1043,7 +1045,7 @@ mod tests {
         crate::world::Player {
             id, username: String::new(), color: String::new(), hue_idx: 0,
             ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
-            view: None, tx: None, view_tx: None, ctl_tx: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
+            view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
             defenders: Vec::new(), visited_countries: Default::default(),
             visited_continents: Default::default(), lifetime_kills: 0,
             lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
@@ -1190,7 +1192,7 @@ mod bench {
                 cached_tiles: 0, npc: false, shield: 0, shield_expiry: None, region: String::new() });
             w.players.insert(id, Player { id, username: String::new(), color: String::new(),
                 hue_idx: 0, ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
-                view: None, tx: None, view_tx: None, ctl_tx: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
+                view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
                 defenders: Vec::new(), visited_countries: Default::default(),
                 visited_continents: Default::default(), lifetime_kills: 0, lifetime_peak_tiles: 0,
                 queens_fielded: 0, away: None });

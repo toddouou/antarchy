@@ -234,6 +234,87 @@ pub fn bin_ctl_enabled() -> bool {
     })
 }
 
+/// Phase-4 per-connection egress cap in **KB/s**. `None` = disabled (the default), so the cap is
+/// dormant until an operator sets `EGRESS_CAP_KBPS`. When set, a connection sending faster than this
+/// over the sliding window is progressively down-shifted (tile interval → visible-ant N → ant
+/// cadence, never below the ~6 Hz floor); NEVER-DROP one-shots are exempt. Read once.
+pub fn egress_cap_kbps() -> Option<f64> {
+    static V: OnceLock<Option<f64>> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("EGRESS_CAP_KBPS").ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| *v > 0.0))
+}
+
+/// Phase-∥A WAL persistence. `HIVE_WAL=on/1/true` enables the chunk-delta journal; default **off**,
+/// so the proven off-lock full-snapshot save remains the live path. Read once.
+pub fn wal_enabled() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| matches!(
+        std::env::var("HIVE_WAL").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes"))
+}
+
+/// Phase-6 master switch for the R2 snapshot CDN. `SNAPSHOT_CDN=on/1/true` AND valid R2 creds
+/// (`r2_config`) are both required before the snapshot-writer task uploads. Default **off** — the
+/// engine ships the pipeline dormant so tomorrow's setup is pure env-vars with zero rebuild.
+pub fn snapshot_cdn_enabled() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| matches!(
+        std::env::var("SNAPSHOT_CDN").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes"))
+}
+
+/// Optional local directory for the dev snapshot sink: when `HIVE_SNAP_DIR` is set, the writer task
+/// rasterizes dirty chunks to `<dir>/snap/{epoch}/{lod}/{cx}/{cy}.png` on disk (no R2 needed) so the
+/// rasterizer can be inspected without a Cloudflare account. Read once.
+pub fn snapshot_dir() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_SNAP_DIR").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
+/// Public base URL the **browser** uses to fetch snapshot tiles directly from R2 (the `$0`-egress
+/// path; never via the Railway origin). Sent to the client in `logged-in`/`world-info`; empty →
+/// the client snapshot compositor stays dormant. Read once.
+pub fn snapshot_public_base() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("R2_PUBLIC_BASE").ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())).clone()
+}
+
+/// Optional licensed/self-hosted base-map tile URL template (Parallel-B). Sent to the client; when
+/// empty the client falls back to raw OpenStreetMap. Template may contain `{z}/{x}/{y}` and `{s}`
+/// (subdomain). Read once.
+pub fn basemap_url() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_BASEMAP_URL").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
+/// R2 / S3-compatible credentials for the snapshot writer. `Some` only when all four vars are set.
+#[derive(Clone)]
+pub struct R2Config {
+    pub endpoint:   String,
+    pub bucket:     String,
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+/// Reads R2 creds from the environment (`R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`,
+/// `R2_SECRET_ACCESS_KEY`). `None` if any are missing → the R2 sink is unavailable and the writer
+/// falls back to the local-disk or null sink. Read once.
+pub fn r2_config() -> Option<R2Config> {
+    static V: OnceLock<Option<R2Config>> = OnceLock::new();
+    V.get_or_init(|| {
+        let g = |k: &str| std::env::var(k).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        Some(R2Config {
+            endpoint:   g("R2_ENDPOINT")?,
+            bucket:     g("R2_BUCKET")?,
+            access_key: g("R2_ACCESS_KEY_ID")?,
+            secret_key: g("R2_SECRET_ACCESS_KEY")?,
+        })
+    }).clone()
+}
+
 pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     let d = Config::default();
     let vals: &[(&'static str, f64)] = &[

@@ -22,7 +22,7 @@ use crate::network::{
     snapshot_view, PrevGrid, RawView, CTL_LEADERBOARD, CTL_ME, CTL_STATS,
 };
 use crate::simulation::tick_world;
-use crate::world::World;
+use crate::world::{EgressMeter, World};
 
 pub type WorldState = Arc<RwLock<World>>;
 
@@ -33,8 +33,9 @@ pub enum Cmd {
     Auth {
         raw:     String,
         out_tx:  mpsc::UnboundedSender<String>,
-        ctl_tx:  mpsc::UnboundedSender<Vec<u8>>,
+        ctl_tx:  mpsc::UnboundedSender<Arc<[u8]>>,
         view_tx: watch::Sender<Option<Vec<u8>>>,
+        meter:   Arc<EgressMeter>,
         reply:   oneshot::Sender<Option<(u32, u64)>>,
     },
     /// Any non-auth message from an authenticated connection.
@@ -129,10 +130,15 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
     // Binary control channel (Phase 3): compressed me/leaderboard/stats/region-holders — also
     // never dropped + ordered, but separate so the heavy text builders ride binary without touching
     // the ~100 raw-text send sites. Only fed when the client negotiated `bin`.
-    let (ctl_tx_conn, mut ctl_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (ctl_tx_conn, mut ctl_rx) = mpsc::unbounded_channel::<Arc<[u8]>>();
     // Viewport slot: latest-wins — stale snapshots are replaced, never backlogged.
     // watch::Sender is Clone; we keep one here and send one clone per auth to the sim loop.
     let (view_tx_conn, mut view_rx) = watch::channel::<Option<Vec<u8>>>(None);
+
+    // Phase-4 per-connection egress meter: the write task records every billed byte here; the
+    // viewport thread reads the rate to decide if this conn is over its EGRESS_CAP_KBPS budget.
+    let meter = Arc::new(EgressMeter::default());
+    let meter_w = meter.clone();
 
     // Write task: delivers priority messages immediately; for viewports, only the latest
     // frame is sent — tokio::select! ensures a slow network never blocks event delivery.
@@ -143,7 +149,9 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
                 msg = prio_rx.recv() => {
                     match msg {
                         Some(m) => {
-                            crate::metrics::record(crate::metrics::kind_for_text_type(quick_msg_type(&m)), m.len());
+                            let n = m.len();
+                            crate::metrics::record(crate::metrics::kind_for_text_type(quick_msg_type(&m)), n);
+                            meter_w.add(n, crate::config::current_ms());
                             if ws_tx.send(Message::Text(m)).await.is_err() { break; }
                         }
                         None    => break,
@@ -152,8 +160,11 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
                 ctl = ctl_rx.recv() => {
                     match ctl {
                         Some(v) => {
-                            crate::metrics::record(crate::metrics::kind_for_bin(v.first().copied().unwrap_or(0xFF)), v.len());
-                            if ws_tx.send(Message::Binary(v)).await.is_err() { break; }
+                            let n = v.len();
+                            crate::metrics::record(crate::metrics::kind_for_bin(v.first().copied().unwrap_or(0xFF)), n);
+                            meter_w.add(n, crate::config::current_ms());
+                            // watch/mpsc carried an Arc<[u8]>; the WS frame needs an owned Vec.
+                            if ws_tx.send(Message::Binary(v.to_vec())).await.is_err() { break; }
                         }
                         None    => break,
                     }
@@ -163,7 +174,9 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
                         Ok(()) => {
                             let v = view_rx.borrow_and_update().clone();
                             if let Some(v) = v {
-                                crate::metrics::record(crate::metrics::kind_for_bin(v.first().copied().unwrap_or(0xFF)), v.len());
+                                let n = v.len();
+                                crate::metrics::record(crate::metrics::kind_for_bin(v.first().copied().unwrap_or(0xFF)), n);
+                                meter_w.add(n, crate::config::current_ms());
                                 if ws_tx.send(Message::Binary(v)).await.is_err() { break; }
                             }
                         }
@@ -211,6 +224,7 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
                 out_tx: prio_tx.clone(),
                 ctl_tx: ctl_tx_conn.clone(),
                 view_tx: view_tx_conn.clone(),
+                meter: meter.clone(),
                 reply: reply_tx,
             }).is_err() { break; }
             if let Ok(Some((pid, gen))) = reply_rx.await {
@@ -252,6 +266,11 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
     let mut last_save = Instant::now();
 
     loop {
+        // ∥A off-lock save: the fast bincode encode happens under the lock below; the slow gzip +
+        // disk write is handed to this slot and run after the lock is released (a detached thread),
+        // so the tick is never stalled waiting on the filesystem.
+        let mut pending_save: Option<(Vec<u8>, String)> = None;
+
         // ---- Exclusive tick window ----
         {
             let mut w = world.blocking_write();
@@ -261,18 +280,19 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             // WS tasks never lock World — they push here, we process here.
             loop {
                 match cmd_rx.try_recv() {
-                    Ok(Cmd::Auth { raw, out_tx, ctl_tx, view_tx, reply }) => {
+                    Ok(Cmd::Auth { raw, out_tx, ctl_tx, view_tx, meter, reply }) => {
                         let parsed = match serde_json::from_str::<serde_json::Value>(&raw) {
                             Ok(v) => v,
                             Err(_) => { let _ = reply.send(None); continue; }
                         };
                         let mut pid: Option<u32> = None;
                         handle_message(&mut w, &mut pid, &out_tx, parsed);
-                        // Wire up the viewport watch channel + binary control channel for this conn.
+                        // Wire up the viewport watch channel + binary control channel + egress meter.
                         if let Some(id) = pid {
                             if let Some(p) = w.players.get_mut(&id) {
                                 p.view_tx = Some(view_tx);
                                 p.ctl_tx  = Some(ctl_tx);
+                                p.egress_meter = Some(meter);
                             }
                         }
                         let result = pid.map(|id| {
@@ -296,6 +316,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                         w.dirty_tick = w.tick;
                     }
                     Ok(Cmd::Disconnect { pid, conn_gen }) => {
+                        w.paused_views.remove(&pid); // don't leave a reconnecting player stuck paused
                         let uname = w.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
                         // Snapshot current state for the welcome-back diff (read before the &mut borrow).
                         let q = w.queens.get(&pid);
@@ -310,10 +331,11 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                         };
                         if let Some(p) = w.players.get_mut(&pid) {
                             if p.conn_gen == conn_gen {
-                                p.tx      = None;
-                                p.ctl_tx  = None; // drops sender → write task's ctl_rx.recv() returns None
-                                p.view_tx = None; // drops sender → write task's view_rx.changed() returns Err
-                                p.away    = Some(snap);
+                                p.tx           = None;
+                                p.ctl_tx       = None; // drops sender → write task's ctl_rx.recv() returns None
+                                p.view_tx      = None; // drops sender → write task's view_rx.changed() returns Err
+                                p.egress_meter = None;
+                                p.away         = Some(snap);
                             }
                         }
                         println!("[disconnect] {uname} ({pid})");
@@ -349,19 +371,30 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                 w.broadcast(r#"{"t":"event","msg":"◆ NEW SEASON — WORLD RESET"}"#);
             }
 
-            // Periodic autosave: flush the world to disk every ~60 s so an unclean exit (crash,
-            // SIGKILL) loses at most a minute of progress; the shutdown handler covers clean exits.
-            // Serializes under the write lock — simple and fine at current scale (see persist.rs).
+            // Periodic autosave (∥A off-lock): every ~60 s, do only the cheap bincode ENCODE under
+            // the lock; the slow gzip + atomic disk write runs off-lock (below) so the viewport
+            // thread never parks on the filesystem. Accounts (small JSON) still save under the lock.
             if last_save.elapsed().as_secs() >= 60 {
                 let path = cfg().save_file.clone();
-                if let Err(e) = crate::persist::save(&w, &path) {
-                    eprintln!("[persist] autosave failed: {e}");
+                match crate::persist::serialize_world(&w) {
+                    Ok(raw) => { w.auth.save(); pending_save = Some((raw, path)); }
+                    Err(e)  => eprintln!("[persist] autosave encode failed: {e}"),
                 }
                 last_save = Instant::now();
             }
 
             // Record this tick window's duration for /health p50/p99.
             w.record_tick_ms(tick_start.elapsed().as_secs_f32() * 1000.0);
+        }
+
+        // ∥A: the lock is now released — write the snapshot to disk on a detached thread so neither
+        // the tick nor the viewport thread waits on gzip + fsync.
+        if let Some((raw, path)) = pending_save {
+            std::thread::spawn(move || {
+                if let Err(e) = crate::persist::write_snapshot_bytes(&raw, &path) {
+                    eprintln!("[persist] autosave write failed: {e}");
+                }
+            });
         }
 
         // Viewport delivery runs on its own OS thread (`viewport_loop`) so heavy tile/fog
@@ -385,7 +418,7 @@ struct ClientJob {
     pid:     u32,
     view_tx: Option<watch::Sender<Option<Vec<u8>>>>,
     tx:      Option<mpsc::UnboundedSender<String>>,
-    ctl_tx:  Option<mpsc::UnboundedSender<Vec<u8>>>,
+    ctl_tx:  Option<mpsc::UnboundedSender<Arc<[u8]>>>,
     /// This connection negotiated the Phase-3 binary protocol (ant kind 3, fog-on-keyframes, binary
     /// `me`). Decides the per-client frame encoding in the lock-free phase.
     bin:     bool,
@@ -394,6 +427,23 @@ struct ClientJob {
     /// Per-client tile state (keyframe/delta), moved out of the viewport thread's map for the
     /// lock-free parallel phase and moved back after.
     prev:    Option<PrevGrid>,
+}
+
+/// Phase-5 leaderboard change signature: an order-independent (XOR) hash over every live queen's
+/// `(id, level, kills)`. Flips when a queen levels up, scores a kill, or joins/dies — i.e. the
+/// standings-affecting events — but NOT on pure tile accumulation (a 5 s heartbeat refreshes those).
+/// Cheap: one pass over `queens`, no sort/alloc.
+fn lb_signature(w: &World) -> u64 {
+    const M: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut h = 0u64;
+    for (&id, q) in &w.queens {
+        if q.dead { continue; }
+        let mut x = (id as u64).wrapping_mul(M);
+        x = (x ^ q.level as u64).wrapping_mul(M);
+        x = (x ^ q.kills as u64).wrapping_mul(M);
+        h ^= x;
+    }
+    h
 }
 
 /// Viewport delivery loop — runs on its own OS thread, separate from `sim_loop`.
@@ -415,6 +465,8 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
     let mut last_ant_tick:  u64 = 0;
     let mut last_me_tick:   u64 = 0;
     let mut last_lb_tick:   u64 = 0;
+    let mut last_lb_sig:    u64 = u64::MAX; // Phase-5: leaderboard send-on-change signature
+    let mut last_lb_sent:   u64 = 0;        // tick of the last leaderboard broadcast (force-refresh)
     let mut last_stats_tick: u64 = 0;
     // Per-client tile state for the keyframe/delta protocol. Lives here (not in World) so the
     // sim thread never touches it; the viewport thread is its sole owner.
@@ -446,18 +498,28 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
 
                 last_tick = tick;
 
-                // Leaderboard is cheap (O(queens)); keep it under the lock. Compress once → binary
-                // for `bin` clients, raw text for the rest (broadcast_ctl handles the split).
+                // Leaderboard (Phase-5 send-on-change): broadcast only when the standings actually
+                // change — a new kill, level-up, or queen joining/dying flips the signature — plus a
+                // ~5 s heartbeat so the live tile numbers still refresh. This turns a 2.5 Hz × ~16 KB
+                // firehose into near-zero steady-state bytes (the big O(connections) residual) while
+                // keeping the *exciting* moments instant. The full leaderboard window is unchanged.
                 if lb_due {
-                    let lb = build_leaderboard(&w);
-                    w.broadcast_ctl(&ctl_frame(CTL_LEADERBOARD, &lb), &lb);
+                    let sig   = lb_signature(&w);
+                    let force = tick.saturating_sub(last_lb_sent) >= tr * 5;
+                    if sig != last_lb_sig || force {
+                        let lb = build_leaderboard(&w);
+                        w.broadcast_ctl(Arc::from(ctl_frame(CTL_LEADERBOARD, &lb)), &lb);
+                        last_lb_sig  = sig;
+                        last_lb_sent = tick;
+                    }
                     last_lb_tick = tick;
                 }
 
-                // Server stats (~1 Hz) — header bar + admin cards for every client.
+                // Server stats (~1 Hz) — header bar + admin cards for every client. Small (~150 B);
+                // carries tick/uptime so it's not send-on-change-able, but the bytes are negligible.
                 if tick.saturating_sub(last_stats_tick) >= tr {
                     let stats = build_server_stats(&w);
-                    w.broadcast_ctl(&ctl_frame(CTL_STATS, &stats), &stats);
+                    w.broadcast_ctl(Arc::from(ctl_frame(CTL_STATS, &stats)), &stats);
                     last_stats_tick = tick;
                 }
 
@@ -471,20 +533,29 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     if send_me       { last_me_tick = tick; }
 
                     let pids: Vec<u32> = w.players.iter()
-                        .filter(|(_, p)| !p.npc && (p.tx.is_some() || p.view_tx.is_some()))
+                        .filter(|(&id, p)| !p.npc && !w.paused_views.contains(&id)
+                            && (p.tx.is_some() || p.view_tx.is_some()))
                         .map(|(&id, _)| id)
                         .collect();
                     let palette = Arc::new(get_palette(&w));
+                    // Phase-4 per-conn cap: when EGRESS_CAP_KBPS is set, a connection already sending
+                    // faster than the cap skips this cycle's heavy viewport frame (the watch slot
+                    // coalesces, so it just gets fewer frames). Dormant by default (cap = None).
+                    // Never affects `me` or the NEVER-DROP one-shots on tx/ctl_tx.
+                    let cap = crate::config::egress_cap_kbps();
+                    let now_ms = crate::config::current_ms();
                     let wref: &World = &w;
                     let jobs: Vec<ClientJob> = pool.install(|| pids.par_iter().map(|&pid| {
                         let p = wref.players.get(&pid);
+                        let over_cap = cap.is_some_and(|c|
+                            p.and_then(|p| p.egress_meter.as_ref()).is_some_and(|m| m.kbps(now_ms) > c));
                         ClientJob {
                             pid,
                             view_tx: p.and_then(|p| p.view_tx.clone()),
                             tx:      p.and_then(|p| p.tx.clone()),
                             ctl_tx:  p.and_then(|p| p.ctl_tx.clone()),
                             bin:     p.map(|p| p.bin).unwrap_or(false),
-                            raw:     if do_clients { snapshot_view(wref, pid, include_tiles) } else { None },
+                            raw:     if do_clients && !over_cap { snapshot_view(wref, pid, include_tiles) } else { None },
                             // Periodic `me` carries only the DYNAMIC fields (full=false); the static
                             // cfg/geo/world/spawn block ships once in `logged-in`.
                             me:      if send_me { Some(build_player_info(wref, pid, false)) } else { None },
@@ -509,7 +580,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                 Option<watch::Sender<Option<Vec<u8>>>>,
                 Option<Vec<u8>>,
                 Option<mpsc::UnboundedSender<String>>,
-                Option<mpsc::UnboundedSender<Vec<u8>>>,
+                Option<mpsc::UnboundedSender<Arc<[u8]>>>,
                 bool,
                 Option<String>,
                 Option<PrevGrid>,
@@ -532,7 +603,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                 // me update → binary control channel (kind 16) for `bin` clients, else raw text.
                 if let Some(me) = &me {
                     let sent_bin = bin
-                        && ctl_tx.as_ref().map(|c| c.send(ctl_frame(CTL_ME, me)).is_ok()).unwrap_or(false);
+                        && ctl_tx.as_ref().map(|c| c.send(Arc::from(ctl_frame(CTL_ME, me))).is_ok()).unwrap_or(false);
                     if !sent_bin {
                         if let Some(tx) = &tx { let _ = tx.send(me.clone()); }
                     }
@@ -554,9 +625,58 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
     }
 }
 
+// ---- Phase 6: R2 snapshot writer (own OS thread, only spawned when a sink is configured) -------
+//
+// Every interval: under a brief WRITE lock drain the dirty-chunk set + capture epoch + the
+// owner→color map (all cheap); then under a READ lock snapshot those chunks to owner-id form
+// (shared with the viewport thread, so it doesn't block the tick); then OFF-LOCK rasterize each to
+// a PNG and upload to the sink (R2 / local disk). Game-space key: snap/{epoch}/0/{cx}/{cy}.png.
+pub fn snapshot_writer_loop(world: WorldState) {
+    let sink = crate::snapshot::make_sink();
+    println!("[snapshot] writer started (sink: {}, interval 90s)", sink.label());
+    let interval = Duration::from_secs(90);
+    loop {
+        std::thread::sleep(interval);
+
+        // Phase A1 (write lock, brief): drain the dirty keys, snapshot epoch + colors.
+        let (epoch, keys, colors): (u64, Vec<u64>, FxHashMap<u32, [u8; 3]>) = {
+            let mut w = world.blocking_write();
+            let keys = w.tiles.drain_dirty_chunks();
+            let mut colors = FxHashMap::default();
+            for (&id, p) in &w.players {
+                colors.insert(id, crate::snapshot::parse_hex_color(&p.color));
+            }
+            (w.epoch, keys, colors)
+        };
+        if keys.is_empty() { continue; }
+
+        // Phase A2 (read lock, shared with viewport): clone the dirty chunks to owner-id form.
+        let snaps = {
+            let w = world.blocking_read();
+            crate::snapshot::snapshot_dirty(&w.tiles, &keys)
+        };
+
+        // Phase B (no lock): rasterize + upload.
+        let start = Instant::now();
+        let (mut ok, mut fail) = (0u32, 0u32);
+        for (cx, cy, snap) in &snaps {
+            let png = crate::snapshot::rasterize_chunk(snap, &colors);
+            let key = format!("snap/{epoch}/0/{cx}/{cy}.png");
+            match sink.put(&key, &png) {
+                Ok(())  => ok += 1,
+                Err(e)  => { fail += 1; if fail <= 3 { eprintln!("[snapshot] put {key} failed: {e}"); } }
+            }
+        }
+        println!("[snapshot] epoch {epoch}: uploaded {ok} chunks ({fail} failed) in {:?}", start.elapsed());
+    }
+}
+
 // ---- Server startup -------------------------------------------------------
 
-async fn world_info_handler() -> impl IntoResponse {
+async fn world_info_handler(State(app): State<AppState>) -> impl IntoResponse {
+    // Read the world epoch BEFORE taking the cfg guard — a non-Send RwLockReadGuard must not be
+    // held across the `.await` (it would make the handler future non-Send).
+    let epoch = app.world.read().await.epoch;
     let c = cfg();
     let body = serde_json::json!({
         "worldW":     c.world_w,
@@ -566,6 +686,9 @@ async fn world_info_handler() -> impl IntoResponse {
         "capitolLat": c.capitol_lat,
         "capitolLon": c.capitol_lon,
         "tileMeters": c.tile_meters,
+        "epoch":        epoch,
+        "snapshotBase": crate::config::snapshot_public_base(),
+        "basemapUrl":   crate::config::basemap_url(),
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)
 }
@@ -575,12 +698,13 @@ async fn world_info_handler() -> impl IntoResponse {
 /// rates are over server uptime. Additive: remove this route + the `metrics::record` calls to
 /// fully revert Phase 0.
 async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse {
-    let (uptime_ms, connected, dirty) = {
+    let (uptime_ms, connected, dirty, dirty_pending) = {
         let w = app.world.read().await;
         (
             crate::config::current_ms().saturating_sub(w.started_at),
             w.players.values().filter(|p| !p.npc && p.tx.is_some()).count(),
             w.tiles.dirty_chunk_touches(),
+            w.tiles.dirty_chunk_len(),
         )
     };
     let secs = (uptime_ms as f64 / 1000.0).max(1.0);
@@ -617,6 +741,7 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
         "bytesPerSecPerViewer": per_viewer,
         "byKind":               serde_json::Value::Object(by_kind),
         "dirtyChunkTouches":    dirty,
+        "dirtyChunksPending":   dirty_pending,
         "viewportCycleMs":      {"p50": vc50, "p99": vc99, "max": vcmax},
         "finishViewMs":         {"p50": fv50, "p99": fv99, "max": fvmax},
         "prevGridBytes":        pg,

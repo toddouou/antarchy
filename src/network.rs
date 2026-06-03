@@ -171,6 +171,8 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
         "ants": my_ants,
         "tick": world.tick,
+        // Phase-6: current R2 snapshot generation (changes on wipe → client cache-busts its tiles).
+        "epoch": world.epoch,
     });
 
     // Static block — only in `logged-in` (full); the client retains + merges it across periodic `me`.
@@ -193,6 +195,10 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
             "LIFESPAN":   c.lifespan,
             "ARMY_CAP":   c.army_cap,
         });
+        // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
+        // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
+        if let Some(base) = crate::config::snapshot_public_base() { info["snapshotBase"] = json!(base); }
+        if let Some(bm)   = crate::config::basemap_url()          { info["basemapUrl"]  = json!(bm); }
     }
     info.to_string()
 }

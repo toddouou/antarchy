@@ -1,10 +1,22 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
+
+/// A lock-free read view of one chunk's cells, handed to the Phase-6 snapshot rasterizer so it can
+/// turn palette indices → owner ids without touching the private `chunks`/`palette` internals.
+pub enum ChunkView<'a> {
+    /// Every cell is this single nonzero palette index.
+    Uniform(u16),
+    /// One palette index per cell (0 = unclaimed), row-major 256×256.
+    Dense(&'a [u16]),
+}
 
 const CHUNK_SHIFT: u32   = 8;
 const CHUNK_SIZE:  usize = 1 << CHUNK_SHIFT;        // 256
 const CHUNK_MASK:  u32   = (CHUNK_SIZE as u32) - 1;
 const CHUNK_CELLS: usize = CHUNK_SIZE * CHUNK_SIZE; // 65 536 cells
+
+/// Public chunk dimension (256) for the Phase-6 rasterizer, which renders one PNG per chunk.
+pub const CHUNK_DIM: usize = CHUNK_SIZE;
 
 /// Palette index stored per cell. 0 = unclaimed. A `u16` halves Dense-chunk RAM vs the
 /// old raw-`u32` player id; the index→player map below keeps cells compact even though
@@ -49,6 +61,11 @@ pub struct TileMap {
     /// per interval, used to project Phase-6 R2 Class-A write volume.
     #[serde(skip)]
     dirty_chunk_touches: u64,
+    /// Phase-6 EXACT dirty-chunk set: chunk keys mutated since the last `drain_dirty_chunks`. The
+    /// snapshot writer drains this each interval to re-upload only changed chunks (bounds R2
+    /// Class-A writes). Seeded with every chunk on boot/restore so a loaded world fully uploads once.
+    #[serde(skip)]
+    dirty_chunks: FxHashSet<u64>,
 }
 
 impl Default for TileMap {
@@ -61,6 +78,7 @@ impl Default for TileMap {
             free:      Vec::new(),
             last_touched_chunk: None,
             dirty_chunk_touches: 0,
+            dirty_chunks: FxHashSet::default(),
         }
     }
 }
@@ -125,11 +143,51 @@ impl TileMap {
             self.last_touched_chunk = Some(key);
             self.dirty_chunk_touches = self.dirty_chunk_touches.wrapping_add(1);
         }
+        self.dirty_chunks.insert(key);
     }
 
     /// Cumulative chunk-touch transitions since boot (an over-estimate of distinct dirty chunks).
     /// Diff two samples over a window to project Phase-6 R2 Class-A (chunk-upload) volume.
     pub fn dirty_chunk_touches(&self) -> u64 { self.dirty_chunk_touches }
+
+    /// Phase-6: drain the EXACT set of chunk keys mutated since the last drain. The snapshot writer
+    /// calls this each interval; chunks not returned are unchanged and need no re-upload.
+    pub fn drain_dirty_chunks(&mut self) -> Vec<u64> {
+        self.dirty_chunks.drain().collect()
+    }
+
+    /// How many distinct chunks are pending upload (for `/egress-stats` / projection).
+    pub fn dirty_chunk_len(&self) -> usize { self.dirty_chunks.len() }
+
+    /// Mark every currently-populated chunk dirty (seed on boot / persist-restore so a freshly
+    /// loaded world re-uploads its whole painted canvas to R2 exactly once).
+    pub fn mark_all_dirty(&mut self) {
+        for &k in self.chunks.keys() { self.dirty_chunks.insert(k); }
+    }
+
+    /// Lock-free read view of one chunk's cells, or `None` if the chunk is empty (all ocean). The
+    /// rasterizer pairs this with `palette_owner` to colour each cell. `key` is a `chunk_key`.
+    pub fn view_chunk(&self, key: u64) -> Option<ChunkView<'_>> {
+        match self.chunks.get(&key) {
+            Some(Chunk::Uniform(i))          => Some(ChunkView::Uniform(*i)),
+            Some(Chunk::Dense { cells, .. })  => Some(ChunkView::Dense(cells)),
+            None                             => None,
+        }
+    }
+
+    /// Translate a palette index → owner player id (0 = unclaimed). For the rasterizer's per-cell
+    /// colour lookup. Out-of-range indices read as unclaimed.
+    #[inline]
+    pub fn palette_owner(&self, idx: u16) -> u32 {
+        self.palette.get(idx as usize).copied().unwrap_or(0)
+    }
+
+    /// Decompose a `chunk_key` back into chunk coords `(cx, cy)` (each = tile coord >> 8). The
+    /// snapshot tile key is `/snap/{epoch}/0/{cx}/{cy}.png`.
+    #[inline]
+    pub fn chunk_coords(key: u64) -> (u32, u32) {
+        ((key & 0xFFFF_FFFF) as u32, (key >> 32) as u32)
+    }
 
     #[inline]
     pub fn get(&self, x: u32, y: u32) -> u32 {
@@ -221,6 +279,8 @@ impl TileMap {
         self.palette.push(0);   // restore the reserved unclaimed slot
         self.id_to_idx.clear();
         self.free.clear();
+        self.dirty_chunks.clear();
+        self.last_touched_chunk = None;
     }
 
     /// Clear every tile owned by `owner` (→ unclaimed) and drop the owner's count + index.
@@ -240,11 +300,12 @@ impl TileMap {
             self.free.push(oi);
             return;
         }
-        self.chunks.retain(|_, chunk| {
+        let mut touched: Vec<u64> = Vec::new();
+        self.chunks.retain(|&k, chunk| {
             if remaining <= 0 { return true; }
             match chunk {
                 Chunk::Uniform(ui) => {
-                    if *ui == oi { remaining -= CHUNK_CELLS as i64; false } else { true }
+                    if *ui == oi { remaining -= CHUNK_CELLS as i64; touched.push(k); false } else { true }
                 }
                 Chunk::Dense { cells, occupied } => {
                     if *occupied == 0 { return false; }
@@ -252,15 +313,32 @@ impl TileMap {
                     for c in cells.iter_mut() {
                         if *c == oi { *c = 0; zeroed += 1; }
                     }
+                    if zeroed > 0 { touched.push(k); }
                     *occupied -= zeroed;
                     remaining -= zeroed as i64;
                     *occupied != 0
                 }
             }
         });
+        // Phase-6: a dead queen's forfeited chunks changed → re-upload them next snapshot interval.
+        self.dirty_chunks.extend(touched);
         self.counts.remove(&owner);
         self.id_to_idx.remove(&owner);
         self.free.push(oi);
+    }
+
+    /// ∥A WAL replay: overwrite a whole chunk from a 256×256 array of owner ids (0 = unclaimed).
+    /// Reuses `set` per cell so `counts`/`palette` stay exact. `owners.len()` should be `CHUNK_CELLS`
+    /// (shorter → trailing cells cleared). Used only when replaying the write-ahead log on boot.
+    pub fn restore_chunk_owners(&mut self, key: u64, owners: &[u32]) {
+        let (cx, cy) = Self::chunk_coords(key);
+        let (bx, by) = (cx << CHUNK_SHIFT, cy << CHUNK_SHIFT);
+        for li in 0..CHUNK_CELLS {
+            let owner = owners.get(li).copied().unwrap_or(0);
+            let x = bx | (li as u32 & CHUNK_MASK);
+            let y = by | ((li as u32 >> CHUNK_SHIFT) & CHUNK_MASK);
+            self.set(x, y, owner);
+        }
     }
 
     pub fn total_tiles(&self) -> usize {

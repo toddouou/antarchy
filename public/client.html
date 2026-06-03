@@ -1185,7 +1185,7 @@ function applyCfgSlider(key, val) {
   updateXpPreview();
 }
 
-let ws=null, me=null, reconnecting=false, _queenPlaceCooldown=false;
+let ws=null, me=null, reconnecting=false, _queenPlaceCooldown=false, reconnectAttempts=0;
 let view={x:32768, y:32768, zoom:0.22};
 let zoomTarget=1;       // smooth zoom lerp target
 let panTarget=null;     // {x,y} smooth camera fly target, null when idle
@@ -1237,6 +1237,19 @@ let lbPrevTiles={};
 function fmtLbTiles(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(0)+'K';return String(n);}
 // OSM tile cache
 const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
+// Parallel-B: optional licensed base-map URL template (server-provided via `logged-in`). When set it
+// replaces the raw OSM source. Supports {s} (subdomain), {z}/{x}/{y}. Empty → raw OSM fallback.
+let BASEMAP_URL='';
+function osmTileUrl(z,x,y){
+  if (BASEMAP_URL) return BASEMAP_URL.replace('{s}',osmSubs[(_osmSubIdx++)%3]).replace('{z}',z).replace('{x}',x).replace('{y}',y);
+  return `https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
+}
+// Phase-6: R2 snapshot-tile base layer. SNAP_BASE = public R2 URL (server-provided); SNAP_EPOCH =
+// generation tag (cache-bust on wipe). Empty SNAP_BASE → the whole compositor stays dormant (legacy
+// WS-keyframe path only). Tiles are keyed by GAME chunk (cx,cy)=(x>>8,y>>8): snap/{epoch}/0/{cx}/{cy}.png
+let SNAP_BASE='', SNAP_EPOCH=0;
+const snapCache=new Map();
+const SNAP_RETRY_MS=60000, SNAP_CHUNK=256;
 // 1×1 canvas for reading water color from OSM tiles
 const _waterSampleCanvas=document.createElement('canvas');
 _waterSampleCanvas.width=_waterSampleCanvas.height=1;
@@ -1590,13 +1603,23 @@ function connect() {
   ws=new WebSocket(proto+'://'+location.host);
   ws.onopen=()=>{
     $('dot').className='dot ok'; $('cstat').textContent='CONNECTED';
+    reconnectAttempts=0; // P7: successful connect resets the backoff
     const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
     if (u&&p) {
       $('li-u').value=u; $('li-p').value=p;
       if (reconnecting||sessionStorage.getItem('hive-active')) { send({t:'login',username:u,password:p,bin:1}); }
     }
   };
-  ws.onclose=()=>{ $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true; clientGrid=null; setTimeout(connect,1500); };
+  // P7: exponential backoff + jitter (no synchronized reconnect storm after a server bounce). Keep
+  // the last grid through a brief drop so we render from it instead of flashing white; discard it
+  // only after several failed attempts (a longer outage).
+  ws.onclose=()=>{
+    $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true;
+    reconnectAttempts++;
+    if (reconnectAttempts>=4) clientGrid=null;
+    const delay=Math.min(30000, 1000*Math.pow(1.5, reconnectAttempts)) + Math.random()*1000;
+    setTimeout(connect, delay);
+  };
   ws.onerror=()=>{ $('cstat').textContent='ERROR'; };
   ws.binaryType='arraybuffer';
   // Text frames → handle(). Binary frames route on byte 0: <16 = viewport (tile/ant) → handleViewBin();
@@ -1607,6 +1630,13 @@ function connect() {
   };
 }
 function send(o) { if (ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+// P7 visibility cull: a hidden/backgrounded tab tells the server to stop sending viewport frames →
+// ~0 egress while away. Resuming re-subscribes; the next keyframe repaints. (Server gates on this in
+// viewport_loop; the never-drop event/control channels are unaffected.)
+document.addEventListener('visibilitychange', ()=>{
+  send({ t: document.hidden ? 'view-pause' : 'view-resume' });
+});
 
 /* ===================================================================
    BINARY VIEWPORT FRAMES  (deflate-compressed keyframe / delta protocol)
@@ -1769,6 +1799,10 @@ function handle(msg) {
       sessionStorage.setItem('hive-active','1');
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
+      // ∥B base-map + Phase-6 R2 snapshot config (static block; empty → features stay dormant).
+      if (me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
+      if (me.snapshotBase!=null) SNAP_BASE=me.snapshotBase;
+      if (me.epoch!=null && me.epoch!==SNAP_EPOCH) { SNAP_EPOCH=me.epoch; snapCache.clear(); }
       waterCache.clear();
       tileCache=new Uint32Array(TILE_CACHE_W*TILE_CACHE_H);
       fogCache=new Uint8Array(TILE_CACHE_W*TILE_CACHE_H).fill(100);
@@ -1811,6 +1845,8 @@ function handle(msg) {
       break;
     case 'me':
       me={...me,...msg};
+      // Phase-6: epoch flips on a world wipe → cache-bust the snapshot tiles (double-buffer).
+      if (msg.epoch!=null && msg.epoch!==SNAP_EPOCH) { SNAP_EPOCH=msg.epoch; snapCache.clear(); }
       updateHUD();
       renderAntList();
       if (winIsOpen('disc')) renderDiscoveryWindow();
@@ -2431,7 +2467,7 @@ function getOsmTile(z, x, y) {
   const img=new Image();
   const e={img, loaded:false, failed:false, failedAt:0};
   img.crossOrigin='anonymous';
-  img.src=`https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  img.src=osmTileUrl(z,x,y);
   img.onload=()=>{ e.loaded=true; e.failed=false; };
   img.onerror=()=>{ e.loaded=false; e.failed=true; e.failedAt=performance.now(); };
   osmCache.set(key, e);
@@ -2492,6 +2528,48 @@ function drawOsmTiles(cp, canvasW, canvasH) {
       const px=(canvasW/2+(x0-view.x)*cp)|0, py=(canvasH/2+(y0-view.y)*cp)|0;
       const pw=((canvasW/2+(x1-view.x)*cp)|0)-px, ph=((canvasH/2+(y1-view.y)*cp)|0)-py;
       if (pw>0&&ph>0) ctx.drawImage(e.img, px, py, pw, ph);
+    }
+  }
+}
+
+// Phase-6: fetch one R2 snapshot chunk tile (cached, with the same failed-tile backoff as OSM).
+function getSnapTile(cx, cy) {
+  const key=`${SNAP_EPOCH}/${cx}/${cy}`;
+  const cached=snapCache.get(key);
+  if (cached) { if (!(cached.failed && performance.now()-cached.failedAt>SNAP_RETRY_MS)) return cached; }
+  const img=new Image();
+  const e={img, loaded:false, failed:false, failedAt:0};
+  img.crossOrigin='anonymous';
+  img.src=`${SNAP_BASE}/snap/${SNAP_EPOCH}/0/${cx}/${cy}.png`;
+  img.onload=()=>{ e.loaded=true; e.failed=false; };
+  img.onerror=()=>{ e.failed=true; e.failedAt=performance.now(); }; // 404 = ocean/unpainted chunk
+  snapCache.set(key, e);
+  if (snapCache.size>1024) snapCache.delete(snapCache.keys().next().value);
+  return e;
+}
+
+// Composite the R2 snapshot base layer (game-space chunks) under the live territory overlay. Honors
+// the authoritative-viewport invariant: only drawn when there is NO live frame yet (initial load /
+// reconnect before the first WS keyframe), so a possibly-stale R2 tile never bleeds into the
+// authoritative live in-view canvas. Dormant unless the server provided SNAP_BASE.
+function drawSnapshotTiles(cp, canvasW, canvasH) {
+  if (!SNAP_BASE) return;
+  const gx0=view.x-canvasW/(2*cp), gy0=view.y-canvasH/(2*cp);
+  const gx1=view.x+canvasW/(2*cp), gy1=view.y+canvasH/(2*cp);
+  const cx0=Math.floor(gx0/SNAP_CHUNK), cy0=Math.floor(gy0/SNAP_CHUNK);
+  const cx1=Math.floor(gx1/SNAP_CHUNK), cy1=Math.floor(gy1/SNAP_CHUNK);
+  // Bound the loop so an extreme zoom-out can't request a huge tile grid (R2 reads are free but the
+  // browser shouldn't spawn thousands of Image objects). Far-zoom is served by the WS LOD path.
+  if ((cx1-cx0+1)*(cy1-cy0+1) > 400) return;
+  for (let cx=cx0; cx<=cx1; cx++) {
+    for (let cy=cy0; cy<=cy1; cy++) {
+      if (cx<0||cy<0) continue;
+      const e=getSnapTile(cx, cy);
+      if (!e.loaded) continue;
+      const wx=cx*SNAP_CHUNK, wy=cy*SNAP_CHUNK;
+      const px=(canvasW/2+(wx-view.x)*cp)|0, py=(canvasH/2+(wy-view.y)*cp)|0;
+      const sz=(SNAP_CHUNK*cp)|0;
+      if (sz>0) ctx.drawImage(e.img, px, py, sz+1, sz+1);
     }
   }
 }
@@ -2647,7 +2725,10 @@ function render() {
     ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
   }
 
+  // 1b) R2 snapshot base (Phase-6) — only before the first live frame (instant-load / reconnect),
+  // so live WS keyframes stay authoritative in-view. Dormant unless the server set SNAP_BASE.
   if (!vw) {
+    drawSnapshotTiles(cp, W, H);
     return;
   }
 

@@ -121,6 +121,10 @@ pub fn handle_message(
         return;
     }
 
+    // ---- Phase-7 visibility cull: hidden tab → stop viewport frames (~0 egress) ----
+    if t == "view-pause"  { world.paused_views.insert(pid); return; }
+    if t == "view-resume" { world.paused_views.remove(&pid); world.dirty_tick = world.tick; return; }
+
     // ---- Forbidden zones ----
     if t == "get-forbidden-zones" {
         let zones: Vec<Value> = world.queens.iter()
@@ -749,7 +753,7 @@ fn create_or_reconnect_player(
         queen_placed_at: None,
         npc: false, view: None,
         tx: Some(tx), view_tx: None,
-        ctl_tx: None, bin: false,
+        ctl_tx: None, egress_meter: None, bin: false,
         conn_gen: 1,
         prestige: 0, credits: 0,
         defenders: Vec::new(),
