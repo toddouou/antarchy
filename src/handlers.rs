@@ -81,6 +81,12 @@ pub fn handle_message(
         return;
     }
 
+    // Viewport pause/resume can race ahead of auth on mobile: `visibilitychange` fires during the
+    // keyboard/app-switch churn of the signup flow, before the player is logged in. Treat those as
+    // no-ops when not yet authenticated instead of replying `err("Not logged in")` — that error
+    // used to bounce the client back to the login screen mid-registration.
+    if (t == "view-pause" || t == "view-resume") && player_id.is_none() { return; }
+
     // All subsequent messages require a logged-in player
     let Some(pid) = *player_id else {
         let _ = tx.send(err("Not logged in")); return;

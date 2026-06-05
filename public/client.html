@@ -1793,6 +1793,9 @@ function send(o) { if (ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
 // ~0 egress while away. Resuming re-subscribes; the next keyframe repaints. (Server gates on this in
 // viewport_loop; the never-drop event/control channels are unaffected.)
 document.addEventListener('visibilitychange', ()=>{
+  if (!me) return; // not logged in yet → nothing to pause; sending pre-login would draw a "Not
+                   // logged in" err. On mobile visibilitychange fires constantly during the signup
+                   // keyboard/app-switch churn, and that stray err used to bounce users to login.
   send({ t: document.hidden ? 'view-pause' : 'view-resume' });
 });
 
@@ -1943,7 +1946,11 @@ function handle(msg) {
     }
     case 'err':
       toast(msg.msg); $('li-err').textContent=msg.msg; $('r-err').textContent=msg.msg;
-      if (!me) { $('auth-modal').style.display=''; showStep('login'); }
+      // Pre-login error: keep the auth modal up and surface the message inline on whichever step
+      // the user is on (login OR a register step). Do NOT jump them to the login step — a stray
+      // error mid-signup (e.g. a viewport msg racing ahead of auth) looked like "kicked back to
+      // login" and discarded the user's hue selection. Genuine auth failures still show inline.
+      if (!me) $('auth-modal').style.display='';
       if (mode==='place-queen') {
         _queenPlaceCooldown = false;
         const card=$('ss-card');
