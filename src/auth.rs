@@ -14,6 +14,11 @@ pub struct UserRecord {
     pub hue_idx:       i32,
     pub is_admin:      bool,
     pub color_chosen:  bool,
+    /// Highest queen level this USER has ever reached. Survives queen death / prestige / redeploy
+    /// (Queen.level resets to 1). Drives progressive unlock visibility + one-time unlock popups.
+    /// JSON-persisted (users.json); additive — pre-existing records load as 0.
+    #[serde(default)]
+    pub peak_level:    u16,
 }
 
 #[derive(Debug, Default)]
@@ -55,6 +60,7 @@ impl Auth {
             hue_idx:       -1,
             is_admin:      true,
             color_chosen:  false,
+            peak_level:    0,
         }
     }
 

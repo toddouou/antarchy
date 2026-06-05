@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>HIVE — Madison WI</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>antarchy — the ants are revolting</title>
+<link rel="icon" href="/favicon.png" type="image/png">
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -98,7 +99,7 @@
     background:var(--bg2); border:2px solid var(--ink); color:var(--ink); padding:6px 7px;
     cursor:pointer; text-align:left; }
   .wk-toggle:hover { background:var(--yel); }
-  .wk-list { margin-top:6px; max-height:170px; overflow-y:auto; display:flex; flex-direction:column; gap:3px; }
+  .wk-list { margin-top:6px; overflow:hidden; display:flex; flex-direction:column; gap:3px; }
   .wk-ant { display:flex; align-items:center; gap:5px; font-family:'Press Start 2P',monospace; font-size:6px; }
   .wk-ant-ic { width:9px; text-align:center; color:var(--grn); }
   .wk-ant.brute .wk-ant-ic { color:var(--yel); }
@@ -216,19 +217,19 @@
   .btn.ghost { background:var(--bg2); color:var(--ink); }
   .btn.ghost:hover:not(:disabled) { background:var(--yel); }
   .lb-table { display:flex; flex-direction:column; }
-  .lb-row { display:grid; grid-template-columns:18px 1fr 40px 22px; align-items:center; gap:4px;
-    padding:5px 0; border-bottom:1px solid var(--line);
-    font-family:'Press Start 2P',monospace; font-size:6px; }
+  .lb-row { display:grid; grid-template-columns:26px 1fr auto; align-items:center; gap:6px;
+    padding:5px 2px; border-bottom:1px solid var(--line);
+    font-family:'IBM Plex Mono',monospace; font-size:10px; font-weight:600; }
   .lb-row:last-child { border-bottom:none; }
   .lb-rank { color:var(--dim); }
   .lb-name { display:flex; align-items:center; gap:4px; min-width:0; overflow:hidden; }
   .lb-swatch { width:8px; height:8px; border:1px solid var(--ink); flex-shrink:0; }
   .lb-name-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .lb-tiles { text-align:right; font-family:'IBM Plex Mono',monospace; font-size:8px; }
+  .lb-tiles { text-align:right; font-family:'IBM Plex Mono',monospace; font-size:10px; }
   .lb-trend { text-align:right; font-size:8px; }
   .lb-trend.up { color:var(--grn); }
   .lb-trend.dn { color:var(--red); }
-  .lb-me { background:rgba(255,184,0,.08); }
+  .lb-me { background:rgba(255,184,0,.18); box-shadow:inset 3px 0 0 var(--yel); }
 
   /* CANVAS */
   .canvas-area { grid-area:c; position:relative; background:var(--bg2); overflow:hidden; touch-action:none; }
@@ -287,6 +288,20 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .ds-pr-text span { color:var(--dim); font-size:6px; }
   .ds-redeploy { font-size:11px; padding:13px; }
   .ds-foot { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); margin-top:10px; }
+
+  /* UNLOCK POPUP (data-driven; reuses the death-screen card shell) */
+  #unlock-screen { position:fixed; inset:0; z-index:910; display:none; place-items:center;
+    background:rgba(13,13,13,.6); }
+  #unlock-screen.vis { display:grid; animation:ds-fade .3s ease-out; }
+  .unlock-card { max-width:380px; }
+  .unlock-art { font-size:46px; line-height:1; margin-bottom:6px; }
+  .unlock-body { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
+    line-height:1.8; margin:14px 0 4px; }
+  .unlock-body b { color:var(--grn); }
+  .unlock-actions { display:flex; flex-direction:column; gap:8px; margin-top:18px; }
+  .unlock-actions .btn { font-size:11px; padding:13px; }
+  .unlock-actions .btn.secondary { background:var(--bg); color:var(--ink); }
+  .shop-card.shop-hot { box-shadow:0 0 0 2px var(--grn); }
 
   /* WELCOME-BACK (reuses the death-screen card shell) */
   #welcome-screen { position:fixed; inset:0; z-index:880; display:none; place-items:center;
@@ -401,7 +416,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .adm-tgt-hp-bar { height:8px; background:var(--bg); border:1px solid var(--ink); margin-bottom:2px; }
   .adm-input-row { display:flex; align-items:center; gap:4px; margin-bottom:4px; }
   .adm-il { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
-    white-space:nowrap; flex-shrink:0; }
+    white-space:nowrap; flex-shrink:0; width:30px; text-align:right; }
+  .btn-sm.on { background:#2e7d32; color:#fff; }
   .adm-in { background:var(--bg); border:2px solid var(--ink); color:var(--ink);
     font-family:'IBM Plex Mono',monospace; font-size:11px; padding:4px 6px; width:100%; }
   .adm-in:focus { outline:none; background:var(--yel); }
@@ -584,12 +600,125 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     white-space:pre; margin-bottom:14px; text-align:center; line-height:1.1; }
   .err { color:var(--red); font-family:'Press Start 2P',monospace; font-size:7px;
     margin-top:6px; min-height:12px; }
+
+  /* ============================================================
+     MOBILE  —  phones & narrow viewports (≤768px).
+     Everything below is scoped to the breakpoint (or hidden until
+     it activates) so the desktop layout renders byte-for-byte as
+     before. Pattern: full-bleed canvas + fixed bottom nav (thumb
+     zone) + left slide-out drawer for the side panel.
+     ============================================================ */
+  /* Mobile-only chrome — hidden on desktop, revealed in the @media block. */
+  #mobile-nav, #drawer-scrim, .drawer-close, .hdr-menu, .mobile-only { display:none; }
+
+  @media (max-width: 768px) {
+    /* --- Layout: one full-bleed canvas under a compact header --- */
+    body {
+      grid-template-columns: 1fr;
+      grid-template-rows: calc(46px + env(safe-area-inset-top)) 1fr;
+      grid-template-areas: "h" "c";
+    }
+    body.admin-on { grid-template-columns: 1fr; }   /* no admin column on phones */
+    footer { display: none; }                        /* status line: not core-loop */
+    .admin { display: none !important; }             /* admin tooling stays desktop-only */
+
+    /* --- Header: logo + hamburger only; kill the overflow row --- */
+    header {
+      gap: 8px;
+      padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0
+                                        max(12px, env(safe-area-inset-left));
+    }
+    .logo { font-size: 12px; }
+    .hstats, .region, .hdr-actions, .hdr-logout { display: none; }
+    .admin-badge { font-size: 7px; padding: 3px 6px; }
+    .hdr-menu {
+      display: flex; align-items: center; justify-content: center;
+      margin-left: auto; width: 46px; height: 38px; font-size: 18px;
+      background: var(--bg); border: 2px solid var(--ink); color: var(--ink); cursor: pointer;
+    }
+    .hdr-menu:active { background: var(--yel); }
+
+    /* --- Sidebar → left slide-out drawer --- */
+    .sidebar {
+      position: fixed; top: 0; bottom: 0; left: 0;
+      width: min(86vw, 320px); z-index: 650;
+      transform: translateX(-100%); transition: transform .25s ease; will-change: transform;
+      padding-top: calc(env(safe-area-inset-top) + 12px);
+      padding-bottom: calc(env(safe-area-inset-bottom) + 16px);
+      padding-left: max(10px, env(safe-area-inset-left));
+      box-shadow: 6px 0 0 rgba(13,13,13,.25);
+    }
+    body.drawer-open .sidebar { transform: translateX(0); }
+    .drawer-close {
+      display: flex; align-items: center; justify-content: center;
+      margin-left: auto; margin-bottom: 8px;
+      width: 44px; height: 44px; font-size: 13px;
+      background: var(--ink); color: #fff; border: 2px solid var(--ink); cursor: pointer;
+      font-family: 'Press Start 2P', monospace;
+    }
+    #drawer-scrim { position: fixed; inset: 0; z-index: 640; background: rgba(13,13,13,.5); }
+    body.drawer-open #drawer-scrim { display: block; }
+    .mobile-only { display: block; }
+
+    /* --- Bottom nav (thumb zone) --- */
+    #mobile-nav {
+      display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+      background: var(--bg2); border-top: 2px solid var(--ink);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right);
+    }
+    .mnav-btn {
+      flex: 1; min-height: 54px; padding: 6px 2px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+      background: var(--bg2); border: none; border-left: 1px solid var(--line);
+      color: var(--ink); cursor: pointer;
+    }
+    .mnav-btn:first-child { border-left: none; }
+    .mnav-btn:active { background: var(--bg); }
+    .mnav-btn .mic { font-size: 17px; line-height: 1; }
+    .mnav-btn .mlb { font-family: 'Press Start 2P', monospace; font-size: 6px; color: var(--dim); letter-spacing: .02em; }
+    .mnav-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .mnav-btn.mnav-deploy { background: var(--red); border-left: none; }
+    .mnav-btn.mnav-deploy .mic, .mnav-btn.mnav-deploy .mlb { color: #fff; }
+    .mnav-btn.mnav-deploy:active { background: #d8202f; }
+    .mnav-btn.mnav-deploy.active { background: var(--ink); }
+    .mnav-btn.mnav-deploy.active .mic, .mnav-btn.mnav-deploy.active .mlb { color: var(--yel); }
+
+    /* Canvas overlays clear of the header inset and the bottom nav --- */
+    #killfeed { top: calc(env(safe-area-inset-top) + 52px); right: 10px; }
+    .toast { top: calc(env(safe-area-inset-top) + 58px); }
+    .place-prompt { bottom: calc(66px + env(safe-area-inset-bottom)); }
+
+    /* --- Windows / modals at narrow width --- */
+    .win { width: 96vw; max-height: 86vh; }
+    .win-body { padding: 14px 14px 18px; }
+    .win-close { min-width: 44px; min-height: 44px; }
+    /* Full leaderboard table: drop the region column so 8 cols fit a phone */
+    .lbw-head, .lbw-row { grid-template-columns: 30px 14px 1fr 64px 34px 28px 34px; gap: 6px; }
+    .lbw-reg { display: none; }
+
+    /* --- Spawn screen → single column; instructions as a bottom sheet --- */
+    #spawn-screen { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+    #ss-header {
+      grid-column: 1; grid-row: 1; flex-wrap: wrap; gap: 8px; font-size: 7px;
+      padding: env(safe-area-inset-top) 12px 6px;
+    }
+    #ss-header .ss-title { font-size: 8px; flex-basis: 100%; text-align: left; order: 3; }
+    #ss-left {
+      grid-column: 1; grid-row: 3;
+      border-right: none; border-top: 2px solid var(--ink);
+      max-height: 44vh; overflow-y: auto;
+      padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    }
+    #ss-left .ss-headline, #ss-left .ss-body, #ss-left .ss-rule { display: none; }
+    #ss-footer { display: none; }
+  }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">HIVE<em>.</em></div>
+  <div class="logo">antarchy<em>.fun</em></div>
   <div class="region" id="hdr-region">REGION · <b id="hdr-region-name">—</b></div>
   <span class="admin-badge" id="admin-badge">◆ ADMIN</span>
   <div class="hstats">
@@ -601,14 +730,16 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="hstat sh"><span class="l">UPTIME</span><span class="v" id="hdr-uptime">--</span></div>
   </div>
   <div class="hdr-actions">
-    <button class="hbtn" id="hbtn-shop" title="Shop" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
+    <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
     <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><span class="ic">🧭</span><span class="lb">DISCOVER</span></button>
     <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><span class="ic">⚙</span><span class="lb">SETTINGS</span></button>
   </div>
   <button class="hdr-logout" id="btn-logout" title="Log out">⎋ LOGOUT</button>
+  <button class="hdr-menu" id="hdr-menu" onclick="openSidebar()" aria-label="Open menu">☰</button>
 </header>
 
 <aside class="sidebar">
+  <button class="drawer-close" id="drawer-close" onclick="closeSidebar()" aria-label="Close menu">✕</button>
   <div class="score-panel">
     <div class="slbl">◆ GRAND SCORE</div>
     <div class="score-big" id="score-big">0</div>
@@ -653,7 +784,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="pbody">
       <div class="wk-types">
         <button class="wk-type active" id="wk-type-normal" onclick="setWorkerType('normal')">▴ WORKER</button>
-        <button class="wk-type" id="wk-type-brute" onclick="setWorkerType('brute')">◼ BRUTE</button>
+        <button class="wk-type" id="wk-type-brute" style="display:none" onclick="setWorkerType('brute')">◼ BRUTE</button>
       </div>
       <div class="wk-grid">
         <div class="wk-cell"><div class="wk-l">READY</div><div class="wk-v" id="ants-avail">0</div></div>
@@ -691,6 +822,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   </div>
 
   <button class="btn ghost" id="btn-recenter" style="margin-bottom:5px;">⊕ CENTER QUEEN</button>
+  <button class="btn ghost mobile-only" onclick="document.getElementById('btn-logout').click()" style="margin-bottom:5px;">⎋ LOGOUT</button>
 </aside>
 
 <main class="canvas-area">
@@ -745,6 +877,17 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="ds-sub" id="wb-sub">WHILE YOU WERE AWAY</div>
     <div class="wb-list" id="wb-list"></div>
     <button class="btn ds-redeploy" id="wb-continue">CONTINUE ▸</button>
+  </div>
+</div>
+
+<!-- UNLOCK POPUP — data-driven one-time celebration (reused for every tier now + the tutorial later) -->
+<div id="unlock-screen" onclick="if(event.target===this)closePopup()">
+  <div class="ds-card unlock-card">
+    <div class="unlock-art" id="unlock-art">🎉</div>
+    <div class="ds-title" id="unlock-title">UNLOCKED</div>
+    <div class="ds-sub" id="unlock-sub"></div>
+    <div class="unlock-body" id="unlock-body"></div>
+    <div class="unlock-actions" id="unlock-actions"></div>
   </div>
 </div>
 
@@ -814,13 +957,18 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       </div>
       <div class="adm-input-row">
         <span class="adm-il">CR+</span>
-        <input class="adm-in-sm" id="atgt-givecr" type="number" min="0" max="100" placeholder="0">
+        <input class="adm-in-sm" id="atgt-givecr" type="number" min="0" placeholder="0">
         <button class="btn-sm" onclick="admGiveCredits()">ADD</button>
       </div>
       <div class="adm-input-row">
         <span class="adm-il">CR=</span>
-        <input class="adm-in-sm" id="atgt-setcr" type="number" min="0" max="100" placeholder="0">
+        <input class="adm-in-sm" id="atgt-setcr" type="number" min="0" placeholder="0">
         <button class="btn-sm" onclick="admSetCredits()">SET</button>
+      </div>
+      <div class="adm-subsec">GOD MODE</div>
+      <div class="btn-row" style="margin-bottom:6px;">
+        <button class="btn-sm" id="atgt-unlim-cr" onclick="admToggleUnlim('credits')">∞ CR: OFF</button>
+        <button class="btn-sm" id="atgt-unlim-ant" onclick="admToggleUnlim('ants')">∞ ANTS: OFF</button>
       </div>
       <div class="adm-subsec">ACTIONS</div>
       <button class="btn-sm" id="atgt-place-ant" style="width:100%;margin-bottom:4px;">♟ PLACE ANTS</button>
@@ -901,17 +1049,17 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="adm-subsec">CORE</div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>TICK RATE <span class="sinfo" data-tip="Simulation steps per second. Higher = faster world, more CPU. 50 is normal play speed.">?</span></span>
-        <span class="v"><span id="v-tr">50</span> HZ</span>
+        <span>TICK RATE <span class="sinfo" data-tip="The one global simulation rate (steps/sec). Everything — ant movement, combat, the 24h worker timer — runs off this. Default 15.">?</span></span>
+        <span class="v"><span id="v-tr">15</span> HZ</span>
       </div>
-      <input type="range" id="s-tr" min="1" max="500" step="1" value="50">
+      <input type="range" id="s-tr" min="1" max="50" step="1" value="15">
     </div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>ANT LIFESPAN <span class="sinfo" data-tip="How long an ant survives before expiring. 4.32M ticks = 24h at 50Hz. Lower = faster turnover.">?</span></span>
+        <span>WORKER RETURN <span class="sinfo" data-tip="How long a deployed worker stays out before returning to your ready pool. Default 24h (at 15Hz). Lower = faster turnover, handy for testing.">?</span></span>
         <span class="v"><span id="v-ls">24h</span></span>
       </div>
-      <input type="range" id="s-ls" min="10000" max="4320000" step="10000" value="4320000">
+      <input type="range" id="s-ls" min="18000" max="2592000" step="18000" value="1296000">
     </div>
 
     <div class="adm-subsec">QUEEN</div>
@@ -920,28 +1068,28 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span>BUBBLE RADIUS <span class="sinfo" data-tip="Exclusion zone around each queen (tiles). Enemy queens cannot be placed within this radius.">?</span></span>
         <span class="v"><span id="v-br">30</span></span>
       </div>
-      <input type="range" id="s-br" min="5" max="500" step="5" value="30">
+      <input type="range" id="s-br" min="10" max="100" step="5" value="30">
     </div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>HP PER LEVEL <span class="sinfo" data-tip="Queen max HP = this value × queen level. A level 1 queen has exactly this many HP. Higher = harder to kill.">?</span></span>
-        <span class="v"><span id="v-hp">100</span></span>
+        <span>BASE HP (L1) <span class="sinfo" data-tip="Queen max HP at level 1 — the low anchor. HP then grows ≈4%/level up to ~2,428 at L100. Higher = harder to kill.">?</span></span>
+        <span class="v"><span id="v-hp">50</span></span>
       </div>
-      <input type="range" id="s-hp" min="10" max="2000" step="10" value="100">
+      <input type="range" id="s-hp" min="5" max="200" step="5" value="50">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>HP REGEN/S <span class="sinfo" data-tip="Queen HP passively regenerated per second while below max HP. 0 = no regen (queens only heal via the shop/admin).">?</span></span>
         <span class="v"><span id="v-hr">0</span></span>
       </div>
-      <input type="range" id="s-hr" min="0" max="100" step="1" value="0">
+      <input type="range" id="s-hr" min="0" max="20" step="1" value="0">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>SPAWN PAN <span class="sinfo" data-tip="Camera pan radius (tiles) shown when a player first places their queen. Larger = wider initial view.">?</span></span>
         <span class="v"><span id="v-sp">200</span></span>
       </div>
-      <input type="range" id="s-sp" min="25" max="2000" step="25" value="200">
+      <input type="range" id="s-sp" min="50" max="500" step="25" value="200">
     </div>
 
     <div class="adm-subsec">COMBAT</div>
@@ -950,44 +1098,37 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span>ANT DAMAGE <span class="sinfo" data-tip="HP dealt to an enemy queen per ant touch per tick. Lower = queens survive longer. Default 1 means ~100 hits to kill a fresh level 1 queen.">?</span></span>
         <span class="v"><span id="v-ad">1</span></span>
       </div>
-      <input type="range" id="s-ad" min="0.1" max="20" step="0.1" value="1">
-    </div>
-    <div class="slider-g">
-      <div class="slider-l">
-        <span>ANT RATE <span class="sinfo" data-tip="How many times per second ant positions are sent to each player (the big bandwidth/egress cost). Lower = much cheaper; the client smoothly interpolates between updates so ants still crawl. 50 = effectively no interpolation. Default 15.">?</span></span>
-        <span class="v"><span id="v-ah">15</span>/s</span>
-      </div>
-      <input type="range" id="s-ah" min="5" max="60" step="1" value="15">
+      <input type="range" id="s-ad" min="0.1" max="5" step="0.1" value="1">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>CONVERT % <span class="sinfo" data-tip="Majority threshold for ant clash resolution. When 65% of ants on a tile are the same owner, minority ants are converted.">?</span></span>
         <span class="v"><span id="v-cp">65</span>%</span>
       </div>
-      <input type="range" id="s-cp" min="51" max="100" step="1" value="65">
+      <input type="range" id="s-cp" min="51" max="80" step="1" value="65">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>DAILY ANTS <span class="sinfo" data-tip="Ants each player receives per 24-hour refill. More ants = more expansion potential per day.">?</span></span>
         <span class="v"><span id="v-da">5</span></span>
       </div>
-      <input type="range" id="s-da" min="0" max="50" step="1" value="5">
+      <input type="range" id="s-da" min="0" max="20" step="1" value="5">
     </div>
 
     <div class="adm-subsec">XP CURVE</div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>XP BASE <span class="sinfo" data-tip="Base XP cost for the level curve. Level 2 costs XP_BASE × 1^exp. Higher = slower overall progression.">?</span></span>
-        <span class="v"><span id="v-xpb">500</span></span>
+        <span>XP BASE <span class="sinfo" data-tip="Base XP cost for the level curve — the cost of level 1→2. Higher = slower overall progression.">?</span></span>
+        <span class="v"><span id="v-xpb">100</span></span>
       </div>
-      <input type="range" id="s-xpb" min="50" max="20000" step="50" value="500">
+      <input type="range" id="s-xpb" min="100" max="2000" step="50" value="100">
     </div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>CURVE POWER <span class="sinfo" data-tip="Exponent of the XP level curve. Higher = steeper late-game grind. 2.2 gives a natural power-law curve.">?</span></span>
-        <span class="v"><span id="v-xpe">2.2</span></span>
+        <span>XP GROWTH /LVL <span class="sinfo" data-tip="Per-level XP growth rate. 1.07 = each level costs 7% more than the last. Higher = steeper late-game grind.">?</span></span>
+        <span class="v"><span id="v-xpe">1.07</span></span>
       </div>
-      <input type="range" id="s-xpe" min="1.0" max="4.0" step="0.05" value="2.2">
+      <input type="range" id="s-xpe" min="1.02" max="1.20" step="0.01" value="1.07">
     </div>
 
     <div class="adm-subsec">REWARDS</div>
@@ -996,21 +1137,21 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span>KILL XP <span class="sinfo" data-tip="XP awarded to a player when they destroy an enemy queen. Large reward to incentivize combat.">?</span></span>
         <span class="v"><span id="v-xpk">5000</span></span>
       </div>
-      <input type="range" id="s-xpk" min="0" max="50000" step="100" value="5000">
+      <input type="range" id="s-xpk" min="0" max="20000" step="100" value="5000">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>CONVERT XP <span class="sinfo" data-tip="XP per enemy tile painted over. Rewards aggressive expansion into enemy territory.">?</span></span>
         <span class="v"><span id="v-xpc">5</span></span>
       </div>
-      <input type="range" id="s-xpc" min="0" max="100" step="1" value="5">
+      <input type="range" id="s-xpc" min="0" max="20" step="1" value="5">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>LEVELUP ANTS <span class="sinfo" data-tip="Bonus ants granted each time a player levels up. Rewards progression with extra placement capacity.">?</span></span>
         <span class="v"><span id="v-ag">1</span></span>
       </div>
-      <input type="range" id="s-ag" min="0" max="10" step="1" value="1">
+      <input type="range" id="s-ag" min="0" max="5" step="1" value="1">
     </div>
 
     <div class="adm-subsec">MILESTONES</div>
@@ -1019,7 +1160,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span>MILESTONE XP <span class="sinfo" data-tip="Base XP for the first tile milestone (10k tiles). Each later milestone — 25k, 50k, 100k, 250k, … — is one-time per queen and grants proportionally more. 0 disables milestone rewards.">?</span></span>
         <span class="v"><span id="v-xptm">250</span></span>
       </div>
-      <input type="range" id="s-xptm" min="0" max="2000" step="50" value="250">
+      <input type="range" id="s-xptm" min="0" max="1000" step="50" value="250">
     </div>
   </div>
 </aside>
@@ -1034,12 +1175,24 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <span class="tog-track"><span class="tog-thumb"></span></span>
     ADMIN PANEL
   </label>
-  <span>V0.3 · CAPITOL=(0,0)</span>
+  <span>beta v1 (0.1)</span>
 </footer>
+
+<!-- MOBILE: backdrop behind the side-panel drawer (tap to close). Hidden on desktop. -->
+<div id="drawer-scrim" onclick="closeSidebar()"></div>
+
+<!-- MOBILE: fixed bottom nav (thumb zone). Hidden on desktop; reuses existing handlers. -->
+<nav id="mobile-nav" aria-label="Primary">
+  <button class="mnav-btn" id="mnav-shop" style="display:none" onclick="openShopWindow()"><span class="mic">🛒</span><span class="mlb">SHOP</span></button>
+  <button class="mnav-btn" onclick="openDiscoveryWindow()"><span class="mic">🧭</span><span class="mlb">DISC</span></button>
+  <button class="mnav-btn mnav-deploy" id="mnav-deploy" onclick="document.getElementById('btn-ant').click()"><span class="mic">▲</span><span class="mlb">DEPLOY</span></button>
+  <button class="mnav-btn" onclick="openSettingsWindow()"><span class="mic">⚙</span><span class="mlb">SET</span></button>
+  <button class="mnav-btn" onclick="openSidebar()"><span class="mic">☰</span><span class="mlb">MENU</span></button>
+</nav>
 
 <div id="spawn-screen">
   <div id="ss-header">
-    <span class="ss-logo">HIVE</span>
+    <span class="ss-logo">antarchy</span>
     <span class="ss-title">— CLAIM YOUR SPAWN POINT —</span>
     <div class="ss-player">
       <span class="ss-pswatch" id="ss-pswatch"></span>
@@ -1091,8 +1244,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 ●─●─●
  ╲│╱
   ▼</div>
-    <h2>WELCOME TO<br><em>THE HIVE.</em></h2>
-    <p class="tag">MADISON, WI · LOCAL DEMO</p>
+    <h2>WELCOME TO<br><em>ANTARCHY.</em></h2>
+    <p class="tag">PLANET-SCALE ANT WARFARE</p>
     <div class="step active" data-step="login">
       <label>USERNAME</label>
       <input id="li-u" type="text" placeholder="ANTLORD" maxlength="20" autocomplete="username">
@@ -1125,7 +1278,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">THIS CANNOT BE CHANGED LATER.</div>
       <div class="hue-picker" id="admin-hue-picker"></div>
       <div class="actions">
-        <button class="btn" onclick="doSetAdminColor()">ENTER HIVE →</button>
+        <button class="btn" onclick="doSetAdminColor()">ENTER ANTARCHY →</button>
       </div>
       <div class="err" id="admin-err"></div>
     </div>
@@ -1134,19 +1287,20 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
 <script>
 /* ===================================================================
-   HIVE CLIENT v0.3 — admin gating, Madison overlay, capitol origin
+   antarchy client — admin gating, geo overlay, world origin
    =================================================================== */
+// 8 muted starter colors — must match HUES in src/config.rs (same order, same count).
 const HUES = [
-  '#ff2e3f','#ff8c42','#ffb800','#f4d35e','#7fb069','#52b788',
-  '#43aa8b','#4d908e','#577590','#5e60ce','#7400b8','#9d4edd',
-  '#c77dff','#e0aaff','#ff70a6','#ff006e','#fb5607','#ffbe0b',
-  '#8338ec','#3a86ff','#06d6a0','#118ab2','#84a98c','#ef476f'
+  '#b5524a','#c08a52','#b8a24a','#6f8f5a',
+  '#4a8f86','#4a6f9c','#6b5b95','#8a8a8a'
 ];
 const $ = id => document.getElementById(id);
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 
 function fmtTicks(ticks) {
-  const hrs = Math.round(ticks / 360000);
+  const tr = me?.tickRate || 15;            // ticks → wall-clock depends on the tick rate
+  const hrs = Math.round(ticks / (tr * 3600));
+  if (hrs < 1) return Math.round(ticks / (tr * 60)) + 'm';
   if (hrs < 24) return hrs + 'h';
   const d = Math.floor(hrs / 24), h = hrs % 24;
   return h ? d + 'd ' + h + 'h' : d + 'd';
@@ -1191,6 +1345,7 @@ let zoomTarget=1;       // smooth zoom lerp target
 let panTarget=null;     // {x,y} smooth camera fly target, null when idle
 let vw=null;
 let palette={0:'#ffffff'};
+let knownNames={};      // playerId -> username; every queen seen this life stays identified until our queen dies
 let WORLD={w:2048, h:2048, geo:null, spawnX:1024, spawnY:1024, spawnPan:100};
 // Camera "home" used pre-spawn (and whenever geolocation is unavailable / denied / blocked):
 // tile coords of Mostar, Bosnia under the default projection (capitol 0,0, spawn = grid centre).
@@ -1366,7 +1521,7 @@ function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap
       const fog = fogCache[ci];
       if (fog >= 100) continue;
       const isOwn = t === myId;
-      const baseAlpha = placing ? (isOwn?230:38) : (isOwn?255:(showMap?102:255));
+      const baseAlpha = placing ? (isOwn?230:102) : (isOwn?255:(showMap?102:255));
       fogTile(d, (row*camW+col)*4, toRGB(palette[t]||'#9b3027'), baseAlpha, fog);
     }
   }
@@ -1747,6 +1902,9 @@ function applyViewFrame(f){
     }
   }
   if (me?.color) palette[me.id]=me.color;
+  // Remember every queen we've ever seen this life so their tiles/ants stay identified even after
+  // their queen leaves view — reset only when our own queen dies (see 'queen-dead'/'queen-placed').
+  if (vw?.queens) for (const q of vw.queens) if (q.username && q.username!=='???') knownNames[q.id]=q.username;
   // Sync HP/level into me.queen from viewport queens so the HUD stays accurate at 1 Hz me updates.
   if (me?.queen && vw?.queens) {
     const myQ=vw.queens.find(q=>q.id===me.id);
@@ -1764,7 +1922,7 @@ function applyViewFrame(f){
         const owner=vw.tiles[idx];
         const color=palette[owner]||'#888';
         const ownerQ=owner?vw.queens.find(q=>q.id===owner):null;
-        selectedTarget.data={...d,owner,color,username:ownerQ?.username||(owner?'???':null)};
+        selectedTarget.data={...d,owner,color,username:ownerQ?.username||knownNames[owner]||(owner?'???':null)};
       }
     }
     showInspectBox();
@@ -1867,6 +2025,7 @@ function handle(msg) {
     case 'welcome-back': showWelcomeBack(msg); break;
     case 'queen-placed':
       _queenPlaceCooldown = false;
+      knownNames={};   // fresh life: discard any enemy identities carried over
       $('death-screen').classList.remove('vis');
       mode='idle'; cvs.classList.remove('placing');
       stopForbiddenPoll(); hideSpawnScreen();
@@ -1878,6 +2037,7 @@ function handle(msg) {
       AudioEngine.queenShriek(0, 1);
       stopForbiddenPoll(); hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
       clearInspect();
+      knownNames={};   // a new life starts blind — re-identify enemies by seeing their queens again
       showDeathScreen(msg);
       break;
     case 'force-logout':
@@ -1894,11 +2054,11 @@ function handle(msg) {
       view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
       view.zoom=zoomTarget=1.0;
       stopForbiddenPoll();
-      if (!me.isAdmin) {
-        mode='place-queen'; cvs.classList.add('placing');
-        hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
-        doGeolocate();
-      }
+      // Re-enter placement for everyone. (The destructive WIPE now force-logs-out instead; the
+      // milder season wipe still lands here, and admins must be able to re-place too.)
+      mode='place-queen'; cvs.classList.add('placing');
+      hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+      doGeolocate();
       vw=null;
       if (tileCache){tileCache.fill(0);fogCache.fill(100);}
       builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
@@ -1922,20 +2082,26 @@ function handle(msg) {
     }
     case 'level-up':
       AudioEngine.levelUp(); break;
+    case 'unlock':
+      queueUnlock(msg.tier); break;
     case 'xp-gain': {
       const s=spatialFromWorld(msg.x, msg.y);
       AudioEngine.ziu(s.pan, s.vol);
-      spawnFloatingText('+'+Math.round(msg.amount)+' XP', msg.x, msg.y, '#ffb800'); break;
+      spawnFloatingText('+'+Math.round(msg.amount).toLocaleString()+' XP', msg.x, msg.y, '#ffb800'); break;
     }
     case 'damage-dealt': {
       const s=spatialFromWorld(msg.tx, msg.ty);
       AudioEngine.armorClank(s.pan, s.vol);
-      spawnFloatingText('-1', msg.tx, msg.ty, '#00b86b'); break;
+      spawnFloatingText('-'+Math.round(msg.amount), msg.tx, msg.ty, '#00b86b'); break;
     }
     case 'damage-taken': {
       const s=spatialFromWorld(msg.sx, msg.sy);
       AudioEngine.fleshHit(s.pan, s.vol);
-      spawnFloatingText('-1', msg.sx, msg.sy, '#ff2e3f'); break;
+      spawnFloatingText('-'+Math.round(msg.amount), msg.sx, msg.sy, '#ff2e3f'); break;
+    }
+    case 'heal': {
+      // Friendly ants healing your hurt queen — green +N over the queen (good for you).
+      spawnFloatingText('+'+Math.round(msg.amount), msg.hx, msg.hy, '#00b86b'); break;
     }
     case 'leaderboard': lbAll=msg.entries||[]; renderLeaderboard(); if(winIsOpen('lb')) renderLbWindow(); break;
   }
@@ -1943,7 +2109,11 @@ function handle(msg) {
 
 // ---- Reusable app window (leaderboard now; shop / discovery / admin / settings reuse it) ----
 let _winKind=null;
+// MOBILE: side-panel drawer toggle (no-ops visually on desktop, where .sidebar is static).
+function openSidebar(){ document.body.classList.add('drawer-open'); }
+function closeSidebar(){ document.body.classList.remove('drawer-open'); }
 function openWindow(title, kind){
+  closeSidebar();                 // don't stack a window on top of the open drawer
   $('win-title').textContent=title;
   $('win-body').innerHTML='';
   _winKind=kind||null;
@@ -1956,7 +2126,10 @@ function syncHdrBtns(){
   for (const k in map){ const b=$(map[k]); if(b) b.classList.toggle('on', _winKind===k); }
 }
 function winIsOpen(kind){ const bg=$('win-bg'); return !!bg && bg.style.display!=='none' && (!kind || _winKind===kind); }
-document.addEventListener('keydown', e=>{ if(e.key==='Escape' && winIsOpen()){ e.stopPropagation(); closeWindow(); } });
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape' && $('unlock-screen').classList.contains('vis')){ e.stopPropagation(); closePopup(); return; }
+  if(e.key==='Escape' && winIsOpen()){ e.stopPropagation(); closeWindow(); }
+});
 
 // ---- Leaderboard ----
 let lbAll=[], lbRegionFilter=null;
@@ -1976,12 +2149,14 @@ function renderLeaderboard(){
   if (top===0) html+='<div class="lb-empty">NO QUEENS YET</div>';
   for (let i=0;i<top;i++) html+=lbSimpleRow(lbAll[i], i+1, me&&lbAll[i].id===me.id);
   html+='</div>';
-  // 11th slot: always YOU + your rank
+  // 11th slot: show YOU + your rank ONLY when you're not already shown in the top 10.
   if (me){
     const idx=lbAll.findIndex(e=>e.id===me.id);
-    html+='<div class="lb-sep">— YOU —</div>';
-    if (idx>=0) html+=lbSimpleRow(lbAll[idx], idx+1, true);
-    else html+=`<div class="lb-row lb-me"><span class="lb-rank">#—</span><div class="lb-name"><span class="lb-swatch" style="background:${me.color||'#888'}"></span><span class="lb-name-text">${me.username||'YOU'}</span></div><span class="lb-tiles" style="color:var(--dim)">—</span></div>`;
+    if (idx<0 || idx>=10){
+      html+='<div class="lb-sep">— YOU —</div>';
+      if (idx>=10) html+=lbSimpleRow(lbAll[idx], idx+1, true);
+      else html+=`<div class="lb-row lb-me"><span class="lb-rank">#—</span><div class="lb-name"><span class="lb-swatch" style="background:${me.color||'#888'}"></span><span class="lb-name-text">${me.username||'YOU'}</span></div><span class="lb-tiles" style="color:var(--dim)">—</span></div>`;
+    }
   }
   html+='<button class="lb-expand" onclick="openLeaderboardWindow()">▦ FULL RANKINGS</button>';
   el.innerHTML=html;
@@ -2069,6 +2244,15 @@ function renderDiscoveryWindow(){
   </div>`;
   html+=`<div class="disc-chips" style="margin-bottom:12px">${contChips}</div>`;
   html+=`<div class="disc-chips">${chips(countries)}</div>`;
+  const riv=me.topRivalries||{};
+  const rivRows=arr=>(arr&&arr.length)
+    ? arr.map(r=>`<div class="disc-stat"><span>${String(r.name).toUpperCase()}</span><b>${r.count}</b></div>`).join('')
+    : '<div class="disc-empty">— no rivals yet —</div>';
+  html+='<div class="disc-sec">▸ TOP RIVALRIES</div>';
+  html+=`<div class="disc-cmp">
+    <div class="disc-col"><h4>☠ SLAIN YOU · ${riv.totalDeaths||0}</h4>${rivRows(riv.killedBy)}</div>
+    <div class="disc-col"><h4>⚔ YOU SLEW · ${riv.totalKills||0}</h4>${rivRows(riv.youKilled)}</div>
+  </div>`;
   html+='<div class="disc-sec">▸ USER vs QUEEN</div>';
   html+=`<div class="disc-cmp">
     <div class="disc-col user"><h4>◆ USER (ACCOUNT)</h4>
@@ -2089,12 +2273,72 @@ function renderDiscoveryWindow(){
 }
 
 // ---- Shop window (product cards, reuses the app window like Discovery) ----
+// ===== Progressive unlock gates — SINGLE SOURCE OF TRUTH (KEEP IN LOCKSTEP with GATE_* in src/config.rs) =====
+// Gating reads the player's PEAK level (highest ever reached; server-authoritative via me.peakLevel),
+// so unlocks persist across queen death / prestige. Locked features are FULLY omitted from the UI.
+const GATES = { shop:10, worker:20, shield:30, brute:40, relocate:50 };
+function peakLvl(){ return (me && me.peakLevel) || 0; }
+function isUnlocked(key){ return peakLvl() >= (GATES[key] || 0); }
+
+// ===== Reusable data-driven popup (title/sub/body/art + actions + dismiss). Reused for every unlock
+// tier now, and the tutorial later. actions: [{label, handler, primary}]. Title/body are trusted
+// (registry-defined) so innerHTML is intentional for the <em>/<b> accents. =====
+function showPopup({ title, sub='', body='', art='🎉', actions=[], dismissable=true }){
+  $('unlock-art').textContent=art;
+  $('unlock-title').innerHTML=title;
+  $('unlock-sub').textContent=sub;
+  $('unlock-body').innerHTML=body;
+  const wrap=$('unlock-actions'); wrap.innerHTML='';
+  for (const a of actions){
+    const b=document.createElement('button');
+    b.className='btn'+(a.primary?'':' secondary'); b.textContent=a.label;
+    b.onclick=()=>{ closePopup(); if (a.handler) a.handler(); };
+    wrap.appendChild(b);
+  }
+  if (dismissable){
+    const b=document.createElement('button');
+    b.className='btn secondary'; b.textContent = actions.length ? 'LATER' : 'CONTINUE ▸';
+    b.onclick=closePopup; wrap.appendChild(b);
+  }
+  AudioEngine.levelUp();
+  $('unlock-screen').classList.add('vis');
+}
+function closePopup(){
+  $('unlock-screen').classList.remove('vis');
+  if (_unlockQueue.length) showUnlockPopup(_unlockQueue.shift());   // chain queued tiers
+}
+
+// Unlock tier → popup content. Adding a tier later = one entry here + one GATES/config.rs line.
+const UNLOCK_CONTENT = {
+  10:{art:'🛒', title:'SHOP <em>UNLOCKED</em>', sub:'LEVEL 10 REACHED',
+      body:"The requisitions terminal is online.<br>Spend credits from queen kills &amp; new regions.<br><b>+1 FREE CREDIT</b> — try it on the Defender.",
+      actions:[{label:'OPEN SHOP', primary:true, handler:()=>{ _highlightDefender=true; openShopWindow(); }}]},
+  20:{art:'🐜', title:'WORKER <em>UNLOCKED</em>', sub:'LEVEL 20 REACHED',
+      body:'Buy <b>+1 inventory worker</b> for 10 CR<br>when your daily refill runs dry.'},
+  30:{art:'🛡️', title:'SHIELD <em>UNLOCKED</em>', sub:'LEVEL 30 REACHED',
+      body:'Wrap your queen in an absorbing shield.<br>Available now in the shop.'},
+  40:{art:'🦏', title:'BRUTE <em>UNLOCKED</em>', sub:'LEVEL 40 REACHED',
+      body:'Heavy 2×2 siege workers.<br>Deploy from the WORKERS panel or shop.'},
+  50:{art:'📍', title:'RELOCATE <em>UNLOCKED</em>', sub:'LEVEL 50 REACHED',
+      body:'Teleport your queen to any tile you pick.<br>Available now in the shop.'},
+};
+let _unlockQueue=[];
+let _highlightDefender=false;
+function showUnlockPopup(tier){ const c=UNLOCK_CONTENT[tier]; if (c) showPopup(c); }
+function queueUnlock(tier){
+  if (!UNLOCK_CONTENT[tier]) return;
+  if ($('unlock-screen').classList.contains('vis')) _unlockQueue.push(tier);
+  else showUnlockPopup(tier);
+}
+
+// `gate` = peak level required for the item to appear (KEEP IN LOCKSTEP with GATE_* in src/config.rs).
+// Ordered by gate so the shop reveals progressively as the player levels up.
 const SHOP_ITEMS=[
-  {id:'highway', ic:'🛣️', nm:'HIGHWAY',  pr:10, ds:'Carve a long painted highway in the direction you drag.'},
-  {id:'relocate',ic:'📍', nm:'RELOCATE', pr:20, ds:'Teleport your queen to a new tile you pick.'},
-  {id:'defender',ic:'🐜', nm:'DEFENDER', pr:1,  ds:'Spawn a stationary guard ant by your queen.'},
-  {id:'brute',   ic:'🦏', nm:'BRUTE',    pr:20, ds:'Deploy a heavy 2×2 worker that sieges enemy queens.'},
-  {id:'shield',  ic:'🛡️', nm:'SHIELD',   pr:10, ds:'Wrap your queen in a shield that absorbs damage.'},
+  {id:'defender',ic:'🐜', nm:'DEFENDER', pr:1,  gate:10, ds:'Spawn a stationary guard ant by your queen.'},
+  {id:'worker',  ic:'🐜', nm:'WORKER',   pr:10, gate:20, ds:'Add +1 worker to your inventory.'},
+  {id:'shield',  ic:'🛡️', nm:'SHIELD',   pr:10, gate:30, ds:'Wrap your queen in a shield that absorbs damage.'},
+  {id:'brute',   ic:'🦏', nm:'BRUTE',    pr:20, gate:40, ds:'Deploy a heavy 2×2 worker that sieges enemy queens.'},
+  {id:'relocate',ic:'📍', nm:'RELOCATE', pr:20, gate:50, ds:'Teleport your queen to a new tile you pick.'},
 ];
 function openShopWindow(){ AudioEngine.click(); openWindow('SHOP — REQUISITIONS','shop'); renderShopWindow(); }
 function renderShopWindow(){
@@ -2102,18 +2346,19 @@ function renderShopWindow(){
   if(!me){ el.innerHTML='<div class="disc-empty">CONNECTING…</div>'; return; }
   const cr=me.credits||0, q=me.queen, haveQ=!!(q&&!q.dead);
   let html=`<div class="shop-top"><div class="shop-cr">CREDITS<b>${cr}</b></div>
-    <div class="shop-note">+1 CR PER QUEEN KILL · CAP 100</div></div><div class="shop-grid">`;
+    <div class="shop-note">+1 CR PER QUEEN KILL</div></div><div class="shop-grid">`;
   for (const it of SHOP_ITEMS){
-    const need = it.id==='shield' ? (haveQ && !(me.shield>0)) : haveQ;
+    if (peakLvl() < (it.gate||0)) continue;   // locked → fully omitted (no card, no hint)
+    const need = it.id==='worker' ? true : (it.id==='shield' ? (haveQ && !(me.shield>0)) : haveQ);
     const dis = cr<it.pr || !need;
-    html+=`<div class="shop-card"><div class="shop-ic">${it.ic}</div>
+    const hot = (it.id==='defender' && _highlightDefender) ? ' shop-hot' : '';
+    html+=`<div class="shop-card${hot}"><div class="shop-ic">${it.ic}</div>
       <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
       <div class="shop-pr">${it.pr} CR</div>
       <button class="shop-buy" ${dis?'disabled':''} onclick="shopWindowBuy('${it.id}')">BUY</button></div>`;
   }
-  html+=`<div class="shop-card wip"><div class="shop-ic">🤝</div>
-    <div class="shop-nm">ALLIANCE</div><div class="shop-ds">Team up with a rival queen. Coming soon.</div>
-    <div class="shop-pr">80 CR</div><button class="shop-buy" disabled>SOON</button></div></div>`;
+  _highlightDefender=false;   // one-shot nudge — clear after rendering
+  html+=`</div>`;
   const dCount=me.defenders||0;
   if (dCount>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--blu);margin-top:14px;text-align:center;">DEFENDERS QUEUED: ${dCount}</div>`;
   if (!haveQ) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--red);margin-top:14px;text-align:center;">DEPLOY A QUEEN TO PURCHASE</div>`;
@@ -2122,7 +2367,7 @@ function renderShopWindow(){
 function shopWindowBuy(item){
   shopBuy(item); // handles credit/queen checks + placement modes + sounds
   // Placement items need the map — get the window out of the way.
-  if (item==='highway'||item==='relocate'||item==='brute') closeWindow();
+  if (item==='relocate'||item==='brute') closeWindow();
   else if (winIsOpen('shop')) renderShopWindow();
 }
 
@@ -2261,12 +2506,12 @@ function updateHUD() {
     $('xp-fill').style.width=pct+'%';
     $('xp-val').textContent=into.toLocaleString()+'/'+span.toLocaleString();
     // If we ran out of ants while in sticky place mode, exit it
-    if (me.antsAvail<=0 && (mode==='place-ant-down' || mode==='place-ant-drag')) {
+    if (!me.unlimitedAnts && me.antsAvail<=0 && (mode==='place-ant-down' || mode==='place-ant-drag')) {
       exitPlaceMode();
       toast('OUT OF ANTS — PLACE MODE OFF');
     }
   }
-  $('ants-avail').textContent=me.antsAvail;
+  $('ants-avail').textContent=me.unlimitedAnts?'∞':me.antsAvail;
   // Workers panel: live ARMY / cap readout + bar + deploy-button state.
   const army=me.army||0, cap=me.cfg?.ARMY_CAP||0;
   const wkArmy=$('wk-army');
@@ -2278,6 +2523,15 @@ function updateHUD() {
   const total=me.nextRefillMs||0;
   const rh=(total/3600000)|0, rm=((total%3600000)/60000)|0, rs=((total%60000)/1000)|0;
   $('refill-timer').textContent=`${String(rh).padStart(2,'0')}:${String(rm).padStart(2,'0')}:${String(rs).padStart(2,'0')}`;
+  // ---- Progressive unlock visibility (desktop header + mobile nav + sidebar; one gate config) ----
+  const shopOn=isUnlocked('shop');
+  if ($('hbtn-shop')) $('hbtn-shop').style.display = shopOn?'':'none';
+  if ($('mnav-shop')) $('mnav-shop').style.display = shopOn?'':'none';
+  const wkBrute=$('wk-type-brute');
+  if (wkBrute){
+    wkBrute.style.display = isUnlocked('brute')?'':'none';
+    if (!isUnlocked('brute') && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
+  }
 }
 
 /* CANVAS */
@@ -2365,7 +2619,7 @@ function showInspectBox() {
     const prestigeRow = q.prestige > 0 ? `<div class="inspect-row"><span>PRESTIGE</span><span style="margin-left:auto;color:var(--yel)">P${q.prestige}</span></div>` : '';
     const creditsRow = q.id===me?.id ? `<div class="inspect-row"><span>CREDITS</span><span style="margin-left:auto;color:var(--grn)">${(me.credits||0).toLocaleString()}</span></div>` : '';
     rowsHtml = `
-      <div class="inspect-row"><span class="inspect-swatch" style="background:${col}"></span><span>${q.username||'???'}</span></div>
+      <div class="inspect-row"><span class="inspect-swatch" style="background:${col}"></span><span>${q.username||knownNames[q.id]||'???'}</span></div>
       <div class="inspect-row"><span>HP</span><span style="margin-left:auto">${q.hp}/${q.maxHp}</span></div>
       <div class="inspect-row"><span>LEVEL</span><span style="margin-left:auto">${q.level||1}</span></div>
       ${prestigeRow}
@@ -2436,7 +2690,7 @@ function inspectAtTile(tile) {
     const [,ax,ay,adx,ady,owner] = ant;
     const color = (vw.palette||palette)[owner] || '#888';
     const ownerQ = vw.queens.find(q => q.id===owner);
-    selectedTarget = {type:'ant', data:{x:ax,y:ay,dx:adx,dy:ady,owner,color,username:ownerQ?.username||'???'}};
+    selectedTarget = {type:'ant', data:{x:ax,y:ay,dx:adx,dy:ady,owner,color,username:ownerQ?.username||knownNames[owner]||'???'}};
     showInspectBox(); return;
   }
   const idx = (tile.y-vw.y0)*vw.w + (tile.x-vw.x0);
@@ -2444,7 +2698,7 @@ function inspectAtTile(tile) {
     const owner = vw.tiles[idx];
     const color = (vw.palette||palette)[owner] || '#888';
     const ownerQ = owner ? vw.queens.find(q => q.id===owner) : null;
-    selectedTarget = {type:'tile', data:{x:tile.x,y:tile.y,owner,color,username:ownerQ?.username||(owner?'???':null)}};
+    selectedTarget = {type:'tile', data:{x:tile.x,y:tile.y,owner,color,username:ownerQ?.username||knownNames[owner]||(owner?'???':null)}};
     showInspectBox();
   } else {
     clearInspect();
@@ -2869,6 +3123,31 @@ function render() {
   }
 
 
+  // 4b) Placement-range glow — a soft radial fade in the queen's colour that ends exactly at the
+  //     placement boundary (bubbleR). Drawn *under* the queens/ants so it reads as a ground aura:
+  //     the opaque queen body covers the brightest core, leaving a halo that's brightest right at
+  //     the queen and fades to fully transparent at the edge. Only present for your own queen
+  //     (the server hides others' bubbleR), so it marks where YOU can still place.
+  for (const q of v.queens) {
+    if (!q.bubbleR) continue;
+    const col = q.color;                          // "#rrggbb"
+    if (col.length !== 7) continue;               // need 6-digit hex for the alpha-suffix stops
+    const cx2 = offX + (q.x + q.size/2 - v.x0) * cp;
+    const cy2 = offY + (q.y + q.size/2 - v.y0) * cp;
+    const R = q.bubbleR * cp;
+    if (R < 3) continue;                          // negligible when zoomed far out
+    const g = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, R);
+    g.addColorStop(0.00, col + '66');             // brightest near the queen
+    g.addColorStop(0.40, col + '33');
+    g.addColorStop(0.80, col + '14');
+    g.addColorStop(1.00, col + '00');             // fully transparent exactly at the boundary
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';     // additive → a soft bloom, not a flat tint
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx2, cy2, R, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+
   // 5) Queens
   for (const q of v.queens) {
     const px=offX+(q.x-v.x0)*cp, py=offY+(q.y-v.y0)*cp;
@@ -2896,24 +3175,18 @@ function render() {
       ctx.fillText('♛', px+qw/2, py+qw/2);
     }
     if (cp>=4) {
-      ctx.fillStyle='#0d0d0d'; ctx.fillRect(px,py-5,qw,3);
-      ctx.fillStyle='#ff2e3f';  ctx.fillRect(px,py-5,qw*(q.hp/q.maxHp),3);
+      // Hide the HP bar at full health; clamp ratios so a bar never over/under-draws.
+      const hpFrac=Math.max(0,Math.min(1,q.hp/q.maxHp));
+      if (hpFrac<1) {
+        ctx.fillStyle='#0d0d0d'; ctx.fillRect(px,py-5,qw,3);
+        ctx.fillStyle='#ff2e3f'; ctx.fillRect(px,py-5,qw*hpFrac,3);
+      }
       if (q.shield>0) {
+        const shFrac=Math.max(0,Math.min(1,q.shield/q.maxHp));
         ctx.fillStyle='#4488ff';
-        ctx.fillRect(px,py-9,qw*(q.shield/q.maxHp),3);
+        ctx.fillRect(px,(hpFrac<1?py-9:py-5),qw*shFrac,3);
       }
     }
-  }
-
-  // 6) Bubble outlines — only visible if server included bubbleR (own queen
-  //    or admin viewing). Others' bubbles are server-hidden.
-  for (const q of v.queens) {
-    if (!q.bubbleR) continue;
-    const cx2=offX+(q.x+q.size/2-v.x0)*cp;
-    const cy2=offY+(q.y+q.size/2-v.y0)*cp;
-    ctx.strokeStyle=q.color+'cc'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
-    ctx.beginPath(); ctx.arc(cx2,cy2,q.bubbleR*cp,0,Math.PI*2); ctx.stroke();
-    ctx.setLineDash([]);
   }
 
   // 7) Ants — dark colony-color square + 2 eyes facing direction (with position lerp)
@@ -3157,11 +3430,6 @@ cvs.addEventListener('mousedown', e => {
     if (!tile) return;
     send({t:'shop-buy',item:'relocate',x:tile.x,y:tile.y});
     exitShopMode();
-  } else if (mode==='shop-highway') {
-    // First click: set origin; second mouseup after drag: send with direction
-    shopOrigin=tile; shopDir=[1,1];
-    mode='shop-highway-drag';
-    dragFrom={px:e.clientX-r.left, py:e.clientY-r.top, raw:{x:e.clientX,y:e.clientY}};
   } else if (mode==='shop-brute') {
     shopOrigin=tile; shopDir=[0,-1];
     mode='shop-brute-drag';
@@ -3206,7 +3474,7 @@ window.addEventListener('mousemove', e => {
     const dx=cx_-dragFrom.px, dy=cy_-dragFrom.py;
     antPlaceDir=snapDir(dx, dy);
     showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
-  } else if ((mode==='shop-highway-drag'||mode==='shop-brute-drag') && dragFrom) {
+  } else if (mode==='shop-brute-drag' && dragFrom) {
     const r=cvs.getBoundingClientRect();
     const cx_=e.clientX-r.left, cy_=e.clientY-r.top;
     shopDir=snapDir(cx_-dragFrom.px, cy_-dragFrom.py);
@@ -3236,11 +3504,6 @@ window.addEventListener('mouseup', () => {
     // If the player runs out of ants, exitPlaceMode() is called on the next 'me' update.
     mode='place-ant-down';
     dragFrom = null;
-  }
-  if (mode==='shop-highway-drag' && dragFrom && shopOrigin) {
-    $('dir-overlay').style.display='none';
-    send({t:'shop-buy',item:'highway',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
-    dragFrom=null; exitShopMode();
   }
   if (mode==='shop-brute-drag' && dragFrom && shopOrigin) {
     $('dir-overlay').style.display='none';
@@ -3389,12 +3652,21 @@ function _onTouchEnd(e){
 cvs.addEventListener('touchend',   _onTouchEnd, {passive:false});
 cvs.addEventListener('touchcancel',_onTouchEnd, {passive:false});
 
+// MOBILE: mirror the deploy button's placing/idle state onto the bottom-nav DEPLOY button.
+function syncMnavDeploy(active){
+  const md=document.getElementById('mnav-deploy'); if(!md) return;
+  md.classList.toggle('active', !!active);
+  md.querySelector('.mic').textContent = active ? '■' : '▲';
+  md.querySelector('.mlb').textContent = active ? 'STOP' : 'DEPLOY';
+}
 function enterPlaceMode() {
+  closeSidebar();                 // MOBILE: reveal the map so the player can aim & drop
   mode='place-ant-down'; cvs.classList.add('placing');
   $('prompt').style.display='block'; $('prompt').textContent='CLICK & DRAG TO PLACE · CLICK BUTTON AGAIN TO STOP';
   $('drag-hint').style.display='block';
   $('btn-ant').classList.add('active');
   $('btn-ant').textContent='■ STOP PLACING';
+  syncMnavDeploy(true);
 }
 function exitPlaceMode() {
   if (mode==='place-ant-down' || mode==='place-ant-drag') {
@@ -3403,6 +3675,7 @@ function exitPlaceMode() {
     $('btn-ant').classList.remove('active');
     $('btn-ant').textContent='+ DEPLOY WORKER';
     $('dir-overlay').style.display='none';
+    syncMnavDeploy(false);
   }
 }
 
@@ -3411,6 +3684,8 @@ let shopItem=null, shopOrigin=null, shopDir=[1,1];
 
 function shopBuy(item) {
   AudioEngine.click();
+  // Worker is a stock top-up — instant, no live queen required.
+  if (item==='worker') { send({t:'shop-buy',item}); return; }
   if (!me || !me.queen || me.queen.dead) return toast('Need a live queen');
   // Instant items
   if (item==='defender') { send({t:'shop-buy',item}); return; }
@@ -3419,8 +3694,8 @@ function shopBuy(item) {
   shopItem=item;
   mode='shop-'+item;
   cvs.classList.add('placing');
-  const labels={highway:'Click start tile, drag diagonal direction',
-    relocate:'Click new queen position', brute:'Click start tile, drag direction'};
+  closeSidebar();                 // MOBILE: reveal the map for placement (brute / relocate)
+  const labels={relocate:'Click new queen position', brute:'Click start tile, drag direction'};
   $('prompt').style.display='';
   $('prompt').textContent=labels[item]||'Click to place';
 }
@@ -3492,11 +3767,12 @@ function updateDeployBtn() {
   if (workerType==='brute') {
     const cr=me?.credits||0;
     b.textContent='+ DEPLOY BRUTE · 20CR';
-    b.disabled=!haveQ||cr<20;
+    b.disabled=!haveQ||(!me?.unlimitedCredits && cr<20);
   } else {
     b.textContent='+ DEPLOY WORKER';
-    b.disabled=!haveQ||(me?.antsAvail||0)<=0;
+    b.disabled=!haveQ||(!me?.unlimitedAnts && (me?.antsAvail||0)<=0);
   }
+  const md=document.getElementById('mnav-deploy'); if(md) md.disabled=b.disabled;  // MOBILE mirror
 }
 $('btn-ant').onclick=()=>{
   AudioEngine.click();
@@ -3504,10 +3780,10 @@ $('btn-ant').onclick=()=>{
   if (mode==='place-ant-down' || mode==='place-ant-drag') { exitPlaceMode(); return; }
   if (mode.startsWith('shop-brute')) { exitShopMode(); updateDeployBtn(); return; }
   if (workerType==='brute') {
-    if ((me.credits||0)<20) return toast('NEED 20 CREDITS');
+    if (!me.unlimitedCredits && (me.credits||0)<20) return toast('NEED 20 CREDITS');
     shopBuy('brute');
   } else {
-    if ((me.antsAvail||0)<=0) return toast('NO ANTS LEFT');
+    if (!me.unlimitedAnts && (me.antsAvail||0)<=0) return toast('NO ANTS LEFT');
     enterPlaceMode();
   }
 };
@@ -3522,29 +3798,30 @@ function toggleAntList() {
 }
 function fmtCountdown(secs) {
   const h=(secs/3600)|0, m=((secs%3600)/60)|0, s=secs%60;
-  if (h>0) return `${h}h${String(m).padStart(2,'0')}`;
-  if (m>0) return `${m}m${String(s).padStart(2,'0')}`;
-  return `${s}s`;
+  const pad=n=>String(n).padStart(2,'0');
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 function renderAntList() {
   if (!antListOpen) return;
   const el=$('wk-list'); if (!el) return;
-  const ants=me?.ants||[], life=me?.cfg?.LIFESPAN||1, tr=me?.tickRate||50;
+  const ants=me?.ants||[], life=me?.cfg?.LIFESPAN||1, tr=me?.tickRate||15;
   if (!ants.length) {
     el.innerHTML='<div style="font-family:\'Press Start 2P\',monospace;font-size:6px;color:var(--dim);padding:8px 2px;text-align:center;">NO ACTIVE WORKERS</div>';
     return;
   }
+  const SHOWN=6;                       // keep the list short so it never needs a scrollbar; the rest roll up into "+N MORE"
+  const shown=ants.slice(0,SHOWN);
   let html='';
-  for (const a of ants) {
+  for (const a of shown) {
     const rem=a[1], kind=a[2];
-    const frac=Math.max(0,Math.min(1,rem/life));
+    const frac=Math.max(0,Math.min(1,1-rem/life));  // fills up as the worker ages toward its 24h return
     const secs=Math.max(0,(rem/tr)|0);
     const ic=kind===1?'◼':'▴';
     html+=`<div class="wk-ant${kind===1?' brute':''}"><span class="wk-ant-ic">${ic}</span>`
       +`<span class="wk-ant-bar"><span class="wk-ant-fill" style="width:${(frac*100).toFixed(1)}%"></span></span>`
       +`<span class="wk-ant-t">${fmtCountdown(secs)}</span></div>`;
   }
-  const more=(me?.army||0)-ants.length;
+  const more=(me?.army||0)-shown.length;
   if (more>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);text-align:center;padding:4px;">+${more} MORE</div>`;
   el.innerHTML=html;
 }
@@ -3688,12 +3965,37 @@ function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants, qx, q
   $('adm-tgt-hp-text').textContent=`${hp}/${maxHp} HP`;
   if ($('atgt-setlvl')) $('atgt-setlvl').value=level;
   if ($('atgt-setants')) $('atgt-setants').value=ants;
+  const tp=admPlayers.find(x=>x.id===pid);
+  admUpdUnlimBtns(tp?tp.unlimitedCredits:false, tp?tp.unlimitedAnts:false);
+}
+function admUpdUnlimBtns(cr, ant) {
+  const bc=$('atgt-unlim-cr'), ba=$('atgt-unlim-ant');
+  if (bc){ bc.textContent='∞ CR: '+(cr?'ON':'OFF'); bc.classList.toggle('on',!!cr); }
+  if (ba){ ba.textContent='∞ ANTS: '+(ant?'ON':'OFF'); ba.classList.toggle('on',!!ant); }
+}
+function admToggleUnlim(kind) {
+  if (admTargetId==null) return; AudioEngine.click();
+  send({t:'admin-target',action:kind==='credits'?'unlimited-credits':'unlimited-ants',targetId:admTargetId});
+  // Optimistic flip + cache update; the server also echoes an event toast.
+  const tp=admPlayers.find(x=>x.id===admTargetId);
+  if (tp){ if(kind==='credits') tp.unlimitedCredits=!tp.unlimitedCredits; else tp.unlimitedAnts=!tp.unlimitedAnts;
+    admUpdUnlimBtns(tp.unlimitedCredits, tp.unlimitedAnts); }
 }
 
 function admClearTarget() {
   admTargetId=null; admTargetQueenX=null; admTargetQueenY=null;
   if ($('adm-no-tgt')) $('adm-no-tgt').style.display='';
   if ($('adm-tgt')) $('adm-tgt').style.display='none';
+}
+
+// After a removal action (delete-queen / kick / ban): drop the target from the cached list
+// and re-render immediately, then ask the server for an authoritative refresh. NPCs are purged
+// from world.players server-side, so without this the (now-gone) row lingers until the next
+// players-tab visit — the players-tab auto-refresh interval is cleared while on the target tab.
+function admDropTargetFromList(pid) {
+  admPlayers=admPlayers.filter(p=>p.id!==pid);
+  admFilterPlayers();
+  admRefreshPlayers();
 }
 
 function admIsLight(hex) {
@@ -3741,21 +4043,24 @@ $('atgt-del').onclick=()=>{
   if (admTargetId==null) return;
   if (!confirm('Delete this queen?')) return;
   AudioEngine.click();
-  send({t:'admin-target',action:'delete-queen',targetId:admTargetId});
-  clearInspect(); toast('QUEEN DELETED');
+  const pid=admTargetId;
+  send({t:'admin-target',action:'delete-queen',targetId:pid});
+  clearInspect(); toast('QUEEN DELETED'); admDropTargetFromList(pid);
 };
 $('atgt-kick').onclick=()=>{
   if (admTargetId==null) return;
   if (!confirm('Kick this player?')) return;
   AudioEngine.click();
-  send({t:'admin-kick',targetId:admTargetId}); toast('PLAYER KICKED');
+  const pid=admTargetId;
+  send({t:'admin-kick',targetId:pid}); toast('PLAYER KICKED'); admDropTargetFromList(pid);
 };
 $('atgt-ban').onclick=()=>{
   if (admTargetId==null) return;
   if (!confirm('Ban this player?')) return;
   AudioEngine.click();
-  send({t:'admin-target',action:'ban-player',targetId:admTargetId});
-  clearInspect(); toast('PLAYER BANNED');
+  const pid=admTargetId;
+  send({t:'admin-target',action:'ban-player',targetId:pid});
+  clearInspect(); toast('PLAYER BANNED'); admDropTargetFromList(pid);
 };
 
 /* Exact-value target actions */
@@ -3869,7 +4174,6 @@ bindSlider('s-hp','HP_BASE','v-hp');
 bindSlider('s-hr','HP_REGEN','v-hr');
 bindSlider('s-sp','SPAWN_PAN','v-sp');
 bindSlider('s-ad','ANT_DAMAGE','v-ad');
-bindSlider('s-ah','ANT_HZ','v-ah');
 bindSlider('s-xpb','XP_BASE','v-xpb');
 bindSlider('s-xpe','XP_EXP','v-xpe');
 bindSlider('s-xpk','XP_KILL','v-xpk');
@@ -3884,12 +4188,12 @@ $('s-cp').addEventListener('input',()=>{
 });
 
 function updateXpPreview() {
-  const base=parseFloat($('s-xpb')?.value||500);
-  const exp=parseFloat($('s-xpe')?.value||2.2);
-  const l100=Math.floor(base*Math.pow(99,exp));
+  const base=parseFloat($('s-xpb')?.value||100);
+  const rate=parseFloat($('s-xpe')?.value||1.07);
+  // Cumulative XP to reach L100 = sum of per-level costs base·rate^k (k=0..98) — the geometric sum,
+  // matching the server's total_xp_for_level. (rate≈1 degenerates to linear.)
+  const l100=Math.floor(Math.abs(rate-1)<1e-9 ? base*99 : base*(Math.pow(rate,99)-1)/(rate-1));
   const el=$('adm-xp-preview');
-  // Tile XP is now milestone-based (one-time, non-linear), so the old "≈ N tiles" estimate
-  // no longer holds — show just the L100 XP requirement.
   if (el) el.textContent=`L100: ${l100.toLocaleString()} XP`;
 }
 updateXpPreview();
@@ -3974,7 +4278,7 @@ document.addEventListener('keydown', e => {
       if (!me) break;
       AudioEngine.click();
       if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
-      else if (me.antsAvail>0 && me.queen && !me.queen.dead) enterPlaceMode();
+      else if ((me.unlimitedAnts||me.antsAvail>0) && me.queen && !me.queen.dead) enterPlaceMode();
       break;
     case 'Escape':
       AudioEngine.click();

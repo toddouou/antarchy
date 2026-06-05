@@ -67,6 +67,12 @@ async fn root_handler(
     }
 }
 
+static FAVICON: &[u8] = include_bytes!("../favicon.png");
+
+async fn favicon_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], FAVICON)
+}
+
 async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
     let w = app.world.read().await;
 
@@ -638,16 +644,31 @@ pub fn snapshot_writer_loop(world: WorldState) {
     loop {
         std::thread::sleep(interval);
 
-        // Phase A1 (write lock, brief): drain the dirty keys, snapshot epoch + colors.
-        let (epoch, keys, colors): (u64, Vec<u64>, FxHashMap<u32, [u8; 3]>) = {
+        // Phase A1 (write lock, brief): drain the dirty keys + the wipe retire-queue, snapshot
+        // epoch + colors.
+        let (epoch, keys, retire, colors): (u64, Vec<u64>, Vec<u64>, FxHashMap<u32, [u8; 3]>) = {
             let mut w = world.blocking_write();
             let keys = w.tiles.drain_dirty_chunks();
+            let retire = std::mem::take(&mut w.snapshot_retire);
             let mut colors = FxHashMap::default();
             for (&id, p) in &w.players {
                 colors.insert(id, crate::snapshot::parse_hex_color(&p.color));
             }
-            (w.epoch, keys, colors)
+            (w.epoch, keys, retire, colors)
         };
+
+        // Wipe cleanup: a rolled epoch orphaned its whole tile generation on R2 — delete the prefix.
+        // Run off-lock, and before the empty-keys early-out so a wipe that left no dirty chunks still
+        // reclaims space. Race-free: this thread already finished any in-flight old-epoch uploads in a
+        // prior cycle, and the epoch has rolled, so nothing re-creates these keys.
+        for old in retire {
+            let prefix = format!("snap/{old}/");
+            match sink.delete_prefix(&prefix) {
+                Ok(n)  => println!("[snapshot] wipe cleanup: deleted {n} objects under {prefix}"),
+                Err(e) => eprintln!("[snapshot] wipe cleanup {prefix} failed: {e}"),
+            }
+        }
+
         if keys.is_empty() { continue; }
 
         // Phase A2 (read lock, shared with viewport): clone the dirty chunks to owner-id form.
@@ -656,18 +677,26 @@ pub fn snapshot_writer_loop(world: WorldState) {
             crate::snapshot::snapshot_dirty(&w.tiles, &keys)
         };
 
-        // Phase B (no lock): rasterize + upload.
+        // Phase B (no lock): rasterize + upload painted chunks; delete chunks that went fully empty.
+        // A chunk that merely lost one (dead) owner but still has others snapshots as Dense/Uniform
+        // here → it takes the `put` branch and is re-uploaded *regenerated* (the dead owner's cells
+        // render transparent, survivors intact). Only a chunk with zero remaining owners is `Empty`
+        // → its tile is deleted so R2 storage tracks live territory.
         let start = Instant::now();
-        let (mut ok, mut fail) = (0u32, 0u32);
+        let (mut ok, mut del, mut fail) = (0u32, 0u32, 0u32);
         for (cx, cy, snap) in &snaps {
-            let png = crate::snapshot::rasterize_chunk(snap, &colors);
             let key = format!("snap/{epoch}/0/{cx}/{cy}.png");
-            match sink.put(&key, &png) {
-                Ok(())  => ok += 1,
-                Err(e)  => { fail += 1; if fail <= 3 { eprintln!("[snapshot] put {key} failed: {e}"); } }
+            let res = match snap {
+                crate::snapshot::ChunkSnap::Empty => sink.delete(&key),
+                _ => sink.put(&key, &crate::snapshot::rasterize_chunk(snap, &colors)),
+            };
+            match (res, snap) {
+                (Ok(()), crate::snapshot::ChunkSnap::Empty) => del  += 1,
+                (Ok(()), _)                                 => ok   += 1,
+                (Err(e), _) => { fail += 1; if fail <= 3 { eprintln!("[snapshot] {key} failed: {e}"); } }
             }
         }
-        println!("[snapshot] epoch {epoch}: uploaded {ok} chunks ({fail} failed) in {:?}", start.elapsed());
+        println!("[snapshot] epoch {epoch}: uploaded {ok}, deleted {del} ({fail} failed) in {:?}", start.elapsed());
     }
 }
 
@@ -755,6 +784,7 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
 
     let app = Router::new()
         .route("/",           get(root_handler))
+        .route("/favicon.png", get(favicon_handler))
         .route("/health",     get(health_handler))
         .route("/world-info", get(world_info_handler))
         .route("/egress-stats", get(egress_stats_handler))

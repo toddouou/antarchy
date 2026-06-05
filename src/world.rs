@@ -7,7 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
 use crate::auth::Auth;
-use crate::config::{max_hp_for_level, queen_size_for_level, Config};
+use crate::config::{bubble_r_for_level, max_hp_for_level, queen_size_for_level, Config};
 use crate::tile_map::TileMap;
 
 /// Phase-4 per-connection egress meter: a sliding byte counter incremented by the WS write task at
@@ -115,13 +115,15 @@ pub struct Queen {
 }
 
 impl Queen {
-    /// Apply a level change consistently: set `level`, derive the footprint `size`, and the
-    /// `max_hp` ceiling. Callers still set `hp`/`xp`/ant grants per their own policy. Centralising
-    /// this stops a caller changing `level` but forgetting `size` (which desyncs the queen map).
+    /// Apply a level change consistently: set `level`, derive the footprint `size`, the `max_hp`
+    /// ceiling, and the placement-bubble `bubble_r` (which grows with level). Callers still set
+    /// `hp`/`xp`/ant grants per their own policy. Centralising this stops a caller changing `level`
+    /// but forgetting `size` (which desyncs the queen map) or `bubble_r` (which desyncs the glow).
     pub fn set_level(&mut self, lvl: u16, c: &Config) {
-        self.level  = lvl;
-        self.size   = queen_size_for_level(lvl);
-        self.max_hp = max_hp_for_level(lvl, c);
+        self.level    = lvl;
+        self.size     = queen_size_for_level(lvl);
+        self.max_hp   = max_hp_for_level(lvl, c);
+        self.bubble_r = bubble_r_for_level(lvl, c);
     }
 }
 
@@ -169,6 +171,16 @@ pub struct Player {
     pub lifetime_kills:      u32,
     pub lifetime_peak_tiles: u64,
     pub queens_fielded:      u32,
+    // ---- Admin god-mode (per-target toggles; persisted) ----
+    /// When set, this player never spends credits (shop is free).
+    pub unlimited_credits:   bool,
+    /// When set, this player has an infinite worker pool (no ants_avail / army_cap gating).
+    pub unlimited_ants:      bool,
+    // ---- Rivalries (account-level, keyed by rival username; survive queen death) ----
+    /// How many times each named rival's queen has slain THIS account's queen.
+    pub killed_by:           FxHashMap<String, u32>,
+    /// How many times THIS account's queen has slain each named rival's queen.
+    pub kills_of:            FxHashMap<String, u32>,
     /// Snapshot taken at disconnect; diffed on reconnect for the welcome-back summary.
     pub away:                Option<AwaySnapshot>,
 }
@@ -260,6 +272,10 @@ pub struct World {
     /// serves a fresh tile set instead of a stale cached one. Bumped on wipe + restore; not persisted
     /// (the canvas is re-uploaded under a fresh epoch each boot). Seconds-resolution time seed.
     pub epoch: u64,
+    /// Phase-6 R2 cleanup queue: epochs whose tile generation is now orphaned (set on wipe, when the
+    /// epoch rolls). The snapshot writer thread drains this and deletes `snap/{epoch}/` off-lock, so
+    /// a wipe reclaims R2 space instead of leaking the whole previous canvas. Transient; not persisted.
+    pub snapshot_retire: Vec<u64>,
 }
 
 /// Capacity of the tick-duration ring (≈ a few seconds of history at 50 Hz).
@@ -296,6 +312,7 @@ impl World {
             tick_ms_ring:    Vec::with_capacity(TICK_RING_CAP),
             tick_ms_pos:     0,
             epoch:           current_ms() / 1000,
+            snapshot_retire: Vec::new(),
         }
     }
 
@@ -303,6 +320,18 @@ impl World {
     /// wipe and on persist-restore so clients never composite a stale season's R2 tiles.
     pub fn fresh_epoch(&mut self) {
         self.epoch = crate::config::current_ms() / 1000;
+    }
+
+    /// Roll to a fresh epoch **and** queue the outgoing one for R2 deletion. Used by the wipe paths:
+    /// once the epoch rolls, every `snap/{old}/…` tile is orphaned, so the snapshot writer should
+    /// reclaim it. (Plain `fresh_epoch` is kept for the restart/restore path, which intentionally
+    /// leaves the prior tiles in place as a reconnect fallback until the new epoch re-uploads.)
+    pub fn rotate_epoch_retiring_old(&mut self) {
+        let old = self.epoch;
+        self.fresh_epoch();
+        if self.epoch != old {
+            self.snapshot_retire.push(old);
+        }
     }
 
     /// Record one tick-window duration into the ring (overwrites oldest once full).
@@ -470,5 +499,8 @@ mod tests {
         assert_eq!(q.level, 25);
         assert_eq!(q.size, queen_size_for_level(25));
         assert_eq!(q.max_hp, max_hp_for_level(25, &c));
+        // bubble_r scales with level, so it should match the formula and exceed the L1 base.
+        assert_eq!(q.bubble_r, bubble_r_for_level(25, &c));
+        assert!(q.bubble_r > c.bubble_r, "range should grow past the L1 base");
     }
 }

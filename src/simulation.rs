@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::config::{
     cfg, level_for_xp, current_ms, ENEMY_HUES,
     BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE, TILE_MILESTONES,
+    GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE,
 };
 use crate::world::{Ant, MetroHolder, Player, Queen, QueenHit, World, XpGrant};
 
@@ -67,9 +68,7 @@ pub fn flush_xp(world: &mut World) {
 
         if let Some((old_lvl, new_lvl)) = level_up_result {
             let ants_gained = (new_lvl - old_lvl) as i32 * c.levelup_ant_grant;
-            if let Some(p) = world.players.get_mut(&g.player_id) {
-                p.ants_avail += ants_gained;
-            }
+            if let Some(p) = world.players.get_mut(&g.player_id) { p.ants_avail += ants_gained; }
             world.queen_map_dirty = true;
             let tx = world.players.get(&g.player_id).and_then(|p| p.tx.clone());
             if let Some(tx) = tx {
@@ -78,6 +77,47 @@ pub fn flush_xp(world: &mut World) {
                 }).to_string());
                 let _ = tx.send(json!({"t":"level-up","level":new_lvl}).to_string());
             }
+            // Progressive unlocks + one-time starter credit. Shared with the admin level/xp tools so
+            // gates + popups behave identically however a player reaches a tier.
+            apply_peak_unlocks(world, g.player_id, new_lvl);
+        }
+    }
+}
+
+/// Raise a USER's persisted `peak_level` toward `new_lvl`, emitting one `unlock` frame per gate the
+/// user crosses for the FIRST time and granting the level-10 starter credit exactly once. `peak_level`
+/// lives on the account (users.json), so unlocks fire once per user ever — surviving queen death /
+/// prestige (Queen.level resets to 1). No-op when `new_lvl ≤` the user's existing peak, or for NPCs.
+/// Called from the natural level-up path (`flush_xp`) and the admin level/xp commands.
+pub fn apply_peak_unlocks(world: &mut World, player_id: u32, new_lvl: u16) {
+    let username = match world.players.get(&player_id) {
+        Some(p) if !p.npc => p.username.clone(),
+        _ => return,
+    };
+    // Bump peak + collect newly-crossed gates (scoped &mut auth, released before touching players).
+    let mut newly_unlocked: Vec<u16> = Vec::new();
+    let mut grant_starter_credit = false;
+    if let Some(u) = world.auth.users.get_mut(&username) {
+        let prev_peak = u.peak_level;
+        if new_lvl > prev_peak {
+            u.peak_level = new_lvl;
+            for &gate in &[GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE] {
+                if prev_peak < gate && gate <= new_lvl { newly_unlocked.push(gate); }
+            }
+            if prev_peak < GATE_SHOP && GATE_SHOP <= new_lvl { grant_starter_credit = true; }
+        }
+    }
+    if newly_unlocked.is_empty() && !grant_starter_credit { return; }
+
+    if grant_starter_credit {
+        if let Some(p) = world.players.get_mut(&player_id) {
+            p.credits = (p.credits + 1).min(CREDIT_CAP);
+        }
+    }
+    let tx = world.players.get(&player_id).and_then(|p| p.tx.clone());
+    if let Some(tx) = tx {
+        for tier in newly_unlocked {
+            let _ = tx.send(json!({"t":"unlock","tier":tier}).to_string());
         }
     }
 }
@@ -154,6 +194,18 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     }).to_string());
 
     if let Some(kid) = killer_id {
+        // Rivalries (account-level, keyed by username) → Discovery "TOP RIVALRIES": the loser
+        // records a death by `kid`; the killer records a kill of the loser. Self-kills excluded.
+        if kid != loser_id {
+            if let Some(ku) = world.players.get(&kid).map(|p| p.username.clone()) {
+                if let Some(lp) = world.players.get_mut(&loser_id) {
+                    *lp.killed_by.entry(ku).or_insert(0) += 1;
+                }
+                if let Some(kp) = world.players.get_mut(&kid) {
+                    *kp.kills_of.entry(loser_name.clone()).or_insert(0) += 1;
+                }
+            }
+        }
         if let Some(kq) = world.queens.get_mut(&kid) { kq.kills += 1; }
         if let Some(kp) = world.players.get_mut(&kid) {
             kp.credits = (kp.credits + 1).min(CREDIT_CAP);
@@ -177,6 +229,16 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         "killer":    killer_name,
         "cause":     reason,
     }).to_string());
+
+    // NPCs have no account and cannot respawn — purge them entirely so a defeated NPC never
+    // lingers in world.players (e.g. the admin player list). Real players keep their dead-queen
+    // record for the death screen + respawn. Tiles/ants were already cleared above; ant_counts and
+    // metro_holders rebuild from world.ants / tile ownership.
+    if world.players.get(&loser_id).map(|p| p.npc).unwrap_or(false) {
+        world.queens.remove(&loser_id);
+        world.players.remove(&loser_id);
+        world.queen_map_dirty = true;
+    }
 }
 
 // ---- Wipe world -----------------------------------------------------------
@@ -188,7 +250,7 @@ pub fn wipe_world(world: &mut World) {
     world.queen_map.clear();
     world.queen_map_dirty = false;
     world.tick = 0;
-    world.fresh_epoch(); // Phase-6: new season → new R2 tile generation (no stale cached tiles)
+    world.rotate_epoch_retiring_old(); // Phase-6: new season → new R2 generation + reclaim the old one
     let c = cfg();
     let daily = c.daily_ants;
     drop(c);
@@ -223,50 +285,30 @@ pub fn wipe_world_and_users(world: &mut World) {
     world.tick = 0;
     world.next_player_id = 100;
     world.started_at = current_ms();
-    world.fresh_epoch(); // Phase-6: wipe → new R2 tile generation
+    world.rotate_epoch_retiring_old(); // Phase-6: wipe → new R2 generation + reclaim the old one
 
-    let daily = cfg().daily_ants;
-    let now = current_ms();
-
-    // 2. Remove every non-admin player: force-logout, drop channels, then delete the record.
-    let remove: Vec<u32> = world.players.iter()
-        .filter(|(&id, _)| !world.auth.is_admin_id(id))
-        .map(|(&id, _)| id)
-        .collect();
-    for id in remove {
+    // 2. Force-logout EVERY connected player — admin included — and delete every player record.
+    //    Beta 1.0: a wipe is a hard reset; nobody is left sitting in a half-cleared world. The
+    //    ADMIN account itself survives in `auth` (reset_to_admin_only below, and it's recreated on
+    //    boot if absent), so the admin just re-logs-in to a clean slate and the normal place-queen
+    //    flow runs — fixing the old bug where the admin was retained in-game with no way to deploy.
+    let all_ids: Vec<u32> = world.players.keys().copied().collect();
+    for id in all_ids {
         if let Some(p) = world.players.get_mut(&id) {
             if let Some(tx) = &p.tx {
                 let _ = tx.send(r#"{"t":"force-logout","reason":"WORLD WIPED"}"#.to_string());
             }
             p.tx = None;
             p.view_tx = None;
+            p.ctl_tx = None;
         }
         world.players.remove(&id);
     }
 
-    // 3. Reset any retained (admin) player to a clean slate and clear their map view.
-    for p in world.players.values_mut() {
-        p.ants_avail      = daily;
-        p.next_refill     = now + 24 * 3600 * 1000;
-        p.queen_placed_at = None;
-        p.credits         = 0;
-        p.prestige        = 0;
-        p.defenders.clear();
-        p.visited_countries.clear();
-        p.visited_continents.clear();
-        p.lifetime_kills      = 0;
-        p.lifetime_peak_tiles = 0;
-        p.queens_fielded      = 0;
-        p.away                = None;
-        if let Some(tx) = &p.tx {
-            let _ = tx.send(r#"{"t":"world-wiped"}"#.to_string());
-        }
-    }
-
-    // 4. Reset accounts to admin-only (also clears the ban list).
+    // 3. Reset accounts to admin-only (also clears the ban list).
     world.auth.reset_to_admin_only();
 
-    // 5. Persist the empty world immediately so the on-disk snapshot reflects the wipe.
+    // 4. Persist the empty world immediately so the on-disk snapshot reflects the wipe.
     let path = cfg().save_file.clone();
     if let Err(e) = crate::persist::save(world, &path) {
         eprintln!("[persist] post-wipe save failed: {e}");
@@ -316,7 +358,10 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         prestige: 0, credits: 0,
         defenders: Vec::new(),
         visited_countries: Default::default(), visited_continents: Default::default(),
-        lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
+        lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0,
+        unlimited_credits: false, unlimited_ants: false,
+        killed_by: Default::default(), kills_of: Default::default(),
+        away: None,
     });
     world.queen_map_dirty = true;
 
@@ -486,24 +531,26 @@ pub fn tick_world(world: &mut World) {
             )
     };
 
-    // Apply hits: batch damage per queen + heal touches
+    // Apply hits: batch damage and heals per queen.
     let heal_xp = c.xp_heal;
     let mut damage_map: FxHashMap<u32, f64> = FxHashMap::default();
+    let mut heal_map: FxHashMap<u32, f64> = FxHashMap::default();
     let mut last_attacker_map: FxHashMap<u32, u32> = FxHashMap::default();
 
     for hit in &hits {
+        // An ant's bite equals its queen's level; brutes carry a 10× multiplier (dmg_mult).
+        // `ant_damage` stays as a global admin scalar (default 1.0). Level is clamped to the cap
+        // so per-bite magnitude is bounded: ant 1–100, brute 10–1000.
+        let atk_lvl = world.queens.get(&hit.attacker).map(|q| q.level).unwrap_or(1)
+            .clamp(1, c.xp_level_cap) as f64;
+        let amount = c.ant_damage * atk_lvl * hit.dmg_mult as f64;
         if hit.is_own {
-            if let Some(q) = world.queens.get_mut(&hit.queen_id) {
-                if !q.dead && q.hp < q.max_hp {
-                    q.hp = (q.hp + 1).min(q.max_hp);
-                }
-            }
+            // A friendly touch heals a hurt queen by the same amount it would deal as damage
+            // (brutes heal 10× via dmg_mult). Applied + reported in the batched heal pass below.
+            *heal_map.entry(hit.queen_id).or_insert(0.0) += amount;
             world.xp_queue.push(XpGrant { player_id: hit.attacker, amount: heal_xp, reason: "heal", x: 0, y: 0 });
         } else {
-            // An ant's bite equals its queen's level; brutes carry a 3× multiplier (dmg_mult).
-            // `ant_damage` stays as a global admin scalar (default 1.0).
-            let atk_lvl = world.queens.get(&hit.attacker).map(|q| q.level).unwrap_or(1).max(1) as f64;
-            *damage_map.entry(hit.queen_id).or_insert(0.0) += c.ant_damage * atk_lvl * hit.dmg_mult as f64;
+            *damage_map.entry(hit.queen_id).or_insert(0.0) += amount;
             last_attacker_map.insert(hit.queen_id, hit.attacker);
         }
     }
@@ -525,15 +572,36 @@ pub fn tick_world(world: &mut World) {
             q.last_attacker = last_attacker_map.get(&queen_id).copied();
             (q.x, q.y)
         };
+        // Report the gross damage dealt this tick (even when a shield absorbed it — useful
+        // "your shield is working" feedback; the HP bar simply won't drop).
+        let dmg = total_dmg.round() as i64;
         if let Some(attacker_id) = last_attacker_map.get(&queen_id) {
             let atx = world.players.get(attacker_id).and_then(|p| if !p.npc { p.tx.clone() } else { None });
             if let Some(tx) = atx {
-                let _ = tx.send(json!({"t":"damage-dealt","tx":qx,"ty":qy}).to_string());
+                let _ = tx.send(json!({"t":"damage-dealt","tx":qx,"ty":qy,"amount":dmg}).to_string());
             }
         }
         let dtx = world.players.get(&queen_id).and_then(|p| if !p.npc { p.tx.clone() } else { None });
         if let Some(tx) = dtx {
-            let _ = tx.send(json!({"t":"damage-taken","sx":qx,"sy":qy}).to_string());
+            let _ = tx.send(json!({"t":"damage-taken","sx":qx,"sy":qy,"amount":dmg}).to_string());
+        }
+    }
+
+    // Apply batched heals and notify the queen's owner (queens are keyed by player id, same as
+    // the damage path above). NPC queens still self-heal; they just get no popup. A full queen
+    // gains nothing, so report the actual HP gained — the popup never overstates near max HP.
+    for (&queen_id, &total_heal) in &heal_map {
+        let (qx, qy, healed) = {
+            let Some(q) = world.queens.get_mut(&queen_id) else { continue };
+            if q.dead || q.hp >= q.max_hp { continue; }
+            let old = q.hp;
+            q.hp = ((q.hp as f64) + total_heal).min(q.max_hp as f64) as i32;
+            (q.x, q.y, q.hp - old)
+        };
+        if healed <= 0 { continue; }
+        if let Some(tx) = world.players.get(&queen_id)
+            .and_then(|p| if !p.npc { p.tx.clone() } else { None }) {
+            let _ = tx.send(json!({"t":"heal","hx":qx,"hy":qy,"amount":healed}).to_string());
         }
     }
     world.xp_queue.extend(xp_grants);
@@ -712,9 +780,59 @@ pub fn tick_world(world: &mut World) {
     world.scratch_pairs = pairs;
 
     // =========================================================================
-    // Phase 6: Remove expired ants
+    // Phase 5b: Brute capture — an enemy worker caught under a brute's 2×2 footprint is sent back
+    // to its owner's ready pool. Workers take no damage otherwise (on contact they only ever turn),
+    // so a brute is the one way to remove an enemy worker from the field. Brutes don't capture
+    // brutes. Indexes just the (few) brute footprint cells, then sweeps the workers once.
     // =========================================================================
-    world.ants.retain(|a| a.age <= a.lifespan);
+    let brute_cells: FxHashMap<u64, u32> = {       // footprint cell_key -> brute owner
+        let mut m = FxHashMap::default();
+        for b in world.ants.iter().filter(|a| a.kind == 1) {
+            for dy in 0..2i32 {
+                for dx in 0..2i32 {
+                    let (cx, cy) = (b.x + dx, b.y + dy);
+                    if cx < 0 || cy < 0 || cx >= ww || cy >= wh { continue; }
+                    m.insert(cy as u64 * ww_u64 + cx as u64, b.owner);
+                }
+            }
+        }
+        m
+    };
+    if !brute_cells.is_empty() {
+        let mut returns: FxHashMap<u32, i32> = FxHashMap::default();
+        let mut capture = vec![false; world.ants.len()];
+        for (i, a) in world.ants.iter().enumerate() {
+            if a.kind == 1 { continue; }
+            if let Some(&bowner) = brute_cells.get(&(a.y as u64 * ww_u64 + a.x as u64)) {
+                if bowner != a.owner {
+                    *returns.entry(a.owner).or_insert(0) += 1;
+                    capture[i] = true;
+                }
+            }
+        }
+        if !returns.is_empty() {
+            for (owner, n) in returns {
+                if let Some(p) = world.players.get_mut(&owner) { p.ants_avail += n; }
+            }
+            let mut i = 0usize;
+            world.ants.retain(|_| { let keep = !capture[i]; i += 1; keep });
+        }
+    }
+
+    // =========================================================================
+    // Phase 6: Expire workers back to their owner's ready pool (24 h deploy life). Workers are
+    // never destroyed — an expired worker returns to inventory for redeployment, like a capture.
+    // =========================================================================
+    {
+        let mut returns: FxHashMap<u32, i32> = FxHashMap::default();
+        world.ants.retain(|a| {
+            if a.age <= a.lifespan { true }
+            else { *returns.entry(a.owner).or_insert(0) += 1; false }
+        });
+        for (owner, n) in returns {
+            if let Some(p) = world.players.get_mut(&owner) { p.ants_avail += n; }
+        }
+    }
 
     // =========================================================================
     // Phase 7: Rebuild ant_counts (replaces O(n_ants × n_players) scan in player_info)
@@ -1048,7 +1166,10 @@ mod tests {
             view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
             defenders: Vec::new(), visited_countries: Default::default(),
             visited_continents: Default::default(), lifetime_kills: 0,
-            lifetime_peak_tiles: 0, queens_fielded: 0, away: None,
+            lifetime_peak_tiles: 0, queens_fielded: 0,
+            unlimited_credits: false, unlimited_ants: false,
+            killed_by: Default::default(), kills_of: Default::default(),
+            away: None,
         }
     }
 
@@ -1195,7 +1316,10 @@ mod bench {
                 view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
                 defenders: Vec::new(), visited_countries: Default::default(),
                 visited_continents: Default::default(), lifetime_kills: 0, lifetime_peak_tiles: 0,
-                queens_fielded: 0, away: None });
+                queens_fielded: 0,
+                unlimited_credits: false, unlimited_ants: false,
+                killed_by: Default::default(), kills_of: Default::default(),
+                away: None });
         }
         w.queen_map_dirty = true;
 

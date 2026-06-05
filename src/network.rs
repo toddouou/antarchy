@@ -121,12 +121,25 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
     let mut visited_continents: Vec<&String> = p.visited_continents.iter().collect();
     visited_continents.sort();
 
+    // Top rivalries (Discovery): the 5 biggest counts in each direction + lifetime totals.
+    let top_rivals = |m: &FxHashMap<String, u32>| -> (Vec<Value>, u64) {
+        let total: u64 = m.values().map(|&v| v as u64).sum();
+        let mut v: Vec<(&String, u32)> = m.iter().map(|(k, &c)| (k, c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let top: Vec<Value> = v.iter().take(5).map(|(name, c)| json!({"name": name, "count": c})).collect();
+        (top, total)
+    };
+    let (killed_by_top, total_deaths) = top_rivals(&p.killed_by);
+    let (kills_of_top,  total_kills)  = top_rivals(&p.kills_of);
+
     let is_admin = world.auth.is_admin_id(player_id);
     let color_chosen = if is_admin {
         world.auth.users.get(&p.username).map(|u| u.color_chosen).unwrap_or(false)
     } else {
         true
     };
+    // Highest level this USER has ever reached — drives client-side unlock gating (see auth).
+    let peak_level = world.auth.users.get(&p.username).map(|u| u.peak_level).unwrap_or(0);
 
     let queen_val: Value = if let Some(q) = q {
         json!({
@@ -154,6 +167,7 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
         "color": p.color,
         "isAdmin": is_admin,
         "colorChosen": color_chosen,
+        "peakLevel": peak_level,
         "antsAvail": p.ants_avail,
         "nextRefillMs": (p.next_refill as i64 - current_ms() as i64).max(0),
         "queen": queen_val,
@@ -166,6 +180,14 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
         "lifetimeKills":     p.lifetime_kills,
         "lifetimePeakTiles": p.lifetime_peak_tiles,
         "queensFielded":     p.queens_fielded,
+        "unlimitedCredits":  p.unlimited_credits,
+        "unlimitedAnts":     p.unlimited_ants,
+        "topRivalries": {
+            "killedBy":    killed_by_top,
+            "youKilled":   kills_of_top,
+            "totalDeaths": total_deaths,
+            "totalKills":  total_kills,
+        },
         "shield":    q.map(|q| q.shield).unwrap_or(0),
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),

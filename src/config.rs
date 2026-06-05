@@ -3,26 +3,22 @@ use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub const ADMIN_USERNAME: &str = "ADMIN";
 pub const ADMIN_PASSWORD: &str = "admin";
 
+// 8 muted "starter" colors. Brighter/better colors will be purchasable later (not built yet).
+// Keep this in lockstep with the HUES array in public/client.html — same order, same count.
 pub const HUES: &[&str] = &[
-    "#ff2e3f","#ff8c42","#ffb800","#f4d35e","#7fb069","#52b788",
-    "#43aa8b","#4d908e","#577590","#5e60ce","#7400b8","#9d4edd",
-    "#c77dff","#e0aaff","#ff70a6","#ff006e","#fb5607","#ffbe0b",
-    "#8338ec","#3a86ff","#06d6a0","#118ab2","#84a98c","#ef476f",
+    "#b5524a","#c08a52","#b8a24a","#6f8f5a",
+    "#4a8f86","#4a6f9c","#6b5b95","#8a8a8a",
 ];
 
 pub const ENEMY_HUES: &[&str] = &["#9b3027","#6b4423","#5a4e7c","#3d5a80","#52796f"];
 
 // ---- Shop / credit economy -------------------------------------------------
-/// Credits are earned only by killing an enemy queen (+1 each), and never exceed this.
-pub const CREDIT_CAP: u64 = 100;
+/// Credits are earned by killing an enemy queen (+1 each). Beta 1.0 removed the 100-credit cap;
+/// the symbol stays (= no ceiling) so the former clamp call sites remain valid no-ops.
+pub const CREDIT_CAP: u64 = u64::MAX;
 // Shop prices (credits)
-pub const PRICE_HIGHWAY:  u64 = 10;
 pub const PRICE_RELOCATE: u64 = 20;
 pub const PRICE_DEFENDER: u64 = 1;
-/// Reserved for the WIP alliance feature; the shop "alliance" item is a no-charge stub
-/// (handlers.rs) until alliances ship.
-#[allow(dead_code)]
-pub const PRICE_ALLIANCE: u64 = 80;
 pub const PRICE_BRUTE:    u64 = 20;
 pub const PRICE_SHIELD:   u64 = 10;
 // Durations (ms)
@@ -30,9 +26,31 @@ pub const SHIELD_MS:   u64 = 12 * 3600 * 1000;   // 12h queen shield
 pub const DEFENDER_MS: u64 = 3600 * 1000;        // 1h defender decay
 // Tunables
 pub const DEFENDER_RANGE: i32 = 10;   // enemy worker proximity (tiles) that triggers a defender
-pub const HIGHWAY_LEN:    i32 = 150;  // diagonal road length (tiles)
-pub const HIGHWAY_NEAR:   i32 = 30;   // start must be within this many tiles of friendly territory
-pub const BRUTE_DMG_MULT: f32 = 3.0;  // brute queen-damage multiplier
+pub const BRUTE_DMG_MULT: f32 = 10.0;  // brute queen-damage multiplier
+
+// ---- Progressive unlock gates (by peak level — see auth::UserRecord::peak_level) ----
+// Each feature/shop item is INVISIBLE + unbuyable until the player's peak level reaches its gate.
+// KEEP IN LOCKSTEP with the `GATES` table in public/client.html.
+pub const GATE_SHOP:     u16 = 10;  // shop button + access; defender buyable; +1 starter credit (once)
+pub const GATE_WORKER:   u16 = 20;  // "worker" shop item (+1 inventory worker)
+pub const GATE_SHIELD:   u16 = 30;
+pub const GATE_BRUTE:    u16 = 40;  // brute shop item + sidebar BRUTE toggle
+pub const GATE_RELOCATE: u16 = 50;
+pub const PRICE_WORKER:  u64 = 10;
+
+/// Required peak level to buy a shop `item`, or `None` if the item is ungated/unknown. The
+/// authoritative server-side gate for `shop-buy` (the client also hides locked items, but this is
+/// the real boundary so a crafted message can't buy past the gate).
+pub fn gate_for_item(item: &str) -> Option<u16> {
+    Some(match item {
+        "defender" => GATE_SHOP,
+        "worker"   => GATE_WORKER,
+        "shield"   => GATE_SHIELD,
+        "brute"    => GATE_BRUTE,
+        "relocate" => GATE_RELOCATE,
+        _ => return None,
+    })
+}
 
 /// Lifetime tile-count milestones (rounded "nice numbers"), ascending. Each is awarded **once per
 /// queen** — the first tick its peak tile count (`tiles_ever_held`) reaches the threshold. The XP
@@ -55,6 +73,9 @@ pub struct Config {
     pub tick_rate: u32,
     pub lifespan: u32,
     pub bubble_r: f64,
+    /// Multiplier the placement bubble reaches at the level cap, relative to `bubble_r` (L1).
+    /// The radius grows linearly L1 → cap (see `bubble_r_for_level`); 4.0 = quadruple the reach.
+    pub bubble_r_level_mult: f64,
     /// Queen max-HP at level 1 (the low anchor of the exponential HP curve).
     pub hp_base: i32,
     /// Queen max-HP at the level cap (the high anchor of the exponential HP curve).
@@ -104,19 +125,20 @@ impl Default for Config {
             spawn_x:      750_000,
             spawn_y:      375_000,
             spawn_pan:        200.0,
-            tick_rate:         50,
-            lifespan:   4_320_000,
+            tick_rate:         15,
+            lifespan:   1_296_000,
             bubble_r:          30.0,
-            hp_base:            10,
-            hp_max:        100_000,
+            bubble_r_level_mult: 4.0,
+            hp_base:            50,
+            hp_max:          2_428,
             convert_pct:       0.65,
             daily_ants:        5,
             save_file: "world.snapshot".to_string(),
             capitol_lat: 0.0,
             capitol_lon: 0.0,
             tile_meters: 26.72,
-            xp_base:         500.0,
-            xp_exp:            2.2,
+            xp_base:         100.0,
+            xp_exp:           1.07,
             xp_level_cap:    100,
             xp_tile_award:   250.0,
             xp_kill:        5000.0,
@@ -167,15 +189,16 @@ pub fn cfg_write() -> RwLockWriteGuard<'static, Config> {
 }
 
 const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
-    ("tick_rate",         1.0,       500.0),
+    ("tick_rate",         1.0,        50.0),
     ("lifespan",       1000.0, 8_640_000.0),
     ("bubble_r",          5.0,     5_000.0),
+    ("bubble_r_level_mult", 1.0,      20.0),
     ("hp_base",           1.0, 1_000_000.0),
     ("hp_max",            1.0, 1_000_000_000.0),
     ("convert_pct",       0.1,         1.0),
     ("daily_ants",        0.0,     1_000.0),
     ("xp_base",           1.0, 1_000_000.0),
-    ("xp_exp",            0.5,         5.0),
+    ("xp_exp",            1.0,         2.0),
     ("xp_kill",           0.0, 1_000_000.0),
     ("xp_convert",        0.0,    10_000.0),
     ("xp_tile_award",     0.0,    10_000.0),
@@ -200,6 +223,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "tick_rate"         => c.tick_rate          = v as u32,
         "lifespan"          => c.lifespan           = v as u32,
         "bubble_r"          => c.bubble_r           = v,
+        "bubble_r_level_mult" => c.bubble_r_level_mult = v,
         "hp_base"           => c.hp_base            = v as i32,
         "hp_max"            => c.hp_max             = v as i32,
         "convert_pct"       => c.convert_pct        = v,
@@ -321,6 +345,7 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
         ("tick_rate",         d.tick_rate as f64),
         ("lifespan",          d.lifespan as f64),
         ("bubble_r",          d.bubble_r),
+        ("bubble_r_level_mult", d.bubble_r_level_mult),
         ("hp_base",           d.hp_base as f64),
         ("hp_max",            d.hp_max as f64),
         ("convert_pct",       d.convert_pct),
@@ -344,6 +369,7 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     c.tick_rate          = d.tick_rate;
     c.lifespan           = d.lifespan;
     c.bubble_r           = d.bubble_r;
+    c.bubble_r_level_mult = d.bubble_r_level_mult;
     c.hp_base            = d.hp_base;
     c.hp_max             = d.hp_max;
     c.convert_pct        = d.convert_pct;
@@ -364,6 +390,20 @@ pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     out
 }
 
+/// Placement-bubble radius for a queen at level `lvl`. Grows **linearly** from the base `bubble_r`
+/// (L1) to `bubble_r × bubble_r_level_mult` at the level cap (`xp_level_cap`), so higher queens
+/// project — and can place into — a larger ring. With the defaults: 30 tiles @ L1 → 120 @ L100.
+/// `lvl` is clamped to `[1, cap]`.
+pub fn bubble_r_for_level(lvl: u16, cfg: &Config) -> f64 {
+    let cap  = cfg.xp_level_cap.max(2);
+    let lvl  = lvl.clamp(1, cap);
+    let base = cfg.bubble_r;
+    if lvl <= 1 { return base; }
+    let top  = base * cfg.bubble_r_level_mult.max(1.0);
+    let t    = (lvl - 1) as f64 / (cap - 1) as f64;   // 0..=1 across [1, cap]
+    base + (top - base) * t
+}
+
 pub fn queen_size_for_level(lvl: u16) -> u8 {
     if lvl >= 100 { 8 }
     else if lvl >= 90 { 7 }
@@ -375,8 +415,9 @@ pub fn queen_size_for_level(lvl: u16) -> u8 {
 }
 
 /// Queen max-HP for a level. HP grows **exponentially** between two anchors: `hp_base` at level 1
-/// and `hp_max` at the level cap (`xp_level_cap`). With the defaults this is 10 HP at L1 →
-/// 100,000 HP at L100. `lvl` is clamped to `[1, cap]`.
+/// and `hp_max` at the level cap (`xp_level_cap`). With the defaults this is 50 HP at L1 →
+/// 2,428 HP at L100 (a constant ≈+4%/level), under a 2,500 hard ceiling. `lvl` is clamped to
+/// `[1, cap]`.
 pub fn max_hp_for_level(lvl: u16, cfg: &Config) -> i32 {
     let cap  = cfg.xp_level_cap.max(2);
     let lvl  = lvl.clamp(1, cap);
@@ -387,9 +428,19 @@ pub fn max_hp_for_level(lvl: u16, cfg: &Config) -> i32 {
     (base * (top / base).powf(t)).round() as i32
 }
 
+/// Cumulative XP required to *reach* level `n` (a running total; queen.xp stores this directly).
+/// `xp_exp` is the **per-level growth rate** (1.07 = +7%/level), so the cost of the single level
+/// `L→L+1` is `total(L+1) − total(L) = xp_base · rate^(L-1)`, and this closed-form geometric sum is
+/// its running total. With the defaults: L2 = 100, L100 ≈ 1,158,070 (~1.16M). `n ≤ 1 → 0`.
 pub fn total_xp_for_level(n: u16, cfg: &Config) -> f64 {
     if n <= 1 { return 0.0; }
-    (cfg.xp_base * ((n - 1) as f64).powf(cfg.xp_exp)).floor()
+    let rate  = cfg.xp_exp;          // per-level XP growth multiplier (1.07 = +7%/level)
+    let steps = (n - 1) as f64;
+    if (rate - 1.0).abs() < 1e-9 {
+        (cfg.xp_base * steps).floor()                          // degenerate (no growth): linear
+    } else {
+        (cfg.xp_base * (rate.powf(steps) - 1.0) / (rate - 1.0)).floor()
+    }
 }
 
 pub fn level_for_xp(xp: f64, cfg: &Config) -> u16 {

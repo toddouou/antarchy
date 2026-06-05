@@ -79,6 +79,14 @@ struct PlayerSnapshot {
     lifetime_kills:      u32,
     lifetime_peak_tiles: u64,
     queens_fielded:      u32,
+    #[serde(default)]
+    unlimited_credits:   bool,
+    #[serde(default)]
+    unlimited_ants:      bool,
+    #[serde(default)]
+    killed_by:           FxHashMap<String, u32>,
+    #[serde(default)]
+    kills_of:            FxHashMap<String, u32>,
 }
 
 impl PlayerSnapshot {
@@ -100,6 +108,10 @@ impl PlayerSnapshot {
             lifetime_kills:      p.lifetime_kills,
             lifetime_peak_tiles: p.lifetime_peak_tiles,
             queens_fielded:      p.queens_fielded,
+            unlimited_credits:   p.unlimited_credits,
+            unlimited_ants:      p.unlimited_ants,
+            killed_by:           p.killed_by.clone(),
+            kills_of:            p.kills_of.clone(),
         }
     }
 
@@ -128,6 +140,10 @@ impl PlayerSnapshot {
             lifetime_kills:      self.lifetime_kills,
             lifetime_peak_tiles: self.lifetime_peak_tiles,
             queens_fielded:      self.queens_fielded,
+            unlimited_credits:   self.unlimited_credits,
+            unlimited_ants:      self.unlimited_ants,
+            killed_by:           self.killed_by,
+            kills_of:            self.kills_of,
             away:                None,
         }
     }
@@ -209,6 +225,14 @@ pub fn restore(world: &mut World, snap: WorldSnapshot) {
     world.tiles          = snap.tiles;
     world.ants           = snap.ants;
     world.queens         = snap.queens;
+    // bubble_r now scales with level; snapshots from before that change stored the flat base for
+    // every queen, so recompute it from each queen's level (keeps placement/glow correct on boot).
+    {
+        let c = crate::config::cfg();
+        for q in world.queens.values_mut() {
+            q.bubble_r = crate::config::bubble_r_for_level(q.level, &c);
+        }
+    }
     world.players        = snap.players.into_iter().map(|ps| (ps.id, ps.into_player())).collect();
     world.next_player_id = snap.next_player_id;
     world.tick           = snap.tick;
@@ -317,7 +341,11 @@ mod tests {
             prestige: 2, credits: 50, defenders: vec![1, 2, 3],
             visited_countries:  ["US".to_string()].into_iter().collect(),
             visited_continents: ["NA".to_string()].into_iter().collect(),
-            lifetime_kills: 9, lifetime_peak_tiles: 1234, queens_fielded: 2, away: None,
+            lifetime_kills: 9, lifetime_peak_tiles: 1234, queens_fielded: 2,
+            unlimited_credits: true, unlimited_ants: false,
+            killed_by: [("BOB".to_string(), 2)].into_iter().collect(),
+            kills_of: Default::default(),
+            away: None,
         });
 
         // Point persistence at a unique temp dir; the path keeps the `world.snapshot` name so the
@@ -352,6 +380,8 @@ mod tests {
         assert!(p.visited_countries.contains("US"));
         assert!(p.tx.is_none() && p.view.is_none(), "runtime channels not persisted");
         assert_eq!(p.conn_gen, 0, "conn_gen reset on restore");
+        assert!(p.unlimited_credits && !p.unlimited_ants, "god-mode flags survive round-trip");
+        assert_eq!(p.killed_by.get("BOB").copied(), Some(2), "rivalry map survives round-trip");
 
         assert!(w2.queen_map_dirty, "queen map flagged for rebuild");
 
