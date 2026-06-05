@@ -1404,7 +1404,10 @@ function osmTileUrl(z,x,y){
 // WS-keyframe path only). Tiles are keyed by GAME chunk (cx,cy)=(x>>8,y>>8): snap/{epoch}/0/{cx}/{cy}.png
 let SNAP_BASE='', SNAP_EPOCH=0;
 const snapCache=new Map();
-const SNAP_RETRY_MS=60000, SNAP_CHUNK=256;
+// SNAP_CHUNK = super-tile span in game cells (server-provided via me.snapTileCells = S*256; lever B).
+// `let`, not `const`: the server can serve 1024px (S=4) tiles. Fallback 256 = back-compat / un-set.
+const SNAP_RETRY_MS=60000;
+let SNAP_CHUNK=256;
 // 1×1 canvas for reading water color from OSM tiles
 const _waterSampleCanvas=document.createElement('canvas');
 _waterSampleCanvas.width=_waterSampleCanvas.height=1;
@@ -1960,6 +1963,7 @@ function handle(msg) {
       // ∥B base-map + Phase-6 R2 snapshot config (static block; empty → features stay dormant).
       if (me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
       if (me.snapshotBase!=null) SNAP_BASE=me.snapshotBase;
+      if (me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells; // lever B: super-tile span (S*256)
       if (me.epoch!=null && me.epoch!==SNAP_EPOCH) { SNAP_EPOCH=me.epoch; snapCache.clear(); }
       waterCache.clear();
       tileCache=new Uint32Array(TILE_CACHE_W*TILE_CACHE_H);

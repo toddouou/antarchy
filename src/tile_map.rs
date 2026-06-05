@@ -189,6 +189,26 @@ impl TileMap {
         ((key & 0xFFFF_FFFF) as u32, (key >> 32) as u32)
     }
 
+    /// Build a `chunk_key` from chunk coords `(cx, cy)` — inverse of `chunk_coords`. The Phase-6
+    /// super-tile rasterizer needs this to view each constituent chunk of a super-tile by coord.
+    #[inline]
+    pub fn chunk_key_from_coords(cx: u32, cy: u32) -> u64 {
+        ((cy as u64) << 32) | cx as u64
+    }
+
+    /// Phase-6 lever B: how many distinct **super-tiles** (S×S chunk blocks) the pending dirty set
+    /// coalesces into — i.e. the real R2 Class-A key count the next writer cycle will push. Project
+    /// monthly Class-A ≈ this × intervals/mo. `s` must be a power of two ≥ 1.
+    pub fn dirty_supertiles_len(&self, s: u32) -> usize {
+        if s <= 1 { return self.dirty_chunks.len(); }
+        let mut supers: FxHashSet<u64> = FxHashSet::default();
+        for &k in &self.dirty_chunks {
+            let (cx, cy) = Self::chunk_coords(k);
+            supers.insert(((cy / s) as u64) << 32 | (cx / s) as u64);
+        }
+        supers.len()
+    }
+
     #[inline]
     pub fn get(&self, x: u32, y: u32) -> u32 {
         match self.chunks.get(&Self::chunk_key(x, y)) {

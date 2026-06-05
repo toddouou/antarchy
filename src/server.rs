@@ -639,8 +639,11 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
 // a PNG and upload to the sink (R2 / local disk). Game-space key: snap/{epoch}/0/{cx}/{cy}.png.
 pub fn snapshot_writer_loop(world: WorldState) {
     let sink = crate::snapshot::make_sink();
-    println!("[snapshot] writer started (sink: {}, interval 90s)", sink.label());
-    let interval = Duration::from_secs(90);
+    let secs = crate::config::snapshot_interval_secs();
+    let s = crate::config::snapshot_tile_chunks();
+    let interval = Duration::from_secs(secs);
+    println!("[snapshot] writer started (sink: {}, interval {secs}s, super-tile S={s} → {}px)",
+             sink.label(), s * 256);
     loop {
         std::thread::sleep(interval);
 
@@ -671,29 +674,41 @@ pub fn snapshot_writer_loop(world: WorldState) {
 
         if keys.is_empty() { continue; }
 
-        // Phase A2 (read lock, shared with viewport): clone the dirty chunks to owner-id form.
-        let snaps = {
-            let w = world.blocking_read();
-            crate::snapshot::snapshot_dirty(&w.tiles, &keys)
+        // Phase-6 lever B: coalesce the dirty chunks → distinct super-tile keys (S×S chunk blocks).
+        // This is where the R2 Class-A reduction happens: many sub-chunks of one contiguous frontier
+        // collapse to a single key/PutObject. (S=1 → one super-tile per chunk = legacy behavior.)
+        let super_keys: Vec<(u32, u32)> = {
+            let mut set: FxHashSet<(u32, u32)> = FxHashSet::default();
+            for &k in &keys {
+                let (cx, cy) = crate::tile_map::TileMap::chunk_coords(k);
+                set.insert((cx / s, cy / s));
+            }
+            set.into_iter().collect()
         };
 
-        // Phase B (no lock): rasterize + upload painted chunks; delete chunks that went fully empty.
-        // A chunk that merely lost one (dead) owner but still has others snapshots as Dense/Uniform
-        // here → it takes the `put` branch and is re-uploaded *regenerated* (the dead owner's cells
-        // render transparent, survivors intact). Only a chunk with zero remaining owners is `Empty`
-        // → its tile is deleted so R2 storage tracks live territory.
+        // Phase A2 (read lock, shared with viewport): clone each super-tile's chunks to owner-id form.
+        let snaps = {
+            let w = world.blocking_read();
+            crate::snapshot::snapshot_supertiles(&w.tiles, &super_keys, s)
+        };
+
+        // Phase B (no lock): rasterize + upload painted super-tiles; delete ones that went fully empty.
+        // A super-tile that lost a (dead) owner but still has any painted cell re-renders via `put`
+        // (the dead owner's cells go transparent, survivors intact). Only a super-tile whose every
+        // constituent chunk is empty is `all_empty` → its tile is deleted so R2 tracks live territory.
         let start = Instant::now();
         let (mut ok, mut del, mut fail) = (0u32, 0u32, 0u32);
-        for (cx, cy, snap) in &snaps {
-            let key = format!("snap/{epoch}/0/{cx}/{cy}.png");
-            let res = match snap {
-                crate::snapshot::ChunkSnap::Empty => sink.delete(&key),
-                _ => sink.put(&key, &crate::snapshot::rasterize_chunk(snap, &colors)),
+        for snap in &snaps {
+            let key = format!("snap/{epoch}/0/{}/{}.png", snap.sx, snap.sy);
+            let res = if snap.all_empty {
+                sink.delete(&key)
+            } else {
+                sink.put(&key, &crate::snapshot::rasterize_supertile(snap, &colors, s))
             };
-            match (res, snap) {
-                (Ok(()), crate::snapshot::ChunkSnap::Empty) => del  += 1,
-                (Ok(()), _)                                 => ok   += 1,
-                (Err(e), _) => { fail += 1; if fail <= 3 { eprintln!("[snapshot] {key} failed: {e}"); } }
+            match res {
+                Ok(()) if snap.all_empty => del  += 1,
+                Ok(())                   => ok   += 1,
+                Err(e) => { fail += 1; if fail <= 3 { eprintln!("[snapshot] {key} failed: {e}"); } }
             }
         }
         println!("[snapshot] epoch {epoch}: uploaded {ok}, deleted {del} ({fail} failed) in {:?}", start.elapsed());
@@ -718,6 +733,7 @@ async fn world_info_handler(State(app): State<AppState>) -> impl IntoResponse {
         "epoch":        epoch,
         "snapshotBase": crate::config::snapshot_public_base(),
         "basemapUrl":   crate::config::basemap_url(),
+        "snapTileCells": crate::config::snapshot_tile_chunks() * 256,
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)
 }
@@ -727,13 +743,14 @@ async fn world_info_handler(State(app): State<AppState>) -> impl IntoResponse {
 /// rates are over server uptime. Additive: remove this route + the `metrics::record` calls to
 /// fully revert Phase 0.
 async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse {
-    let (uptime_ms, connected, dirty, dirty_pending) = {
+    let (uptime_ms, connected, dirty, dirty_pending, dirty_supers) = {
         let w = app.world.read().await;
         (
             crate::config::current_ms().saturating_sub(w.started_at),
             w.players.values().filter(|p| !p.npc && p.tx.is_some()).count(),
             w.tiles.dirty_chunk_touches(),
             w.tiles.dirty_chunk_len(),
+            w.tiles.dirty_supertiles_len(crate::config::snapshot_tile_chunks()),
         )
     };
     let secs = (uptime_ms as f64 / 1000.0).max(1.0);
@@ -771,6 +788,7 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
         "byKind":               serde_json::Value::Object(by_kind),
         "dirtyChunkTouches":    dirty,
         "dirtyChunksPending":   dirty_pending,
+        "dirtySupertilesLen":   dirty_supers,
         "viewportCycleMs":      {"p50": vc50, "p99": vc99, "max": vcmax},
         "finishViewMs":         {"p50": fv50, "p99": fv99, "max": fvmax},
         "prevGridBytes":        pg,
@@ -870,7 +888,7 @@ mod egress_bench {
                 w.auth.users.insert(uname.clone(), UserRecord {
                     id: 100_000 + i as u32, username: uname,
                     password_hash: hash_pw("x"), color: "#3a86ff".into(),
-                    hue_idx: 0, is_admin: true, color_chosen: true,
+                    hue_idx: 0, is_admin: true, color_chosen: true, peak_level: 0,
                 });
             }
         }

@@ -221,6 +221,9 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
         if let Some(base) = crate::config::snapshot_public_base() { info["snapshotBase"] = json!(base); }
         if let Some(bm)   = crate::config::basemap_url()          { info["basemapUrl"]  = json!(bm); }
+        // Phase-6 lever B: super-tile span in game cells (S×256). The client keys snapshot tiles by
+        // `floor(gx / snapTileCells)`, which must equal the server's `(sx,sy)` super-tile index.
+        info["snapTileCells"] = json!(crate::config::snapshot_tile_chunks() * 256);
     }
     info.to_string()
 }

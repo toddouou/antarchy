@@ -26,23 +26,59 @@ pub enum ChunkSnap {
     Dense(Vec<u32>),
 }
 
+/// View one chunk by key and convert its palette indices → owner ids (`None` chunk → `Empty`).
+/// Shared by the per-chunk (`snapshot_dirty`) and super-tile (`snapshot_supertiles`) capture paths.
+fn capture_chunk(tiles: &TileMap, key: u64) -> ChunkSnap {
+    match tiles.view_chunk(key) {
+        None => ChunkSnap::Empty,
+        Some(ChunkView::Uniform(idx)) => ChunkSnap::Uniform(tiles.palette_owner(idx)),
+        Some(ChunkView::Dense(cells)) => {
+            let mut v = Vec::with_capacity(cells.len());
+            for &c in cells {
+                v.push(if c == 0 { 0 } else { tiles.palette_owner(c) });
+            }
+            ChunkSnap::Dense(v)
+        }
+    }
+}
+
 /// Under the caller's read lock, convert each dirty chunk key into owner-id form. Cheap relative to
 /// PNG encoding (the expensive part), so the lock is held only briefly. Returns `(cx, cy, snap)`.
 pub fn snapshot_dirty(tiles: &TileMap, keys: &[u64]) -> Vec<(u32, u32, ChunkSnap)> {
     keys.iter().map(|&k| {
         let (cx, cy) = TileMap::chunk_coords(k);
-        let snap = match tiles.view_chunk(k) {
-            None => ChunkSnap::Empty,
-            Some(ChunkView::Uniform(idx)) => ChunkSnap::Uniform(tiles.palette_owner(idx)),
-            Some(ChunkView::Dense(cells)) => {
-                let mut v = Vec::with_capacity(cells.len());
-                for &c in cells {
-                    v.push(if c == 0 { 0 } else { tiles.palette_owner(c) });
-                }
-                ChunkSnap::Dense(v)
+        (cx, cy, capture_chunk(tiles, k))
+    }).collect()
+}
+
+/// A super-tile (R2 Class-A lever B): one PNG covering an S×S block of native chunks. `subs` holds
+/// each constituent chunk in owner-id form with its in-block offset `(scx, scy) ∈ 0..s`. `all_empty`
+/// lets the writer skip encoding a fully-transparent PNG and `delete` the key instead (free op).
+pub struct SuperSnap {
+    pub sx: u32,
+    pub sy: u32,
+    pub subs: Vec<(u32, u32, ChunkSnap)>,
+    pub all_empty: bool,
+}
+
+/// Under the caller's read lock, capture each requested super-tile `(sx,sy)` into owner-id form by
+/// viewing all `s*s` constituent chunks (missing chunk → `Empty`/transparent — a solid sub-chunk
+/// that didn't re-dirty this cycle still has to render, so every constituent is captured). The PNG
+/// encode runs off-lock via `rasterize_supertile`. `s` is a power of two ≥ 1; `s == 1` reduces to one
+/// chunk per tile, identical to the legacy per-chunk path.
+pub fn snapshot_supertiles(tiles: &TileMap, super_keys: &[(u32, u32)], s: u32) -> Vec<SuperSnap> {
+    super_keys.iter().map(|&(sx, sy)| {
+        let mut subs = Vec::with_capacity((s * s) as usize);
+        let mut all_empty = true;
+        for scy in 0..s {
+            for scx in 0..s {
+                let key = TileMap::chunk_key_from_coords(sx * s + scx, sy * s + scy);
+                let snap = capture_chunk(tiles, key);
+                if !matches!(snap, ChunkSnap::Empty) { all_empty = false; }
+                subs.push((scx, scy, snap));
             }
-        };
-        (cx, cy, snap)
+        }
+        SuperSnap { sx, sy, subs, all_empty }
     }).collect()
 }
 
@@ -62,39 +98,63 @@ pub fn parse_hex_color(s: &str) -> [u8; 3] {
     [128, 128, 128]
 }
 
-/// Encode one chunk → a 256×256 RGBA PNG. Unclaimed/ocean cells are transparent (α=0), so a tile's
-/// byte size scales with painted perimeter, not area. `colors` maps owner id → RGB; missing owners
-/// fall back to gray. Returns the PNG bytes (off-lock; no `World` access).
-pub fn rasterize_chunk(snap: &ChunkSnap, colors: &FxHashMap<u32, [u8; 3]>) -> Vec<u8> {
-    let n = CHUNK_DIM * CHUNK_DIM;
-    let mut rgba = vec![0u8; n * 4];
-    let put = |rgba: &mut [u8], i: usize, owner: u32| {
+/// Blit one 256×256 chunk's cells into a `dim_px × dim_px` RGBA buffer at pixel offset `(ox, oy)`.
+/// Unclaimed/ocean cells (owner 0) are left untouched (transparent), so a tile's byte size scales
+/// with painted perimeter, not area. `colors` maps owner id → RGB; missing owners fall back to gray.
+/// Shared by the single-chunk and super-tile rasterizers so the colour/transparency rules live once.
+fn blit_chunk_into(rgba: &mut [u8], dim_px: usize, ox: usize, oy: usize,
+                   snap: &ChunkSnap, colors: &FxHashMap<u32, [u8; 3]>) {
+    let put = |rgba: &mut [u8], px: usize, py: usize, owner: u32| {
         if owner == 0 { return; } // leave transparent
         let c = colors.get(&owner).copied().unwrap_or([128, 128, 128]);
-        let o = i * 4;
+        let o = (py * dim_px + px) * 4;
         rgba[o] = c[0]; rgba[o + 1] = c[1]; rgba[o + 2] = c[2]; rgba[o + 3] = 255;
     };
     match snap {
         ChunkSnap::Empty => {} // all transparent
         ChunkSnap::Uniform(owner) => {
-            for i in 0..n { put(&mut rgba, i, *owner); }
+            for ly in 0..CHUNK_DIM { for lx in 0..CHUNK_DIM { put(rgba, ox + lx, oy + ly, *owner); } }
         }
         ChunkSnap::Dense(cells) => {
-            for (i, &owner) in cells.iter().enumerate() { put(&mut rgba, i, owner); }
+            for (i, &owner) in cells.iter().enumerate() {
+                put(rgba, ox + (i % CHUNK_DIM), oy + (i / CHUNK_DIM), owner);
+            }
         }
     }
+}
 
+/// Encode a `w × h` RGBA buffer → PNG bytes. Best-effort: a malformed encode just yields an empty
+/// Vec (the writer logs + skips).
+fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
     let mut out = Vec::new();
     {
-        let mut enc = png::Encoder::new(&mut out, CHUNK_DIM as u32, CHUNK_DIM as u32);
+        let mut enc = png::Encoder::new(&mut out, w, h);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
-        // Best-effort: a malformed encode just yields an empty Vec (writer logs + skips).
-        if let Ok(mut w) = enc.write_header() {
-            let _ = w.write_image_data(&rgba);
+        if let Ok(mut writer) = enc.write_header() {
+            let _ = writer.write_image_data(rgba);
         }
     }
     out
+}
+
+/// Encode one chunk → a 256×256 RGBA PNG. Returns the PNG bytes (off-lock; no `World` access).
+pub fn rasterize_chunk(snap: &ChunkSnap, colors: &FxHashMap<u32, [u8; 3]>) -> Vec<u8> {
+    let mut rgba = vec![0u8; CHUNK_DIM * CHUNK_DIM * 4];
+    blit_chunk_into(&mut rgba, CHUNK_DIM, 0, 0, snap, colors);
+    encode_png(&rgba, CHUNK_DIM as u32, CHUNK_DIM as u32)
+}
+
+/// Encode one super-tile → an `(s*256)²` RGBA PNG by blitting each constituent chunk at its pixel
+/// offset `(scx*256, scy*256)`. Off-lock (no `World` access). Transparent for unclaimed/ocean cells,
+/// so byte size still tracks painted perimeter despite the larger canvas.
+pub fn rasterize_supertile(snap: &SuperSnap, colors: &FxHashMap<u32, [u8; 3]>, s: u32) -> Vec<u8> {
+    let dim_px = s as usize * CHUNK_DIM;
+    let mut rgba = vec![0u8; dim_px * dim_px * 4];
+    for (scx, scy, sub) in &snap.subs {
+        blit_chunk_into(&mut rgba, dim_px, *scx as usize * CHUNK_DIM, *scy as usize * CHUNK_DIM, sub, colors);
+    }
+    encode_png(&rgba, dim_px as u32, dim_px as u32)
 }
 
 /// A destination for rasterized tiles. `put` is synchronous (the writer runs on its own OS thread);
@@ -325,5 +385,85 @@ mod tests {
         let solo   = snaps.iter().find(|(cx, cy, _)| *cx == 1 && *cy == 0).expect("solo chunk dirty");
         assert!(!matches!(shared.2, ChunkSnap::Empty), "shared chunk must regenerate, not delete");
         assert!( matches!(solo.2,   ChunkSnap::Empty), "fully-cleared chunk must snap Empty (→ delete)");
+    }
+
+    // Lever B: a super-tile composites its S×S constituent chunks at the right pixel offsets. Catches
+    // the half-chunk-offset alignment bug — paint only chunk (1,0); its cells must land in the RIGHT
+    // sub-block of the 512×512 PNG, and the unpainted (0,0) sub-block must stay transparent.
+    #[test]
+    fn supertile_blits_subchunks_at_correct_offset() {
+        use crate::tile_map::TileMap;
+        let mut colors = FxHashMap::default();
+        colors.insert(7u32, [255, 0, 0]);
+
+        let mut t = TileMap::default();
+        for y in 0..256u32 { for x in 256..512u32 { t.set(x, y, 7); } } // fill chunk (1,0)
+
+        let s = 2u32; // super-tile (0,0) covers chunks (0,0),(1,0),(0,1),(1,1)
+        let snaps = snapshot_supertiles(&t, &[(0, 0)], s);
+        assert_eq!(snaps.len(), 1);
+        assert!(!snaps[0].all_empty);
+
+        let png = rasterize_supertile(&snaps[0], &colors, s);
+        assert_eq!(&png[0..4], &[0x89, b'P', b'N', b'G']);
+
+        // Decode and probe pixels.
+        let mut reader = png::Decoder::new(&png[..]).read_info().expect("decode header");
+        let mut buf = vec![0u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).expect("decode frame");
+        assert_eq!((info.width, info.height), (512, 512), "S=2 → 512px PNG");
+        let px = |x: usize, y: usize| {
+            let o = (y * 512 + x) * 4;
+            [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]
+        };
+        assert_eq!(px(300, 10), [255, 0, 0, 255], "chunk (1,0) cells land in the right sub-block, opaque");
+        assert_eq!(px(10, 10)[3], 0, "unpainted chunk (0,0) sub-block stays transparent");
+    }
+
+    #[test]
+    fn supertile_all_empty_when_no_chunks_painted() {
+        let t = crate::tile_map::TileMap::default();
+        let snaps = snapshot_supertiles(&t, &[(5, 5)], 4);
+        assert_eq!(snaps.len(), 1);
+        assert!(snaps[0].all_empty, "no painted chunks → all_empty (writer deletes the key, a free op)");
+        assert_eq!(snaps[0].subs.len(), 16, "S=4 captures all 16 constituent chunks");
+    }
+
+    // End-to-end of everything the writer does (minus the loop): paint a multi-chunk block, coalesce
+    // dirty chunks → super-tile keys exactly like `snapshot_writer_loop`, rasterize at S=4, and write
+    // through the real LocalDiskSink. Asserts the on-disk key path + that the PNG is 1024×1024 + that
+    // coalescing genuinely reduces the Class-A key count (9 painted chunks → 1 super-tile).
+    #[test]
+    fn writer_pipeline_writes_1024px_supertiles_and_coalesces() {
+        use crate::tile_map::TileMap;
+        let root = std::env::temp_dir().join(format!("hive-snap-super-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sink = LocalDiskSink { root: root.clone() };
+        let mut colors = FxHashMap::default();
+        colors.insert(7u32, [10, 200, 60]);
+
+        // Tiles [0,600)² touch chunks (0..=2, 0..=2) = 9 native chunks, all inside super-tile (0,0) at S=4.
+        let mut t = TileMap::default();
+        for y in 0..600u32 { for x in 0..600u32 { t.set(x, y, 7); } }
+
+        let s = 4u32;
+        let keys = t.drain_dirty_chunks();
+        let mut set = std::collections::HashSet::new();
+        for &k in &keys { let (cx, cy) = TileMap::chunk_coords(k); set.insert((cx / s, cy / s)); }
+        let super_keys: Vec<(u32, u32)> = set.into_iter().collect();
+        assert_eq!(keys.len(), 9, "600² spans a 3×3 chunk block");
+        assert_eq!(super_keys.len(), 1, "all 9 chunks coalesce to one S=4 super-tile (Class-A 9→1)");
+
+        let epoch = 42u64;
+        for snap in &snapshot_supertiles(&t, &super_keys, s) {
+            assert!(!snap.all_empty);
+            let key = format!("snap/{epoch}/0/{}/{}.png", snap.sx, snap.sy);
+            sink.put(&key, &rasterize_supertile(snap, &colors, s)).unwrap();
+            let bytes = std::fs::read(root.join(&key)).expect("super-tile PNG on disk at the keyed path");
+            let mut reader = png::Decoder::new(&bytes[..]).read_info().unwrap();
+            let info = reader.next_frame(&mut vec![0u8; reader.output_buffer_size()]).unwrap();
+            assert_eq!((info.width, info.height), (1024, 1024), "S=4 → 1024px PNG on disk");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

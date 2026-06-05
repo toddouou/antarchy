@@ -296,6 +296,32 @@ pub fn snapshot_dir() -> Option<String> {
     V.get_or_init(|| std::env::var("HIVE_SNAP_DIR").ok().filter(|s| !s.trim().is_empty())).clone()
 }
 
+/// Phase-6 snapshot-writer cadence in seconds (R2 Class-A lever A). `HIVE_SNAP_INTERVAL_SECS`,
+/// default 300, clamped to [30, 3600]. Longer = fewer PutObject ops, staler cold-load tiles
+/// (the live view is WS-authoritative, so staleness only affects pre-first-frame paint). Read once.
+pub fn snapshot_interval_secs() -> u64 {
+    static V: OnceLock<u64> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("HIVE_SNAP_INTERVAL_SECS").ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(300)
+            .clamp(30, 3600)
+    })
+}
+
+/// Phase-6 super-tile factor (R2 Class-A lever B): each snapshot PNG covers S×S native chunks
+/// (S×256 px square). `HIVE_SNAP_TILE_CHUNKS`, default 4 (→1024 px), restricted to {1,2,4,8};
+/// invalid → 4. Higher = fewer Class-A keys when activity clusters, larger PNGs. MUST reach the
+/// client (sent as `snapTileCells = S*256`) so the browser keys the same `(sx,sy)` tiles. Read once.
+pub fn snapshot_tile_chunks() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        let s = std::env::var("HIVE_SNAP_TILE_CHUNKS").ok()
+            .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(4);
+        if [1, 2, 4, 8].contains(&s) { s } else { 4 }
+    })
+}
+
 /// Public base URL the **browser** uses to fetch snapshot tiles directly from R2 (the `$0`-egress
 /// path; never via the Railway origin). Sent to the client in `logged-in`/`world-info`; empty →
 /// the client snapshot compositor stays dormant. Read once.
