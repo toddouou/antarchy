@@ -203,9 +203,10 @@ pub fn country_and_continent(x: i32, y: i32) -> (String, String) {
 }
 
 /// Metro list for the client (header switcher + region tabs): name + centre tile to fly to.
+/// `r2` (squared radius in tiles) lets the spectator camera test "is this queen inside a metro".
 pub fn metros_json() -> Vec<Value> {
     regions().metros.iter()
-        .map(|m| serde_json::json!({ "name": m.name, "x": m.cx, "y": m.cy }))
+        .map(|m| serde_json::json!({ "name": m.name, "x": m.cx, "y": m.cy, "r2": m.r2 }))
         .collect()
 }
 

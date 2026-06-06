@@ -1,8 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<!-- Theme: default dark; honour the saved choice before first paint (no flash). -->
+<script>try{var t=localStorage.getItem('antarchy-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
 <title>antarchy — the ants are revolting</title>
 <link rel="icon" href="/favicon.png" type="image/png">
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -11,13 +13,23 @@
     --bg: #f5f3ec; --bg2: #ffffff; --ink: #0d0d0d;
     --dim: #6e6e6e; --line: #c8c4b8; --grid: #ece8da;
     --red: #ff2e3f; --yel: #ffb800; --grn: #00b86b; --blu: #0066ff;
+    /* dark "chrome bar" surface (stays dark in BOTH themes) + scrims / scanline overlay */
+    --inkbar: #0d0d0d; --modal-scrim: rgba(245,243,236,.92); --scan: rgba(0,0,0,.025);
+    --on-yel: #0d0d0d;   /* text on a yellow fill — yellow is light in both themes → always dark */
+  }
+  /* DARK THEME — derived from the finalized light values; default for new players (toggle in Settings). */
+  html[data-theme="dark"] {
+    --bg: #14171b; --bg2: #1b1f25; --ink: #e8e6e0;
+    --dim: #9aa0aa; --line: #2c313a; --grid: #20242b;
+    --red: #ff3b4a; --yel: #ffb800; --grn: #14c47e; --blu: #4f93ff;
+    --inkbar: #23272e; --modal-scrim: rgba(8,9,11,.86); --scan: rgba(255,255,255,.028);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html,body { height:100%; background:var(--bg); color:var(--ink);
     font-family:'IBM Plex Mono',monospace; overflow:hidden; user-select:none;
     overscroll-behavior:none; touch-action:none; }
   body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
-    background:repeating-linear-gradient(0deg, transparent 0px, transparent 2px, rgba(0,0,0,.025) 2px, rgba(0,0,0,.025) 3px); }
+    background:repeating-linear-gradient(0deg, transparent 0px, transparent 2px, var(--scan) 2px, var(--scan) 3px); }
   body.no-scan::after { display:none; }
 
   /* Layout — admin panel is dynamic */
@@ -37,7 +49,7 @@
     padding:4px 8px; border:1px solid var(--line); }
   .region b { color:var(--red); font-weight:normal; }
   .admin-badge { font-family:'Press Start 2P',monospace; font-size:8px; padding:4px 8px;
-    background:var(--ink); color:var(--yel); border:1px solid var(--ink); display:none; }
+    background:var(--inkbar); color:var(--yel); border:1px solid var(--ink); display:none; }
   body.admin-on .admin-badge { display:inline-block; }
   .hstats { margin-left:auto; display:flex; }
   .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 11px;
@@ -132,8 +144,8 @@
     width:min(820px,93vw); max-height:86vh; display:flex; flex-direction:column; }
   .win-head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px;
     border-bottom:2px solid var(--ink); background:var(--yel); }
-  .win-title { font-family:'Press Start 2P',monospace; font-size:12px; letter-spacing:.04em; }
-  .win-close { font-family:'Press Start 2P',monospace; font-size:11px; background:var(--ink); color:#fff;
+  .win-title { font-family:'Press Start 2P',monospace; font-size:12px; letter-spacing:.04em; color:var(--on-yel); }
+  .win-close { font-family:'Press Start 2P',monospace; font-size:11px; background:var(--inkbar); color:#fff;
     border:2px solid var(--ink); padding:6px 9px; cursor:pointer; }
   .win-close:hover { background:var(--red); }
   .win-body { padding:18px 20px 22px; overflow:auto; }
@@ -492,7 +504,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   @keyframes ss-in { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:translateY(0)} }
   #ss-header {
     grid-column:1/3; grid-row:1;
-    background:var(--ink); color:var(--yel);
+    background:var(--inkbar); color:var(--yel);
     border-bottom:2px solid var(--ink);
     display:flex; align-items:center; padding:0 18px; gap:14px;
     pointer-events:auto;
@@ -549,7 +561,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   /* grid col 2 / row 2 is intentionally absent — canvas shows through */
   #ss-footer {
     grid-column:1/3; grid-row:3;
-    background:var(--ink);
+    background:var(--inkbar);
     border-top:2px solid var(--ink);
     display:flex; align-items:center; padding:0 16px; gap:20px;
     pointer-events:auto;
@@ -565,7 +577,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     box-shadow:3px 3px 0 0 var(--ink);
     min-width:160px; display:none;
   }
-  #ss-card.ok { background:var(--ink); color:var(--yel); }
+  #ss-card.ok { background:var(--inkbar); color:var(--yel); }
   #ss-card.bad { background:var(--red); color:#fff; }
   #ss-card.out { background:var(--bg2); color:var(--dim); border-color:var(--line); box-shadow:none; }
   #ss-card.water { background:#1a6fa8; color:#e0f0ff; }
@@ -573,7 +585,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   #ss-card-sub { font-size:6px; opacity:.7; }
 
   /* AUTH MODAL */
-  .modal-bg { position:fixed; inset:0; background:rgba(245,243,236,.92);
+  .modal-bg { position:fixed; inset:0; background:var(--modal-scrim);
     display:grid; place-items:center; z-index:1000; }
   .modal { background:var(--bg2); border:3px solid var(--ink); padding:30px 34px;
     max-width:440px; width:90%; box-shadow:8px 8px 0 0 var(--red); }
@@ -600,6 +612,17 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     white-space:pre; margin-bottom:14px; text-align:center; line-height:1.1; }
   .err { color:var(--red); font-family:'Press Start 2P',monospace; font-size:7px;
     margin-top:6px; min-height:12px; }
+
+  /* BOOT SPLASH — covers first paint until cookie auth resolves, so the game (or any stray
+     pre-auth UI) never flashes before we know who the player is. Hidden once `logged-in` arrives. */
+  #boot-splash { position:fixed; inset:0; z-index:1100; display:grid; place-items:center;
+    background:var(--bg); color:var(--ink); text-align:center; }
+  #boot-splash .boot-logo { font-family:'Press Start 2P',monospace; font-size:18px; }
+  #boot-splash .boot-logo::before { content:"▲ "; color:var(--red); }
+  #boot-splash .boot-msg { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
+    margin-top:16px; letter-spacing:.15em; animation:bootpulse 1.2s ease-in-out infinite; }
+  @keyframes bootpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  body.booted #boot-splash { display:none; }
 
   /* ============================================================
      MOBILE  —  phones & narrow viewports (≤768px).
@@ -653,7 +676,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       display: flex; align-items: center; justify-content: center;
       margin-left: auto; margin-bottom: 8px;
       width: 44px; height: 44px; font-size: 13px;
-      background: var(--ink); color: #fff; border: 2px solid var(--ink); cursor: pointer;
+      background: var(--inkbar); color: #fff; border: 2px solid var(--ink); cursor: pointer;
       font-family: 'Press Start 2P', monospace;
     }
     #drawer-scrim { position: fixed; inset: 0; z-index: 640; background: rgba(13,13,13,.5); }
@@ -681,7 +704,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     .mnav-btn.mnav-deploy { background: var(--red); border-left: none; }
     .mnav-btn.mnav-deploy .mic, .mnav-btn.mnav-deploy .mlb { color: #fff; }
     .mnav-btn.mnav-deploy:active { background: #d8202f; }
-    .mnav-btn.mnav-deploy.active { background: var(--ink); }
+    .mnav-btn.mnav-deploy.active { background: var(--inkbar); }
     .mnav-btn.mnav-deploy.active .mic, .mnav-btn.mnav-deploy.active .mlb { color: var(--yel); }
 
     /* Canvas overlays clear of the header inset and the bottom nav --- */
@@ -1237,7 +1260,15 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   </div>
 </div>
 
-<div class="modal-bg" id="auth-modal">
+<!-- Connecting splash: shown until the cookie session resolves (logged-in) → no old-login flash. -->
+<div id="boot-splash"><div class="boot-inner">
+  <div class="boot-logo">antarchy</div>
+  <div class="boot-msg">CONNECTING…</div>
+</div></div>
+
+<!-- Auth modal is hidden by default; login/registration live on the landing page now. The only
+     in-game step left is the first-time colony-colour pick (shown when colorChosen === false). -->
+<div class="modal-bg" id="auth-modal" style="display:none">
   <div class="modal">
     <div class="ascii">  ▲
  ╱│╲
@@ -1246,34 +1277,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   ▼</div>
     <h2>WELCOME TO<br><em>ANTARCHY.</em></h2>
     <p class="tag">PLANET-SCALE ANT WARFARE</p>
-    <div class="step active" data-step="login">
-      <label>USERNAME</label>
-      <input id="li-u" type="text" placeholder="ANTLORD" maxlength="20" autocomplete="username">
-      <label>PASSWORD</label>
-      <input id="li-p" type="password" placeholder="••••••••" autocomplete="current-password">
-      <div class="actions"><button class="btn" onclick="doLogin()">LOG IN →</button></div>
-      <div class="err" id="li-err"></div>
-      <div class="switch">NEW? <a onclick="showStep('reg1')">CREATE ACCOUNT</a></div>
-    </div>
-    <div class="step" data-step="reg1">
-      <label>USERNAME</label>
-      <input id="r-u" type="text" placeholder="ANTLORD" maxlength="20">
-      <label>PASSWORD (MIN 4)</label>
-      <input id="r-p" type="password" placeholder="••••••••">
-      <div class="actions"><button class="btn" onclick="showStep('reg2')">NEXT →</button></div>
-      <div class="switch"><a onclick="showStep('login')">← BACK</a></div>
-    </div>
-    <div class="step" data-step="reg2">
-      <label>CHOOSE HUE</label>
-      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">ONE CHANGE ALLOWED LATER.</div>
-      <div class="hue-picker" id="hue-picker"></div>
-      <div class="actions">
-        <button class="btn ghost" onclick="showStep('reg1')">← BACK</button>
-        <button class="btn" onclick="doRegister()">REGISTER →</button>
-      </div>
-      <div class="err" id="r-err"></div>
-    </div>
-    <div class="step" data-step="admin-color">
+    <div class="step active" data-step="admin-color">
       <label>CHOOSE YOUR COLONY COLOR</label>
       <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-bottom:6px;">THIS CANNOT BE CHANGED LATER.</div>
       <div class="hue-picker" id="admin-hue-picker"></div>
@@ -1951,12 +1955,10 @@ function handle(msg) {
     case 'err':
       // beta-v2: an expired/invalid session token → clear it and return to the landing page to log in.
       if (msg.code==='session') { try{ localStorage.removeItem('antarchy-session'); }catch(_){} location.href='/'; return; }
-      toast(msg.msg); $('li-err').textContent=msg.msg; $('r-err').textContent=msg.msg;
-      // Pre-login error: keep the auth modal up and surface the message inline on whichever step
-      // the user is on (login OR a register step). Do NOT jump them to the login step — a stray
-      // error mid-signup (e.g. a viewport msg racing ahead of auth) looked like "kicked back to
-      // login" and discarded the user's hue selection. Genuine auth failures still show inline.
-      if (!me) $('auth-modal').style.display='';
+      toast(msg.msg);
+      // Surface the message on the colour-pick step if that's where we are — the only in-game auth
+      // UI left (login/registration now live on the landing page).
+      { const ae=$('admin-err'); if (ae) ae.textContent=msg.msg; }
       if (mode==='place-queen') {
         _queenPlaceCooldown = false;
         const card=$('ss-card');
@@ -1970,6 +1972,7 @@ function handle(msg) {
     case 'event': toast(msg.msg); admPushLog(msg.msg); break;
     case 'logged-in':
       me=msg.me;
+      document.body.classList.add('booted');   // cookie auth resolved → drop the connecting splash
       sessionStorage.setItem('hive-active','1');
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
@@ -1984,7 +1987,7 @@ function handle(msg) {
       cacheOriX=Math.max(0,(WORLD.spawnX||0)-(TILE_CACHE_W>>1));
       cacheOriY=Math.max(0,(WORLD.spawnY||0)-(TILE_CACHE_H>>1));
       builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
-      if (me.colorChosen === false) { showStep('admin-color'); return; }
+      if (me.colorChosen === false) { $('auth-modal').style.display='grid'; showStep('admin-color'); return; }
       $('auth-modal').style.display='none';
       $('pname').textContent=me.username;
       $('pfp').textContent=me.username[0];
@@ -2402,13 +2405,19 @@ function applySettings(){
   AudioEngine.setMasterVolume(settings.vol);
   document.body.classList.toggle('no-scan', !settings.scan);
 }
+// THEME — dark by default; the pre-paint <head> script applied any saved choice before first paint.
+function applyTheme(t){ const th=(t==='light')?'light':'dark'; document.documentElement.dataset.theme=th;
+  try{ localStorage.setItem('antarchy-theme',th); }catch(e){} }
 function openSettingsWindow(){ AudioEngine.click(); openWindow('SETTINGS','settings'); renderSettingsWindow(); }
 function renderSettingsWindow(){
   const el=$('win-body'); if(!el) return;
+  // Toggles are keyboard-operable (role=switch, focusable, Enter/Space) for accessibility.
   const tog=(name,desc,on,fn)=>`<div class="set-row"><div class="set-info">
     <div class="set-name">${name}</div><div class="set-desc">${desc}</div></div>
-    <div class="set-toggle${on?' on':''}" onclick="${fn}"><div class="knob"></div></div></div>`;
+    <div class="set-toggle${on?' on':''}" role="switch" tabindex="0" aria-checked="${on?'true':'false'}" aria-label="${name}"
+      onclick="${fn}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${fn};}"><div class="knob"></div></div></div>`;
   let html='';
+  html+=tog('DARK MODE','Dim, low-light interface theme.', document.documentElement.dataset.theme==='dark', "toggleSetting('theme')");
   html+=tog('SOUND FX','Clicks, clashes, queen shrieks.', settings.sfx, "toggleSetting('sfx')");
   html+=tog('MUSIC','Looping chiptune soundtrack.', settings.music, "toggleSetting('music')");
   html+=tog('BASE MAP','OpenStreetMap geography under your territory.', mapVisible, "toggleSetting('map')");
@@ -2421,6 +2430,7 @@ function renderSettingsWindow(){
 }
 function toggleSetting(key){
   AudioEngine.click();
+  if (key==='theme'){ applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'); renderSettingsWindow(); return; }
   if (key==='map'){ toggleMap(); renderSettingsWindow(); return; }
   settings[key]=!settings[key];
   if (key==='sfx'){ AudioEngine.setSfx(settings.sfx); localStorage.setItem('hive-sfx', settings.sfx?'1':'0'); }
@@ -3577,17 +3587,25 @@ cvs.addEventListener('touchstart', e=>{
       dragFrom={px:t.clientX-r.left, py:t.clientY-r.top, raw:{x:t.clientX,y:t.clientY}};
       antPlaceOrigin=screenToTile(t.clientX,t.clientY);
       antPlaceDir=[0,-1];
+    } else if (mode==='shop-brute') {
+      // Begin brute drag (start tile + drag a direction) — mirrors the mousedown path.
+      shopOrigin=screenToTile(t.clientX,t.clientY); shopDir=[0,-1];
+      mode='shop-brute-drag';
+      dragFrom={px:t.clientX-r.left, py:t.clientY-r.top, raw:{x:t.clientX,y:t.clientY}};
     } else {
-      // Begin map pan
+      // Begin map pan (also covers tap-to-place modes: place-queen, shop-relocate, admin-*).
       _tpFrom={px:t.clientX,py:t.clientY};
       _tpViewStart={...view};
     }
 
   } else if (e.touches.length===2) {
-    // Cancel any 1-finger ant drag or pan
+    // Cancel any 1-finger ant/brute drag or pan
     if (mode==='place-ant-drag') {
       $('dir-overlay').style.display='none';
       mode='place-ant-down'; dragFrom=null;
+    } else if (mode==='shop-brute-drag') {
+      $('dir-overlay').style.display='none';
+      mode='shop-brute'; dragFrom=null;
     }
     _tpFrom=null; _tpTapStart=null;
     const t1=e.touches[0], t2=e.touches[1];
@@ -3628,6 +3646,12 @@ cvs.addEventListener('touchmove', e=>{
       antPlaceDir=snapDir(cx_-dragFrom.px, cy_-dragFrom.py);
       showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
 
+    } else if (mode==='shop-brute-drag' && dragFrom) {
+      const r=cvs.getBoundingClientRect();
+      const cx_=t.clientX-r.left, cy_=t.clientY-r.top;
+      shopDir=snapDir(cx_-dragFrom.px, cy_-dragFrom.py);
+      showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
+
     } else if (_tpFrom) {
       const cp=CELL*view.zoom;
       let nx=_tpViewStart.x-(t.clientX-_tpFrom.px)/cp;
@@ -3649,15 +3673,35 @@ function _onTouchEnd(e){
     send({t:'place-ant',x:antPlaceOrigin.x,y:antPlaceOrigin.y,dx:antPlaceDir[0],dy:antPlaceDir[1]});
     mode='place-ant-down'; dragFrom=null;
 
+  } else if (mode==='shop-brute-drag') {
+    // Finalize brute placement (same as mouseup). A pure tap (no drag) sends the default [0,-1].
+    $('dir-overlay').style.display='none';
+    if (shopOrigin) send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
+    dragFrom=null; exitShopMode();
+
   } else if (_tpTapStart && e.changedTouches.length>=1) {
     const t=e.changedTouches[0];
     const dist=Math.hypot(t.clientX-_tpTapStart.x, t.clientY-_tpTapStart.y);
     const elapsed=performance.now()-_tpTapStart.time;
     if (dist<=TOUCH_TAP_PX && elapsed<=TOUCH_TAP_MS) {
+      const tile=screenToTile(t.clientX,t.clientY);
+      // Tap-to-place modes — mirror the mousedown branches so mobile reaches full parity.
       if (mode==='place-queen') {
-        const tile=screenToTile(t.clientX,t.clientY);
         if (tile && hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); }
         else if (tile) { send({t:'place-queen',x:tile.x,y:tile.y}); }
+      } else if (mode==='shop-relocate') {
+        if (tile) { send({t:'shop-buy',item:'relocate',x:tile.x,y:tile.y}); exitShopMode(); }
+      } else if (mode==='admin-move') {
+        if (tile && adminMoveTargetId!==null)
+          send({t:'admin-target',action:'move-queen',targetId:adminMoveTargetId,x:tile.x,y:tile.y});
+        mode='idle'; cvs.style.cursor=''; adminMoveTargetId=null;
+      } else if (mode==='admin-place-npc') {
+        if (tile) { send({t:'admin-spawn-at',x:tile.x,y:tile.y}); toast(`NPC PLACED AT (${tile.x}, ${tile.y})`); }
+      } else if (mode==='admin-place-ant') {
+        if (tile) { send({t:'admin-place-ant',targetId:admAntTargetId,x:tile.x,y:tile.y}); toast(`ANT PLACED AT (${tile.x}, ${tile.y})`); }
+      } else {
+        // Idle tap → inspect whatever is under the finger (mirrors the desktop click→inspect path).
+        inspectAtTile(tile);
       }
     }
   }
@@ -3866,31 +3910,8 @@ $('btn-logout').onclick=()=>{
 function showStep(n) {
   document.querySelectorAll('.step').forEach(s=>s.classList.toggle('active',s.dataset.step===n));
 }
-function doLogin() {
-  AudioEngine.click();
-  const u=$('li-u').value.trim().toUpperCase(), p=$('li-p').value;
-  if (!u||!p) { $('li-err').textContent='FILL BOTH FIELDS'; return; }
-  // Never persist credentials in localStorage (XSS-exfiltratable). Sessions are HttpOnly cookies now;
-  // this legacy in-game form just authenticates the socket directly.
-  send({t:'login', username:u, password:p, bin:1});
-}
-function doRegister() {
-  AudioEngine.click();
-  const u=$('r-u').value.trim().toUpperCase(), p=$('r-p').value;
-  if (!u||u.length<3) { $('r-err').textContent='USERNAME TOO SHORT'; return; }
-  if (!p||p.length<4) { $('r-err').textContent='PASSWORD TOO SHORT'; return; }
-  const sel=document.querySelector('.hue-sw.sel');
-  if (!sel) { $('r-err').textContent='PICK A HUE'; return; }
-  const idx=+sel.dataset.idx;
-  // No plaintext credential persistence — see doLogin().
-  send({t:'register', username:u, password:p, color:HUES[idx], hueIdx:idx, bin:1});
-}
-HUES.forEach((c,i)=>{
-  const el=document.createElement('div');
-  el.className='hue-sw'; el.style.background=c; el.dataset.idx=i;
-  el.onclick=()=>{ document.querySelectorAll('#hue-picker .hue-sw').forEach(s=>s.classList.remove('sel')); el.classList.add('sel'); };
-  $('hue-picker').appendChild(el);
-});
+// Login/registration moved to the landing page (/api/* cookie auth). The only in-game colour UI is
+// the first-time picker below (#admin-hue-picker → doSetAdminColor).
 HUES.forEach((c,i)=>{
   const el=document.createElement('div');
   el.className='hue-sw'; el.style.background=c; el.dataset.idx=i;
@@ -4277,14 +4298,6 @@ function toast(msg) {
 
 /* Init audio context on first user interaction */
 document.addEventListener('click', () => AudioEngine.init(), { once: true });
-
-/* ===================================================================
-   ENTER KEY — AUTH FORMS
-   =================================================================== */
-$('li-u').addEventListener('keydown', e=>{ if(e.key==='Enter') { e.preventDefault(); $('li-p').focus(); } });
-$('li-p').addEventListener('keydown', e=>{ if(e.key==='Enter') { e.preventDefault(); doLogin(); } });
-$('r-u').addEventListener('keydown',  e=>{ if(e.key==='Enter') { e.preventDefault(); $('r-p').focus(); } });
-$('r-p').addEventListener('keydown',  e=>{ if(e.key==='Enter') { e.preventDefault(); showStep('reg2'); } });
 
 /* ===================================================================
    KEYBOARD SHORTCUTS

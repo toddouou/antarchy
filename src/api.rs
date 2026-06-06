@@ -259,7 +259,7 @@ fn valid_email(e: &str) -> bool {
 fn sanitize_color(c: &str) -> String {
     let c = c.trim();
     if crate::config::valid_hex_color(c) { c.to_string() }
-    else { HUES.first().copied().unwrap_or("#c0392b").to_string() }
+    else { HUES.first().copied().unwrap_or("#b5524a").to_string() }
 }
 
 fn gen_code() -> String { format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32)) }
