@@ -3,12 +3,26 @@ use std::sync::atomic::AtomicU64;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 use tokio::sync::watch;
 
 use crate::auth::Auth;
 use crate::config::{bubble_r_for_level, max_hp_for_level, queen_size_for_level, Config};
 use crate::tile_map::TileMap;
+
+/// A bounded per-connection outbound sender (OWASP A02/A10 — backpressure). Wraps a bounded
+/// `tokio::mpsc::Sender` and sends **non-blocking**: when the connection's queue is full the message
+/// is dropped rather than buffered, so a slow or malicious consumer can't grow server memory without
+/// bound. The `send` method keeps every existing `tx.send(x)` call site unchanged. Depth is
+/// `config::ws_send_queue()`.
+#[derive(Clone, Debug)]
+pub struct BoundedTx<T>(Sender<T>);
+
+impl<T> BoundedTx<T> {
+    pub fn new(inner: Sender<T>) -> Self { Self(inner) }
+    /// Try to enqueue `msg`; `Err(Full)` (queue at capacity) or `Err(Closed)` (peer gone) just drops it.
+    pub fn send(&self, msg: T) -> Result<(), TrySendError<T>> { self.0.try_send(msg) }
+}
 
 /// Phase-4 per-connection egress meter: a sliding byte counter incremented by the WS write task at
 /// each real `ws_tx.send`, and read by `viewport_loop` to decide whether a connection is over its
@@ -147,13 +161,13 @@ pub struct Player {
     /// disconnect. The single authoritative "this connection costs minimal egress" marker.
     pub guest:           bool,
     pub view:            Option<PlayerView>,
-    pub tx:              Option<UnboundedSender<String>>,
+    pub tx:              Option<BoundedTx<String>>,
     pub view_tx:         Option<watch::Sender<Option<Vec<u8>>>>,
     /// Phase-3 egress: ordered, never-dropped BINARY control channel (compressed `me`/leaderboard/
     /// stats/region-holders — kinds 16–20). Parallel to `tx`; only fed when `bin` is set. Carries an
     /// `Arc<[u8]>` (Phase-5) so a broadcast frame is built once and fanned out by refcount-clone, not
     /// a per-recipient `Vec` copy — the O(connections) control fan-out is the hot path.
-    pub ctl_tx:          Option<UnboundedSender<Arc<[u8]>>>,
+    pub ctl_tx:          Option<BoundedTx<Arc<[u8]>>>,
     /// Phase-4 per-connection egress meter (shared with the WS write task). `None` until auth wires
     /// it on, or for NPCs / never-connected players.
     pub egress_meter:    Option<Arc<EgressMeter>>,

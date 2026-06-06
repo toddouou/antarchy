@@ -1,7 +1,7 @@
 # Antarchy.fun — Security & Anti-Cheat Hardening — P0 Tier (RESUMABLE CHECKPOINT)
 
-> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a + §1 + §2 DONE.**
-> **Resume at:** §3 WebSocket hardening. See "Execution order" + "Next concrete action" at the bottom.
+> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a + §1 + §2 + §3 DONE.**
+> **Resume at:** §4b cookie sessions. See "Execution order" + "Next concrete action" at the bottom.
 >
 > Done so far:
 > - baseline commit (beta-v2 state) · `bbe539f`
@@ -16,6 +16,13 @@
 >   `create_or_reconnect_player`, cleared on disconnect in `server.rs`); `check_seq` guard on
 >   `place-queen`/`place-ant`/`shop-buy`; client emits monotonic `seq` in `send()`; `admin-give-xp`
 >   rejects non-finite XP; 1 new test.
+> - **§3 WebSocket hardening** — (3a) `WebSocketUpgrade::max_message_size`/`max_frame_size`
+>   (`HIVE_WS_MAX_MSG`=64KiB), `Origin` allowlist (`config::allowed_origins`, `HIVE_ALLOWED_ORIGINS`)
+>   → 403 on mismatch via `upgrade_guarded`, keepalive `Ping` + idle close (`HIVE_WS_IDLE_SECS`=60);
+>   (3b) bounded backpressure: `world::BoundedTx<T>` newtype over a bounded `mpsc::Sender`
+>   (`HIVE_WS_SEND_QUEUE`=1024), drop-on-full — `Player.tx`/`ctl_tx` + the per-conn channels switched
+>   over with every `tx.send(...)` call site unchanged. **Runtime-verified on :8090**: evil Origin→403,
+>   allowed/no-Origin→101, pages→200, admin/admin login OK under Argon2id.
 > - Running total: builds on `target-dev`; **44 tests pass**. (Pre-existing clippy style lints in the
 >   baseline remain — a `-D warnings` cleanup is P2 §12, out of scope for P0.)
 > Mirror of the approved plan at `~/.claude/plans/antarchy-fun-security-eager-comet.md`, kept in-repo
@@ -211,18 +218,29 @@ log.
 2. ~~§4a Argon2id foundation → build/clippy/test → commit.~~ ✅
 3. ~~§1 AoI fix → tests → commit.~~ ✅
 4. ~~§2 anti-replay → tests → commit.~~ ✅
-5. §3 WS hardening → tests → commit.  ← **NEXT**
-6. §4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.
+5. ~~§3 WS hardening → tests → smoke → commit.~~ ✅
+6. §4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.  ← **NEXT**
 7. §5 XSS escaping + CSP headers → commit.
 8. §0 egress/R2 telemetry → commit.
 9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**
 
 ## Next concrete action (resume here)
-Start **§3 WebSocket hardening** in `server.rs` + `config.rs`: (1) cap inbound frames via
-`WebSocketUpgrade::max_message_size`/`max_frame_size` (env `HIVE_WS_MAX_MSG`, default 64 KiB);
-(2) `Origin` allowlist on the upgrade (`config::allowed_origins()`, env `HIVE_ALLOWED_ORIGINS`,
-default public base + `localhost:PORT`) → 403 on mismatch; (3) bound `prio_tx`/`ctl_tx_conn` to
-`mpsc::channel(HIVE_WS_SEND_QUEUE=1024)` with `try_send`, disconnect on a full priority queue
-(update `world.rs` `send_to`/`broadcast` + `Player.tx`/`ctl_tx` types accordingly); (4) write-task
-`Ping` interval + idle close after `HIVE_WS_IDLE_SECS` (60). NOTE: switching `Player.tx` from
-`UnboundedSender` to bounded `Sender` touches every `tx.send(...)` site — do it as one careful pass.
+Start **§4b cookie sessions + CSRF + throttle + generic errors** (`api.rs`, `server.rs`,
+`session.rs`, `config.rs`, `world.rs`, `landing.html`, `client.html`):
+1. `config::secure_cookies()` (`HIVE_SECURE_COOKIES`, default off in dev) + `set_session_cookie()`
+   helper → `__Host-antarchy_session` (HttpOnly, Secure, SameSite=Lax, Path=/) in prod, plain
+   `antarchy_session` (no Secure) in dev. `/api/login` + verify-finalize set it; stop returning the
+   token in the JSON body. Add `/api/logout` (revoke + clear cookie).
+2. WS auth from cookie: `play_handler`/`root_handler` read the cookie → `sessions.validate` → uid,
+   pass into `handle_ws_connection`, auto-issue the `session-login` Cmd on connect; keep
+   `{t:"session",token}` one release as fallback.
+3. CSRF: Origin/Referer allowlist check on all POST `/api/*` (reuse `origin_allowed`).
+4. Per-account login throttle: transient `World.login_attempts` keyed by ident (backoff) in
+   `do_login`; also `app.rate.check` on `verify-email`/`verify-phone`.
+5. Generic errors: `do_register` email-exists → uniform success + notify the existing address (no
+   enumeration); keep handle-taken (public).
+6. Username/color charset validators (also kills the stored-XSS source) — legacy WS `register`
+   (`handlers.rs`) + REST color (`api.rs`).
+7. Client: stop writing `antarchy-session`/`hive-u`/`hive-p`; rely on the cookie; logout →
+   `/api/logout`; drop the plaintext-password WS login fallback. Smoke-test register→login→/play on
+   :8090 with `HIVE_SECURE_COOKIES=0`.

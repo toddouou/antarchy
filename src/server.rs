@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use axum::{
     extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -32,8 +32,8 @@ pub enum Cmd {
     /// Auth (register / login): sim fills in player_id and conn_gen, signals reply.
     Auth {
         raw:     String,
-        out_tx:  mpsc::UnboundedSender<String>,
-        ctl_tx:  mpsc::UnboundedSender<Arc<[u8]>>,
+        out_tx:  crate::world::BoundedTx<String>,
+        ctl_tx:  crate::world::BoundedTx<Arc<[u8]>>,
         view_tx: watch::Sender<Option<Vec<u8>>>,
         meter:   Arc<EgressMeter>,
         reply:   oneshot::Sender<Option<(u32, u64)>>,
@@ -70,10 +70,11 @@ static LANDING_HTML: &str = include_str!("../public/landing.html");
 /// when requested. (Login/registration live on the landing page now; the game moved to `/play`.)
 async fn root_handler(
     ws_opt: Option<WebSocketUpgrade>,
+    headers: HeaderMap,
     State(app): State<AppState>,
 ) -> Response {
     match ws_opt {
-        Some(ws) => ws.on_upgrade(move |socket| handle_ws_connection(socket, app)).into_response(),
+        Some(ws) => upgrade_guarded(ws, &headers, app),
         None     => Html(LANDING_HTML).into_response(),
     }
 }
@@ -81,11 +82,40 @@ async fn root_handler(
 /// `/play` — serves the game client on GET, upgrades to an authed game WebSocket when requested.
 async fn play_handler(
     ws_opt: Option<WebSocketUpgrade>,
+    headers: HeaderMap,
     State(app): State<AppState>,
 ) -> Response {
     match ws_opt {
-        Some(ws) => ws.on_upgrade(move |socket| handle_ws_connection(socket, app)).into_response(),
+        Some(ws) => upgrade_guarded(ws, &headers, app),
         None     => Html(CLIENT_HTML).into_response(),
+    }
+}
+
+/// Shared WebSocket-upgrade hardening (OWASP A02/A10): reject disallowed browser Origins (anti-CSWSH)
+/// and cap inbound frame/message size before accepting the socket.
+fn upgrade_guarded(ws: WebSocketUpgrade, headers: &HeaderMap, app: AppState) -> Response {
+    if !origin_allowed(headers) {
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    let max = crate::config::ws_max_msg();
+    ws.max_message_size(max)
+        .max_frame_size(max)
+        .on_upgrade(move |socket| handle_ws_connection(socket, app))
+        .into_response()
+}
+
+/// A PRESENT `Origin` must be in the allowlist; an ABSENT one (non-browser client / same-origin
+/// navigation) is allowed — cross-site WS hijack requires a browser, which always sends `Origin`.
+fn origin_allowed(headers: &HeaderMap) -> bool {
+    match headers.get(axum::http::header::ORIGIN) {
+        None => true,
+        Some(v) => match v.to_str() {
+            Ok(o) => {
+                let o = o.trim_end_matches('/');
+                crate::config::allowed_origins().iter().any(|a| a == o)
+            }
+            Err(_) => false,
+        },
     }
 }
 
@@ -157,12 +187,16 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
     let cmd_tx = app.cmd_tx.clone();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Priority channel: events, confirmations, errors — raw text, never dropped, ordered.
-    let (prio_tx, mut prio_rx) = mpsc::unbounded_channel::<String>();
-    // Binary control channel (Phase 3): compressed me/leaderboard/stats/region-holders — also
-    // never dropped + ordered, but separate so the heavy text builders ride binary without touching
-    // the ~100 raw-text send sites. Only fed when the client negotiated `bin`.
-    let (ctl_tx_conn, mut ctl_rx) = mpsc::unbounded_channel::<Arc<[u8]>>();
+    // Bounded outbound channels (OWASP A02/A10 backpressure): a slow/malicious consumer that stops
+    // reading has its queue capped at `ws_send_queue`, then further messages are dropped instead of
+    // growing server memory. Latest-wins viewport frames ride a separate `watch` slot (already bounded).
+    let qcap = crate::config::ws_send_queue();
+    // Priority channel: events, confirmations, errors — ordered text.
+    let (prio_tx, mut prio_rx) = mpsc::channel::<String>(qcap);
+    // Binary control channel (Phase 3): compressed me/leaderboard/stats/region-holders — separate so
+    // the heavy text builders ride binary without touching the ~100 raw-text send sites. Only fed when
+    // the client negotiated `bin`.
+    let (ctl_tx_conn, mut ctl_rx) = mpsc::channel::<Arc<[u8]>>(qcap);
     // Viewport slot: latest-wins — stale snapshots are replaced, never backlogged.
     // watch::Sender is Clone; we keep one here and send one clone per auth to the sim loop.
     let (view_tx_conn, mut view_rx) = watch::channel::<Option<Vec<u8>>>(None);
@@ -175,9 +209,13 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
     // Write task: delivers priority messages immediately; for viewports, only the latest
     // frame is sent — tokio::select! ensures a slow network never blocks event delivery.
     tokio::spawn(async move {
+        // Keepalive ping at half the idle window so a live client always pongs in time; the read side
+        // closes the socket if no inbound frame (including that pong) arrives within the window.
+        let mut ping = tokio::time::interval(
+            Duration::from_secs((crate::config::ws_idle_secs() / 2).max(1)));
         loop {
             tokio::select! {
-                biased; // text events first, then binary control, then viewport (latest-wins)
+                biased; // text events, then binary control, then keepalive, then viewport (latest-wins)
                 msg = prio_rx.recv() => {
                     match msg {
                         Some(m) => {
@@ -200,6 +238,9 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
                         }
                         None    => break,
                     }
+                }
+                _ = ping.tick() => {
+                    if ws_tx.send(Message::Ping(Vec::new())).await.is_err() { break; }
                 }
                 result = view_rx.changed() => {
                     match result {
@@ -225,7 +266,16 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
     let mut msg_count  = 0u32;
     const RATE_LIMIT: u32 = 120;
 
-    while let Some(Ok(msg)) = ws_rx.next().await {
+    let idle = Duration::from_secs(crate::config::ws_idle_secs());
+    loop {
+        let msg = match tokio::time::timeout(idle, ws_rx.next()).await {
+            Ok(Some(Ok(m)))             => m,
+            Ok(Some(Err(_))) | Ok(None) => break, // socket error / closed
+            Err(_) => {                           // no inbound frame within the idle window (slowloris)
+                if let Some(pid) = player_id { println!("[ws-idle] player {pid} timed out"); }
+                break;
+            }
+        };
         let text = match msg {
             Message::Text(t)  => t,
             Message::Close(_) => break,
@@ -255,7 +305,7 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
                 match session_token(&text).and_then(|tok| app.sessions.validate(&tok)) {
                     Some(s) => format!(r#"{{"t":"session-login","id":{},"bin":1}}"#, s.user_id),
                     None => {
-                        let _ = prio_tx.send(r#"{"t":"err","msg":"Session expired — please log in again","code":"session"}"#.to_string());
+                        let _ = prio_tx.try_send(r#"{"t":"err","msg":"Session expired — please log in again","code":"session"}"#.to_string());
                         continue;
                     }
                 }
@@ -265,8 +315,8 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
             // Clone the viewport sender so the sim loop can write to this connection's slot
             if cmd_tx.send(Cmd::Auth {
                 raw,
-                out_tx: prio_tx.clone(),
-                ctl_tx: ctl_tx_conn.clone(),
+                out_tx: crate::world::BoundedTx::new(prio_tx.clone()),
+                ctl_tx: crate::world::BoundedTx::new(ctl_tx_conn.clone()),
                 view_tx: view_tx_conn.clone(),
                 meter: meter.clone(),
                 reply: reply_tx,
@@ -279,7 +329,7 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
             // Non-auth: fire-and-forget, sim processes at next tick start
             if cmd_tx.send(Cmd::Message { pid, raw: text }).is_err() { break; }
         } else {
-            let _ = prio_tx.send(r#"{"t":"err","msg":"Not logged in"}"#.to_string());
+            let _ = prio_tx.try_send(r#"{"t":"err","msg":"Not logged in"}"#.to_string());
         }
     }
 
@@ -482,8 +532,8 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
 struct ClientJob {
     pid:     u32,
     view_tx: Option<watch::Sender<Option<Vec<u8>>>>,
-    tx:      Option<mpsc::UnboundedSender<String>>,
-    ctl_tx:  Option<mpsc::UnboundedSender<Arc<[u8]>>>,
+    tx:      Option<crate::world::BoundedTx<String>>,
+    ctl_tx:  Option<crate::world::BoundedTx<Arc<[u8]>>>,
     /// This connection negotiated the Phase-3 binary protocol (ant kind 3, fog-on-keyframes, binary
     /// `me`). Decides the per-client frame encoding in the lock-free phase.
     bin:     bool,
@@ -664,8 +714,8 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                 u32,
                 Option<watch::Sender<Option<Vec<u8>>>>,
                 Option<Vec<u8>>,
-                Option<mpsc::UnboundedSender<String>>,
-                Option<mpsc::UnboundedSender<Arc<[u8]>>>,
+                Option<crate::world::BoundedTx<String>>,
+                Option<crate::world::BoundedTx<Arc<[u8]>>>,
                 bool,
                 Option<String>,
                 Option<PrevGrid>,

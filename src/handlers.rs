@@ -1,5 +1,4 @@
 use serde_json::{json, Value};
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::auth::{hash_pw_argon2, needs_rehash, verify_pw, UserRecord};
 use crate::config::{
@@ -8,7 +7,7 @@ use crate::config::{
 };
 use crate::network::{build_leaderboard, build_player_info, build_queen_roster};
 use crate::simulation::{apply_peak_unlocks, kill_queen, spawn_npc, wipe_world, wipe_world_and_users};
-use crate::world::{Ant, Player, PlayerView, Queen, World};
+use crate::world::{Ant, BoundedTx, Player, PlayerView, Queen, World};
 
 fn err(msg: &str) -> String {
     json!({"t":"err","msg":msg}).to_string()
@@ -35,7 +34,7 @@ fn check_seq(world: &mut World, pid: u32, msg: &Value) -> bool {
 pub fn handle_message(
     world:     &mut World,
     player_id: &mut Option<u32>,
-    tx:        &UnboundedSender<String>,
+    tx:        &BoundedTx<String>,
     msg:       Value,
 ) {
     let t = msg.get("t").and_then(Value::as_str).unwrap_or("");
@@ -844,7 +843,7 @@ fn create_or_reconnect_player(
     world: &mut World,
     id: u32, username: &str, color: &str, hue_idx: i32,
     _is_admin: bool,
-    tx: UnboundedSender<String>,
+    tx: BoundedTx<String>,
 ) -> Option<String> {
     use crate::config::current_ms;
     // Anti-replay: a (re)connect begins a fresh client command-seq stream (page reload resets the

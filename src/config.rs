@@ -504,6 +504,57 @@ pub fn clamp_view_span(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32, i32, i3
     (x0 as i32, y0 as i32, x1 as i32, y1 as i32)
 }
 
+// ---- WebSocket hardening (OWASP A02/A10) -------------------------------------------------------
+
+/// Max inbound WebSocket message/frame size in bytes — gameplay JSON is tiny, so this rejects
+/// oversized payloads (memory/CPU DoS) by closing the socket. `HIVE_WS_MAX_MSG`, default 65536,
+/// min 1024. Read once.
+pub fn ws_max_msg() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_WS_MAX_MSG").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(65536).max(1024))
+}
+
+/// Per-connection outbound send-queue depth (backpressure cap). When a connection's priority/control
+/// queue is full, further messages are dropped rather than buffered — so a slow/malicious consumer
+/// can't grow server memory without bound. `HIVE_WS_SEND_QUEUE`, default 1024, min 16. Read once.
+pub fn ws_send_queue() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_WS_SEND_QUEUE").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(1024).max(16))
+}
+
+/// Idle timeout (seconds): if no inbound frame — including the pong to our keepalive ping — arrives
+/// within this window, the socket is closed (slowloris / dead-peer reclaim). `HIVE_WS_IDLE_SECS`,
+/// default 60, min 10. Read once.
+pub fn ws_idle_secs() -> u64 {
+    static V: OnceLock<u64> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_WS_IDLE_SECS").ok()
+        .and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(60).max(10))
+}
+
+/// Allowlisted browser `Origin`s for the WebSocket upgrade (anti-CSWSH). Comma-separated
+/// `HIVE_ALLOWED_ORIGINS`; default = the public base URL (if set) + `localhost`/`127.0.0.1` on the
+/// bound port. An ABSENT `Origin` (non-browser client / same-origin navigation) is allowed —
+/// cross-site WS hijack requires a browser, which always sends `Origin`; a PRESENT one must match.
+pub fn allowed_origins() -> &'static [String] {
+    static V: OnceLock<Vec<String>> = OnceLock::new();
+    V.get_or_init(|| {
+        if let Ok(s) = std::env::var("HIVE_ALLOWED_ORIGINS") {
+            return s.split(',')
+                .map(|x| x.trim().trim_end_matches('/').to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+        }
+        let mut v = Vec::new();
+        if let Some(base) = public_base_url() { v.push(base); }
+        let port = cfg().port;
+        v.push(format!("http://localhost:{port}"));
+        v.push(format!("http://127.0.0.1:{port}"));
+        v
+    })
+}
+
 pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     let d = Config::default();
     let vals: &[(&'static str, f64)] = &[
