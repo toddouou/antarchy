@@ -245,6 +245,7 @@ impl R2Sink {
 }
 impl SnapshotSink for R2Sink {
     fn put(&self, key: &str, bytes: &[u8]) -> Result<(), String> {
+        crate::metrics::record_class_a(1); // PutObject = Class A ($4.50/M)
         let resp = self.rt
             .block_on(self.bucket.put_object_with_content_type(key, bytes, "image/png"))
             .map_err(|e| e.to_string())?;
@@ -252,6 +253,7 @@ impl SnapshotSink for R2Sink {
         if (200..300).contains(&code) { Ok(()) } else { Err(format!("R2 HTTP {code}")) }
     }
     fn delete(&self, key: &str) -> Result<(), String> {
+        crate::metrics::record_r2_delete(1); // DeleteObject is free, but track for visibility
         let resp = self.rt.block_on(self.bucket.delete_object(key)).map_err(|e| e.to_string())?;
         let code = resp.status_code();
         // 404 = already absent (e.g. an empty chunk that was never uploaded) → treat as success.
@@ -262,9 +264,11 @@ impl SnapshotSink for R2Sink {
         self.rt.block_on(async {
             // rust-s3 paginates internally and returns every page's listing.
             let pages = self.bucket.list(prefix, None).await.map_err(|e| e.to_string())?;
+            crate::metrics::record_class_a(pages.len() as u64); // each ListObjects page = Class A
             let keys: Vec<String> = pages.into_iter()
                 .flat_map(|p| p.contents.into_iter().map(|o| o.key))
                 .collect();
+            crate::metrics::record_r2_delete(keys.len() as u64);
             // Delete with bounded concurrency (the current-thread runtime still interleaves the I/O),
             // tallying objects that came back 2xx or 404.
             let bucket = &self.bucket;

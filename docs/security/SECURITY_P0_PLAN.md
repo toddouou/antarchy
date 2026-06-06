@@ -231,8 +231,8 @@ log.
 5. ~~§3 WS hardening → tests → smoke → commit.~~ ✅
 6. ~~§4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.~~ ✅
 7. ~~§5 XSS escaping + CSP headers → commit.~~ ✅
-8. §0 egress/R2 telemetry → commit.  ← **NEXT**
-9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**
+8. ~~§0 egress/R2 telemetry → commit.~~ ✅
+9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**  ← **NEXT**
 
 ## Next concrete action (resume here)
 Start **§4b cookie sessions + CSRF + throttle + generic errors** (`api.rs`, `server.rs`,

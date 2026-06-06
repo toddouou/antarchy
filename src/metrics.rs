@@ -114,6 +114,26 @@ pub fn per_kind() -> [(u64, u64); KIND_COUNT] {
 
 pub fn header_bytes() -> u64 { EGRESS.header_bytes.load(Ordering::Relaxed) }
 
+// ---- R2 operation counters (OWASP A09 — denial-of-wallet) -----------------
+// Cloudflare R2 bills **Class A** ops (PutObject, ListObjects, …) at $4.50/M and **Class B** (Get/Head)
+// at $0.36/M; DeleteObject is free. These count the snapshot sink's billed calls so a runaway
+// (per-tile/per-request writes, a wipe-storm, a misconfigured loop) shows up on `/egress-stats` and in
+// the writer's per-cycle alert BEFORE it shows up on the invoice. The server never reads from R2
+// (browsers fetch tiles straight from the public CDN base), so `R2_CLASS_B` stays 0 here by design.
+pub static R2_CLASS_A: AtomicU64 = AtomicU64::new(0);
+pub static R2_CLASS_B: AtomicU64 = AtomicU64::new(0);
+pub static R2_DELETES: AtomicU64 = AtomicU64::new(0);
+
+pub fn record_class_a(n: u64) { R2_CLASS_A.fetch_add(n, Ordering::Relaxed); }
+#[allow(dead_code)]
+pub fn record_class_b(n: u64) { R2_CLASS_B.fetch_add(n, Ordering::Relaxed); }
+pub fn record_r2_delete(n: u64) { R2_DELETES.fetch_add(n, Ordering::Relaxed); }
+
+/// `(class_a, class_b, deletes)` cumulative R2 op counts.
+pub fn r2_ops() -> (u64, u64, u64) {
+    (R2_CLASS_A.load(Ordering::Relaxed), R2_CLASS_B.load(Ordering::Relaxed), R2_DELETES.load(Ordering::Relaxed))
+}
+
 // ---- Delivery-timing rings + per-connection memory gauge ------------------
 
 const RING_CAP: usize = 240;

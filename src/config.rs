@@ -487,6 +487,23 @@ pub fn guest_ant_cap() -> usize {
         .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(400).max(1))
 }
 
+/// Denial-of-wallet alert (OWASP A09): the snapshot writer logs when R2 Class-A ops exceed this rate
+/// (ops/min) over a cycle — catching a runaway write loop or wipe-storm before the invoice does.
+/// `HIVE_CLASSA_ALERT_PER_MIN`, default 600 (well above steady-state ~tens/cycle). 0 disables. Read once.
+pub fn classa_alert_per_min() -> u64 {
+    static V: OnceLock<u64> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_CLASSA_ALERT_PER_MIN").ok()
+        .and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(600))
+}
+
+/// Egress alert: log when a single connection's send rate exceeds this (KB/s). `HIVE_EGRESS_ALERT_KBPS`,
+/// default 0 = off (the WS layer is already bounded by `EGRESS_CAP_KBPS` / guest knobs). Read once.
+pub fn egress_alert_kbps() -> f64 {
+    static V: OnceLock<f64> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_EGRESS_ALERT_KBPS").ok()
+        .and_then(|s| s.trim().parse::<f64>().ok()).filter(|v| *v > 0.0).unwrap_or(0.0))
+}
+
 // ---- AoI / map-hack guards (OWASP A01) ---------------------------------------------------------
 
 /// Hard cap on the **live viewport span** in world tiles. The client's requested view rectangle is

@@ -677,6 +677,21 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     let stats = build_server_stats(&w);
                     w.broadcast_ctl(Arc::from(ctl_frame(CTL_STATS, &stats)), &stats);
                     last_stats_tick = tick;
+
+                    // Denial-of-wallet egress alert (OWASP A09, opt-in): flag any connection over the
+                    // per-conn KB/s ceiling. ~1 Hz, off the hot path; off by default (the WS layer is
+                    // already bounded by EGRESS_CAP_KBPS / guest knobs).
+                    let ealert = crate::config::egress_alert_kbps();
+                    if ealert > 0.0 {
+                        let now_ms = crate::config::current_ms();
+                        for (&id, p) in &w.players {
+                            if let Some(kb) = p.egress_meter.as_ref().map(|m| m.kbps(now_ms)) {
+                                if kb > ealert {
+                                    println!("[egress-alert] conn {id} at {kb:.0} KB/s exceeds {ealert:.0} KB/s");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if !do_clients && !send_me {
@@ -802,6 +817,7 @@ pub fn snapshot_writer_loop(world: WorldState) {
     let interval = Duration::from_secs(secs);
     println!("[snapshot] writer started (sink: {}, interval {secs}s, super-tile S={s} → {}px)",
              sink.label(), s * 256);
+    let mut last_class_a = crate::metrics::r2_ops().0; // denial-of-wallet watch baseline
     loop {
         std::thread::sleep(interval);
 
@@ -870,6 +886,19 @@ pub fn snapshot_writer_loop(world: WorldState) {
             }
         }
         println!("[snapshot] epoch {epoch}: uploaded {ok}, deleted {del} ({fail} failed) in {:?}", start.elapsed());
+
+        // Denial-of-wallet watch (OWASP A09): surface a Class-A spike before the invoice does.
+        let alert = crate::config::classa_alert_per_min();
+        if alert > 0 {
+            let ca_now = crate::metrics::r2_ops().0;
+            let delta = ca_now.saturating_sub(last_class_a);
+            last_class_a = ca_now;
+            let per_min = delta as f64 / (secs as f64 / 60.0).max(1.0 / 60.0);
+            if per_min > alert as f64 {
+                eprintln!("[egress-alert] R2 Class-A {per_min:.0}/min exceeds {alert}/min \
+                           ({delta} ops in {secs}s) — check for a write loop / wipe-storm");
+            }
+        }
     }
 }
 
@@ -934,6 +963,8 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
     let per_viewer = if connected > 0 {
         (total_bytes as f64 / secs / connected as f64).round() as u64
     } else { 0 };
+    // R2 op budget (denial-of-wallet): cumulative Class-A/Class-B/delete counts + the Class-A rate.
+    let (r2a, r2b, r2del) = crate::metrics::r2_ops();
 
     let body = serde_json::json!({
         "uptimeMs":             uptime_ms,
@@ -951,6 +982,10 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
         "finishViewMs":         {"p50": fv50, "p99": fv99, "max": fvmax},
         "prevGridBytes":        pg,
         "prevGridMB":           (pg as f64 / (1024.0 * 1024.0) * 100.0).round() / 100.0,
+        "r2ClassA":             r2a,
+        "r2ClassB":             r2b,
+        "r2Deletes":            r2del,
+        "r2ClassAPerMin":       (r2a as f64 / (secs / 60.0)).round() as u64,
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)
 }
