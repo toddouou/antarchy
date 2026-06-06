@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::auth::{hash_pw, UserRecord};
+use crate::auth::{hash_pw_argon2, needs_rehash, verify_pw, UserRecord};
 use crate::config::{
     cfg, apply_admin_param, reset_to_defaults, queen_size_for_level, total_xp_for_level, level_for_xp,
     current_ms, HUES, ADMIN_USERNAME,
@@ -42,7 +42,7 @@ pub fn handle_message(
         world.next_player_id += 1;
         world.auth.users.insert(raw_u.clone(), UserRecord {
             id, username: raw_u.clone(),
-            password_hash: hash_pw(pw),
+            password_hash: hash_pw_argon2(pw),
             color: color.clone(), hue_idx,
             is_admin: false, color_chosen: true,
             peak_level: 0,
@@ -69,8 +69,13 @@ pub fn handle_message(
         let pw  = msg["password"].as_str().unwrap_or("");
         let rec = world.auth.users.get(&u).cloned();
         let Some(rec) = rec else { let _ = tx.send(err("Invalid credentials")); return; };
-        if rec.password_hash != hash_pw(pw) { let _ = tx.send(err("Invalid credentials")); return; }
+        if !verify_pw(&rec.password_hash, pw) { let _ = tx.send(err("Invalid credentials")); return; }
         if world.auth.banned.contains(&u) { let _ = tx.send(err("BANNED")); return; }
+        if needs_rehash(&rec.password_hash) {
+            let new_hash = hash_pw_argon2(pw);
+            if let Some(ur) = world.auth.users.get_mut(&u) { ur.password_hash = new_hash; }
+            world.auth.save();
+        }
         let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
         *player_id = Some(rec.id);
         // Pre-existing high-level accounts predate the unlock system: silently raise peak_level to

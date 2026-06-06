@@ -390,6 +390,31 @@ pub fn sms_enabled() -> bool {
         "1" | "on" | "true" | "yes"))
 }
 
+// ---- Argon2id password-hashing parameters (OWASP A07) ------------------------------------------
+// OWASP minimum profile by default (m=19 MiB, t=2, p=1); raise via env on a RAM-rich host. Read once.
+// Bounds keep `Params::new` valid so the hasher can never panic on a misconfigured value.
+
+/// Argon2id memory cost in KiB. `HIVE_ARGON2_MEM_KIB`, default 19456 (19 MiB), min 8.
+pub fn argon2_mem_kib() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_ARGON2_MEM_KIB").ok()
+        .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(19456).max(8))
+}
+
+/// Argon2id time cost (iterations). `HIVE_ARGON2_TIME`, default 2, min 1.
+pub fn argon2_time() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_ARGON2_TIME").ok()
+        .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(2).max(1))
+}
+
+/// Argon2id parallelism (lanes). `HIVE_ARGON2_LANES`, default 1, min 1.
+pub fn argon2_lanes() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_ARGON2_LANES").ok()
+        .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(1).max(1))
+}
+
 /// Session-token lifetime in hours. `HIVE_SESSION_TTL_HOURS`, default 720 (30 days), min 1.
 pub fn session_ttl_hours() -> u64 {
     static V: OnceLock<u64> = OnceLock::new();

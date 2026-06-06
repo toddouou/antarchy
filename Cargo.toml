@@ -19,6 +19,10 @@ smallvec          = "1"
 base64            = "0.22"
 sha2              = "0.10"
 hex               = "0.4"
+# Password hashing (OWASP A07): Argon2id KDF + constant-time compare for the legacy SHA-256 fallback.
+# Pure-Rust, no system libs; argon2 re-exports the `password_hash` PHC types it needs.
+argon2            = "0.5"
+subtle            = "2"
 once_cell         = "1"
 futures-util      = "0.3"
 rand              = "0.8"

@@ -28,7 +28,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use crate::auth::{hash_pw, UserRecord};
+use crate::auth::{hash_pw_argon2, needs_rehash, verify_pw, UserRecord};
 use crate::config::{auth_rate_per_min, current_ms, sms_enabled, ADMIN_USERNAME, HUES};
 use crate::server::{AppState, Cmd};
 use crate::world::{PendingReg, ResetToken, World};
@@ -107,7 +107,7 @@ fn do_register(world: &mut World, handle: String, email: String, phone: String,
 
     world.pending_regs.insert(reg_id.clone(), PendingReg {
         email: email.clone(), phone: phone.clone(), handle,
-        password_hash: hash_pw(&password), color, hue_idx,
+        password_hash: hash_pw_argon2(&password), color, hue_idx,
         email_code: email_code.clone(), phone_code: phone_code.clone(),
         email_ok: false, phone_ok: false, phone_required,
         created_ms: current_ms(), attempts: 0,
@@ -169,8 +169,15 @@ fn do_login(world: &mut World, ident: &str, password: &str) -> AuthOutcome {
         .or_else(|| world.auth.users.get(&ident.to_uppercase()).cloned());
     // Uniform "Invalid credentials" whether or not the account exists (no enumeration).
     let Some(rec) = rec else { return deny("Invalid credentials"); };
-    if rec.password_hash != hash_pw(password) { return deny("Invalid credentials"); }
+    if !verify_pw(&rec.password_hash, password) { return deny("Invalid credentials"); }
     if world.auth.banned.contains(&rec.username) { return deny("This account is banned"); }
+    // Transparent upgrade: a legacy SHA-256 (or under-cost) hash is re-hashed with Argon2id now that
+    // we hold the plaintext and a confirmed match. One-time per account; persisted immediately.
+    if needs_rehash(&rec.password_hash) {
+        let new_hash = hash_pw_argon2(password);
+        if let Some(u) = world.auth.users.get_mut(&rec.username) { u.password_hash = new_hash; }
+        world.auth.save();
+    }
     AuthOutcome::LoggedIn { uid: rec.id, handle: rec.display_name().to_string() }
 }
 
@@ -200,7 +207,7 @@ fn reset(world: &mut World, token: &str, password: &str) -> AuthOutcome {
     }
     world.reset_tokens.remove(token);
     if let Some(u) = world.auth.users.get_mut(&rt.username) {
-        u.password_hash = hash_pw(password);
+        u.password_hash = hash_pw_argon2(password);
         world.auth.save();
         AuthOutcome::ResetOk
     } else {

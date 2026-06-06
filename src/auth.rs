@@ -3,7 +3,12 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::{cfg, ADMIN_USERNAME, ADMIN_PASSWORD};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
+use argon2::password_hash::SaltString;
+use rand::RngCore;
+use subtle::ConstantTimeEq;
+
+use crate::config::{cfg, argon2_lanes, argon2_mem_kib, argon2_time, ADMIN_USERNAME, ADMIN_PASSWORD};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserRecord {
@@ -57,10 +62,60 @@ struct AuthSave {
     banned: HashSet<String>,
 }
 
+/// LEGACY password hash — SHA-256 with a fixed string salt. **Do not use for new hashes.** Kept only
+/// to *verify* (and then transparently upgrade) accounts created before the Argon2id migration. New
+/// and re-hashed passwords go through [`hash_pw_argon2`].
 pub fn hash_pw(pw: &str) -> String {
     let mut h = Sha256::new();
     h.update(format!("{}hive-salt", pw));
     format!("{:x}", h.finalize())
+}
+
+/// Hash a password with **Argon2id** (OWASP A07), returning a self-describing PHC string
+/// (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`) that carries its own salt + parameters. Cost comes from
+/// the `HIVE_ARGON2_*` env knobs (default OWASP-minimum m=19 MiB, t=2, p=1). Parameters are clamped to
+/// a valid range so the hasher can never fail on a misconfigured value.
+pub fn hash_pw_argon2(pw: &str) -> String {
+    let mut salt_bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt_bytes);
+    let salt = SaltString::encode_b64(&salt_bytes).expect("16-byte salt always encodes to b64");
+
+    let lanes = argon2_lanes().max(1);
+    let mem   = argon2_mem_kib().max(8 * lanes); // Argon2 requires m_cost ≥ 8 × p_cost
+    let params = Params::new(mem, argon2_time().max(1), lanes, Some(32))
+        .unwrap_or_default(); // unreachable after clamping, but never panic
+    let hasher = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    hasher
+        .hash_password(pw.as_bytes(), &salt)
+        .expect("argon2id hashing of valid input + clamped params is infallible")
+        .to_string()
+}
+
+/// Verify `pw` against a stored hash, transparently handling both formats:
+/// Argon2id PHC strings (constant-time, params read from the hash) and the legacy SHA-256 hex
+/// (constant-time compare via `subtle`). Returns `false` on any malformed stored value.
+pub fn verify_pw(stored: &str, pw: &str) -> bool {
+    if stored.starts_with("$argon2") {
+        match PasswordHash::new(stored) {
+            Ok(parsed) => Argon2::default().verify_password(pw.as_bytes(), &parsed).is_ok(),
+            Err(_) => false,
+        }
+    } else {
+        // Legacy SHA-256 hex — compare in constant time (both sides are fixed-length hex).
+        hash_pw(pw).as_bytes().ct_eq(stored.as_bytes()).into()
+    }
+}
+
+/// True when a stored hash should be re-hashed on the next successful login: legacy SHA-256, a
+/// non-Argon2id variant, or Argon2id with parameters below the current target cost.
+pub fn needs_rehash(stored: &str) -> bool {
+    if !stored.starts_with("$argon2id$") { return true; }
+    match PasswordHash::new(stored).ok().and_then(|h| Params::try_from(&h).ok()) {
+        Some(p) => p.m_cost() < argon2_mem_kib()
+                || p.t_cost() < argon2_time()
+                || p.p_cost() < argon2_lanes(),
+        None => true,
+    }
 }
 
 impl Auth {
@@ -76,7 +131,7 @@ impl Auth {
         UserRecord {
             id:            1,
             username:      ADMIN_USERNAME.to_string(),
-            password_hash: hash_pw(ADMIN_PASSWORD),
+            password_hash: hash_pw_argon2(ADMIN_PASSWORD),
             color:         "#000000".to_string(),
             hue_idx:       -1,
             is_admin:      true,
@@ -156,5 +211,35 @@ impl Auth {
     #[allow(dead_code)]
     pub fn next_id(&self) -> u32 {
         self.users.values().map(|u| u.id).max().unwrap_or(1) + 1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argon2_hash_verifies_and_is_salted() {
+        let h1 = hash_pw_argon2("correct horse battery staple");
+        let h2 = hash_pw_argon2("correct horse battery staple");
+        assert!(h1.starts_with("$argon2id$"), "expected a PHC string, got {h1}");
+        assert_ne!(h1, h2, "a random per-password salt must yield different encoded hashes");
+        assert!(verify_pw(&h1, "correct horse battery staple"));
+        assert!(!verify_pw(&h1, "wrong password"));
+        assert!(!needs_rehash(&h1), "a fresh hash is already at the target cost");
+    }
+
+    #[test]
+    fn legacy_sha256_verifies_then_wants_rehash() {
+        let legacy = hash_pw("hunter2");
+        assert!(verify_pw(&legacy, "hunter2"), "legacy hash still authenticates");
+        assert!(!verify_pw(&legacy, "Hunter2"), "wrong password is rejected");
+        assert!(needs_rehash(&legacy), "legacy SHA-256 must upgrade on next login");
+    }
+
+    #[test]
+    fn malformed_hash_never_verifies() {
+        assert!(!verify_pw("", "x"));
+        assert!(!verify_pw("$argon2id$not-a-real-phc-string", "x"));
     }
 }
