@@ -2,5 +2,8 @@
 /target-dev
 /target-check
 users.json
+sessions.json
 *.snapshot
 world.snapshot
+.env
+.env.*

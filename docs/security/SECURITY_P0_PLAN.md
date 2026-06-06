@@ -1,7 +1,8 @@
 # Antarchy.fun — Security & Anti-Cheat Hardening — P0 Tier (RESUMABLE CHECKPOINT)
 
-> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a+§1+§2+§3+§4b+§5 DONE.**
-> **Resume at:** §0 egress/R2 telemetry, then deliverables. See "Execution order" / "Next action".
+> **STATUS: P0 COMPLETE on branch `security-p0` (off `beta-v1`). All of §0–§5 + deliverables done.**
+> **PAUSED for review** (per the agreed scope). Next pass = P1/P2 — see "After P0" at the bottom.
+> SECURITY.md + CHANGELOG-security.md written; 44 tests pass; every section runtime-verified on :8090.
 >
 > Done so far:
 > - baseline commit (beta-v2 state) · `bbe539f`
@@ -232,7 +233,7 @@ log.
 6. ~~§4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.~~ ✅
 7. ~~§5 XSS escaping + CSP headers → commit.~~ ✅
 8. ~~§0 egress/R2 telemetry → commit.~~ ✅
-9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**  ← **NEXT**
+9. ~~SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**~~ ✅ **DONE**
 
 ## Next concrete action (resume here)
 Start **§4b cookie sessions + CSRF + throttle + generic errors** (`api.rs`, `server.rs`,
