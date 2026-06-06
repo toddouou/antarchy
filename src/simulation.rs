@@ -126,11 +126,19 @@ pub fn apply_peak_unlocks(world: &mut World, player_id: u32, new_lvl: u16) {
 
 pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reason: &str) {
     let (qx, qy, victim_level, peak_tiles, victim_region, victim_kills) = {
-        let Some(q) = world.queens.get_mut(&loser_id) else { return };
-        if q.dead { return; }
-        q.dead = true;
-        q.cached_tiles = 0;
-        (q.x, q.y, q.level, q.tiles_ever_held, q.region.clone(), q.kills)
+        match world.queens.get_mut(&loser_id) {
+            Some(q) if !q.dead => {
+                q.dead = true;
+                q.cached_tiles = 0;
+                (q.x, q.y, q.level, q.tiles_ever_held, q.region.clone(), q.kills)
+            }
+            // Queen already dead or gone → nothing to kill, BUT an NPC's player record must still be
+            // purged here. Otherwise an admin kick/ban/delete on an NPC whose queen is already down
+            // returns early and the NPC lingers forever in `world.players` (the admin panel list).
+            // Real players keep their dead-queen record (death screen + respawn), so this is a no-op
+            // for them.
+            _ => { purge_dead_npc(world, loser_id); return; }
+        }
     };
     world.queen_map_dirty = true;
 
@@ -237,6 +245,19 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     if world.players.get(&loser_id).map(|p| p.npc).unwrap_or(false) {
         world.queens.remove(&loser_id);
         world.players.remove(&loser_id);
+        world.queen_map_dirty = true;
+    }
+}
+
+/// Remove a lingering NPC record entirely (player + queen + any orphaned territory/ants). No-op for
+/// real players. Used by `kill_queen`'s early-return paths (queen already dead/gone) so an admin
+/// kick/ban/delete on a downed NPC can't leave it stranded in `world.players`.
+fn purge_dead_npc(world: &mut World, id: u32) {
+    if world.players.get(&id).map(|p| p.npc).unwrap_or(false) {
+        world.tiles.clear_owner(id);            // drop any orphaned territory it still owned
+        world.ants.retain(|a| a.owner != id);   // drop any orphaned ants
+        world.queens.remove(&id);
+        world.players.remove(&id);
         world.queen_map_dirty = true;
     }
 }
@@ -1237,6 +1258,23 @@ mod tests {
         resolve_queen_collisions(&mut w);
         assert!(!w.queens.get(&1).unwrap().dead);
         assert!(!w.queens.get(&2).unwrap().dead);
+    }
+
+    /// Regression: an admin kick/ban/delete calls `kill_queen`, which used to early-return when the
+    /// NPC's queen was already dead — leaving the NPC stranded in `world.players` (the admin list).
+    /// Now the early-return path purges the NPC record too.
+    #[test]
+    fn kill_queen_purges_npc_with_already_dead_queen() {
+        let mut w = World::new();
+        let id = 200u32;
+        let mut p = mk_player(id); p.npc = true;
+        w.players.insert(id, p);
+        let mut q = mk_queen(1000, 1000, 1, 0); q.dead = true; q.npc = true;
+        w.queens.insert(id, q);
+
+        kill_queen(&mut w, id, None, "admin");   // queen already dead → old code returned before purge
+        assert!(!w.players.contains_key(&id), "downed NPC must be purged from the player list");
+        assert!(!w.queens.contains_key(&id), "downed NPC queen removed too");
     }
 }
 
