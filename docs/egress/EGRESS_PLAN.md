@@ -4,7 +4,13 @@
 > (8/9 load-bearing concerns confirmed against code); every change below is code- or math-grounded.
 > Written so a future Claude Code agent with **zero memory of this session** can execute any single
 > phase standalone. Engine = the Rust crate in `sim/` (axum + tokio + tokio-tungstenite + rayon,
-> hosted on Railway). Client = `public/client.html` (embedded via `include_str!` → **recompile** to apply).
+> originally hosted on Railway — **since migrated to a dedicated VPS**; see status below). Client =
+> `public/client.html` (embedded via `include_str!` → **recompile** to apply).
+>
+> **STATUS (2026-06-06):** Phases P0–P3 are done and the game has **moved off Railway onto a dedicated
+> VPS**, so the $0.10/GB egress driver no longer applies at the host level. This doc is retained as the
+> live checkpoint — **resume at Phase 4** (activity-aware per-connection cap + taxonomy). The Railway
+> references below are kept verbatim as the original cost rationale.
 
 ---
 

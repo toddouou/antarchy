@@ -25,11 +25,11 @@ of cells, a 20 ms tick budget, a single box — drives every interesting decisio
 |---|---|---|
 | **Rust** | the whole engine | One binary, no GC pauses to jitter the tick, fearless parallelism for the ant simulation. Replaced an earlier Node.js prototype that couldn't hold the tick at scale. |
 | **tokio** | async HTTP + WebSocket runtime | Thousands of idle socket connections cost almost nothing; the WS read/write tasks are tiny async loops. |
-| **axum** | web framework | Thin layer over tokio/hyper. One route (`/`) serves the client *and* upgrades to WebSocket; two JSON routes for health. |
+| **axum** | web framework | Thin layer over tokio/hyper. One route (`/`) serves the client *and* upgrades to WebSocket; plus `/health` + `/world-info`, the `/api/*` auth/session routes, and `/egress-stats`. |
 | **rayon** | data parallelism | The ant move-plan and every per-client viewport serialize in parallel with a single `par_iter`. This is what makes 100k ants and many viewports fit the budget. |
 | **rustc-hash (FxHashMap)** | the maps for players/queens/tile-chunks | A fast non-cryptographic hash — these maps are hit millions of times per second; `SipHash` would be wasteful here. |
 | **serde / serde_json + base64** | the wire format | Messages are JSON; the bulky tile payloads are a base64-encoded little-endian `u16` blob *inside* the JSON, which is far smaller than a JSON array of numbers. |
-| **No database** | — | The world is too hot and too big for per-tile DB round-trips. Everything lives in RAM; the design instead makes RAM cheap (see the TileMap). The world is intentionally not persisted — every run starts fresh. |
+| **No database** | — | The world is too hot and too big for per-tile DB round-trips. Everything lives in RAM; the design instead makes RAM cheap (see the TileMap). State is still **durable**: a periodic gzip-JSON `world.snapshot` + `users.json` are autosaved (~60 s and on shutdown) and restored on boot (`persist.rs`) — no DB, but no data loss across restarts. |
 
 The client is one self-contained `public/client.html` (HTML + canvas + JS), compiled *into* the
 binary via `include_str!`. There's no separate front-end build — but editing it means recompiling.

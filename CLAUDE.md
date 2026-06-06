@@ -12,8 +12,9 @@ cargo run              # debug build
 cargo run --release    # optimized build (use for real load)
 ```
 
-Open `http://localhost:8080` in one or more browser tabs. Each tab is a separate player. There is
-no separate client build step — `public/client.html` is compiled **into** the binary.
+Open `http://localhost:8080` in one or more browser tabs: `/` serves the landing + login/spectator
+page (`public/landing.html`); the game client (`public/client.html`) lives at `/play`. Each tab is a
+separate player. There is no separate client build step — both pages are compiled **into** the binary.
 
 Set the `PORT` env var to run a second instance without disturbing one already on 8080 (e.g.
 `PORT=8090 cargo run`) — handy for testing against a live playtest server.
@@ -28,14 +29,14 @@ timing (`tickMsP50`/`tickMsP99`/`tickMsMax`); `seasonSecs`.
 **World info:** `curl http://localhost:8080/world-info` (world size, spawn, geo projection).
 
 **Persistence:** state is **restored on startup** (`src/persist.rs`). Two files live under the
-directory from the `HIVE_DATA_DIR` env var (default = working dir; on Railway point it at a mounted
-Volume, e.g. `HIVE_DATA_DIR=/data`, or it won't survive a redeploy):
+directory from the `HIVE_DATA_DIR` env var (default = working dir; in production point it at the
+host's persistent data dir via the service env file, or it won't survive a redeploy):
 - `world.snapshot` — gzip-compressed JSON of tiles, ants, queens, players (durable fields only),
   `next_player_id`, `tick`, `started_at`. Written atomically (temp file + rename).
 - `users.json` — accounts + ban list (`Auth::save`/`Auth::load`, now `{users, banned}`).
 
 The world autosaves every ~60 s (in `sim_loop`) and on shutdown (Ctrl-C / SIGTERM handler in
-`main.rs` — covers Railway redeploys). On boot, `main` calls `Auth::load` + `persist::load`/`restore`;
+`main.rs` — covers service restarts/redeploys). On boot, `main` calls `Auth::load` + `persist::load`/`restore`;
 a missing/corrupt/wrong-version snapshot → fresh empty world + admin-only auth. The admin account
 (`ADMIN` / `admin`) is always recreated if absent. **The only thing that clears the world is the
 admin panel's type-"WIPE" button** — the automatic season wipe is disabled by default
@@ -45,9 +46,10 @@ players (`wipe_world_and_users`); the season-rollover path still uses the milder
 ## File layout
 
 ```
-Cargo.toml             — crate manifest + dependencies (tokio, axum, rayon, serde, sha2, base64,
-                         hex, rustc-hash, smallvec, once_cell, parking_lot, rand, futures-util,
-                         tokio-tungstenite)
+Cargo.toml             — crate manifest + dependencies (tokio, axum, serde, serde_json, rayon,
+                         rustc-hash, base64, sha2, hex, argon2 + subtle (password hashing),
+                         once_cell, parking_lot, rand, futures-util, tokio-tungstenite, flate2,
+                         bincode, png, rust-s3 (R2/S3 upload), reqwest (Resend email))
 src/
   main.rs              — entry: parses regions, builds World, spawns sim_loop AND viewport_loop on
                          dedicated OS threads, runs the axum HTTP/WS server on the tokio runtime
@@ -77,21 +79,38 @@ src/
                          build_server_stats, build_region_holders (MAX_DIM = 800; LOD pyramid)
   handlers.rs          — handle_message: all WebSocket message dispatch (incl. shop-buy);
                          validate_worker_placement; create_or_reconnect_player; welcome-back
-  auth.rs              — Auth (users + banned), hash_pw (SHA-256 + "hive-salt"),
-                         save/load users.json ({users,banned}), admin account
+  auth.rs              — Auth (users + banned); Argon2id hashing (hash_pw_argon2/verify_pw/
+                         needs_rehash) w/ transparent rehash-on-login + constant-time compare; legacy
+                         SHA-256+"hive-salt" still verified; save/load users.json; admin account
+  session.rs           — opaque HttpOnly cookie session tokens: issue/verify/revoke (replaced the old
+                         localStorage bearer token)
+  api.rs               — HTTP /api/* account endpoints (register, verify-email/phone, login, logout,
+                         forgot/reset-password, roster); CSRF Origin guard + per-IP throttle; sets the
+                         session cookie; calls email::/sms:: for codes
+  email.rs             — transactional email via Resend (verify/reset codes); dormant until
+                         HIVE_RESEND_API_KEY set — logs the code to the console as a dev fallback
+  sms.rs               — SMS verify-code sender; dormant stub (logs the code) until a provider is wired
   persist.rs           — world snapshot save/load/restore: gzip JSON of tiles/ants/queens/players/
                          counters → world.snapshot (atomic temp+rename); pairs with Auth's users.json
-  server.rs            — axum routes (root_handler / health / world-info), WS connection +
-                         rate limit, Cmd queue, sim_loop (incl. ~60s autosave), viewport_loop (OS thread)
+  metrics.rs           — egress + R2 op counters (Class-A/B/delete) behind /egress-stats; denial-of-
+                         wallet spike alerts
+  snapshot.rs          — R2 super-tile pipeline: rasterize dirty chunks → PNG, coalesce into super
+                         keys, upload to R2/S3 (zero-egress bulk map); gated on SNAPSHOT_CDN + R2 creds
+  server.rs            — axum routes: `/` (landing + guest-spectator WS), `/play` (game client +
+                         authed game WS), `/reset`, `/health`, `/world-info`, `/egress-stats`,
+                         `/api/*`; WS connection + rate limit, Cmd queue, sim_loop (incl. ~60s autosave
+                         + R2 snapshot writer), viewport_loop (OS thread)
 public/
-  client.html          — single-file canvas client; embedded into the binary via include_str!
+  client.html          — single-file canvas game client; embedded into the binary via include_str!
+  landing.html         — public landing + login/spectator page; embedded via include_str!
 data/
   regions.json         — editable metro list (embedded via include_str! → rebuild to apply)
   countries.geojson    — Natural Earth admin-0 countries (embedded; point-in-polygon source)
 ```
 
-**Dependency chain:** `config` → {`auth`, `tile_map`, `regions`} → `world` → {`fog`, `network`,
-`simulation`, `handlers`, `persist`} → `server` → `main`.
+**Dependency chain:** `config` → {`auth`, `session`, `tile_map`, `regions`, `metrics`} → `world` →
+{`fog`, `network`, `simulation`, `handlers`, `persist`, `snapshot`, `email`, `sms`, `api`} →
+`server` → `main`.
 
 ## Architecture
 
@@ -126,9 +145,14 @@ ages out expired ants, and flushes the XP queue.
 **No database.** Tiles live in `TileMap` (sparse 256×256 chunks); players, queens, and ant counts
 live in `FxHashMap`s keyed by numeric player id.
 
-**WebSocket message types** (client → server): `register`, `login`, `set-color`, `view-set`,
-`get-forbidden-zones`, `place-queen`, `place-ant`, `shop-buy` (`highway` / `relocate` / `defender` /
-`brute` / `shield`; `alliance` is a no-charge "coming soon" stub), `admin` (slider param),
+**Account auth is HTTP, not WS:** the `/api/*` routes (register, verify-email/phone, login, logout,
+forgot/reset-password) set an HttpOnly `__Host-` session cookie; the WS connection then authenticates
+from that cookie via `enter` (authed player), `session`, or `spectate` (guest, read-only). Legacy
+`register`/`login` WS messages remain for back-compat.
+
+**WebSocket message types** (client → server): `enter` / `session` / `spectate` (cookie auth),
+`register`, `login`, `set-color`, `view-set`, `get-forbidden-zones`, `place-queen`, `place-ant`,
+`shop-buy` (`relocate` / `defender` / `brute` / `shield`), `admin` (slider param),
 `admin-action` (`add-ants` / `heal-queen` / `level-up` / `level-down` / `spawn-npc` / `wipe-world`),
 `admin-target` (`reset-hp` / `delete-queen` / `move-queen` / `ban-player`), `admin-pause`,
 `admin-kick`, `admin-set-level`, `admin-give-xp`, `admin-set-ants`, `admin-give-credits`,
@@ -140,6 +164,21 @@ live in `FxHashMap`s keyed by numeric player id.
 via `cfg()` / `cfg_write()`. Admin-panel sliders mutate it through `apply_admin_param`, clamped by
 `ADMIN_CLAMP`. The world is `world_w` × `world_h` = **1,500,000 × 750,000** tiles at
 `tile_meters` ≈ 26.72 (≈ Earth's circumference); spawn is the grid center.
+
+## Auth, sessions, R2 snapshots & hosting
+
+- **Accounts/sessions** (`auth.rs` / `session.rs` / `api.rs`): Argon2id hashing with transparent
+  rehash of legacy SHA-256 on login; HttpOnly `__Host-` cookie sessions (token never in JS); CSRF
+  Origin guard + per-IP throttle on `/api/*`; enumeration-safe registration. **WS hardening:** inbound
+  size cap (`HIVE_WS_MAX_MSG`), Origin allowlist on upgrade, idle close, bounded per-conn send queues,
+  anti-replay `seq`. Full OWASP-mapped detail in `docs/security/SECURITY_P0_PLAN.md` +
+  `CHANGELOG-security.md` (P0 done; P1/P2 pending).
+- **Zero-egress bulk map** (`snapshot.rs` + `metrics.rs`): the snapshot writer rasterizes dirty chunks
+  to PNG super-tiles and uploads them to Cloudflare R2 (gated on `SNAPSHOT_CDN` + `R2_*` creds), so the
+  bulk of the map is served from R2 at $0 egress; `/egress-stats` exposes egress + R2 op counters with
+  denial-of-wallet alerts. Plans: `docs/egress/EGRESS_PLAN.md`, `docs/egress/R2_CLASSA_PLAN.md`.
+- **Hosting:** runs on a dedicated VPS (migrated off Railway). Config is `HIVE_*` / `R2_*` env vars
+  from the service env file; `HIVE_DATA_DIR` must point at the live world directory.
 
 ## Key invariants
 
