@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use axum::{
     extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -955,6 +955,31 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
     (StatusCode::OK, [("Content-Type", "application/json")], body)
 }
 
+/// Content-Security-Policy (OWASP A05, defence-in-depth). Scoped to our own origins plus the external
+/// services the pages legitimately use — Google Fonts, AdSense (landing), OSM/R2 map tiles, and the
+/// game WebSocket. `'unsafe-inline'` is required because the client is a single inline-script document;
+/// a nonce/extraction pass to drop it is a documented P1/P2 follow-up. Caddy is the prod enforcement
+/// layer and may tighten this further.
+const CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; \
+img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; \
+style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
+script-src 'self' 'unsafe-inline' https://pagead2.googlesyndication.com https://*.googlesyndication.com https://*.google.com https://*.googleadservices.com https://*.doubleclick.net; \
+connect-src 'self' ws: wss: https:; \
+frame-src https://*.googlesyndication.com https://*.doubleclick.net https://*.google.com";
+
+/// Attach the static security headers (OWASP A02/A05) to every response. HSTS is a no-op over plain
+/// http (browsers ignore it), so it's safe to always send and active once behind Caddy's TLS.
+async fn security_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut resp = next.run(req).await;
+    let h = resp.headers_mut();
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("strict-origin-when-cross-origin"));
+    h.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000; includeSubDomains"));
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    resp
+}
+
 pub async fn run(world: WorldState, cmd_tx: CmdTx) {
     let port = cfg().port;
 
@@ -975,6 +1000,7 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/api/reset-password",  post(crate::api::reset_password))
         .route("/api/logout",          post(crate::api::logout))
         .route("/api/roster",          get(crate::api::roster)) // cached spectator fallback (free path)
+        .layer(axum::middleware::from_fn(security_headers))
         .with_state(AppState {
             world, cmd_tx,
             sessions: crate::session::SessionStore::load(),

@@ -2156,7 +2156,7 @@ function lbSimpleRow(e, rank, you){
   const name=e.name.length>11?e.name.slice(0,10)+'…':e.name;
   return `<div class="lb-row${you?' lb-me':''}">
     <span class="lb-rank">#${rank}</span>
-    <div class="lb-name"><span class="lb-swatch" style="background:${e.color}"></span><span class="lb-name-text">${name}</span></div>
+    <div class="lb-name"><span class="lb-swatch" style="background:${safeColor(e.color)}"></span><span class="lb-name-text">${esc(name)}</span></div>
     <span class="lb-tiles">${fmtLbTiles(e.score||0)}</span>
   </div>`;
 }
@@ -2173,7 +2173,7 @@ function renderLeaderboard(){
     if (idx<0 || idx>=10){
       html+='<div class="lb-sep">— YOU —</div>';
       if (idx>=10) html+=lbSimpleRow(lbAll[idx], idx+1, true);
-      else html+=`<div class="lb-row lb-me"><span class="lb-rank">#—</span><div class="lb-name"><span class="lb-swatch" style="background:${me.color||'#888'}"></span><span class="lb-name-text">${me.username||'YOU'}</span></div><span class="lb-tiles" style="color:var(--dim)">—</span></div>`;
+      else html+=`<div class="lb-row lb-me"><span class="lb-rank">#—</span><div class="lb-name"><span class="lb-swatch" style="background:${safeColor(me.color)}"></span><span class="lb-name-text">${esc(me.username||'YOU')}</span></div><span class="lb-tiles" style="color:var(--dim)">—</span></div>`;
     }
   }
   html+='<button class="lb-expand" onclick="openLeaderboardWindow()">▦ FULL RANKINGS</button>';
@@ -2188,9 +2188,9 @@ function lbFullRow(e, rank){
   const pbadge=e.prestige>0?` <span style="color:var(--yel)">P${e.prestige}</span>`:'';
   return `<div class="lbw-row${you?' lb-me':''}">
     <span class="lbw-rank">#${rank}</span>
-    <span class="lbw-sw" style="background:${e.color}"></span>
-    <span class="lbw-name">${e.name}${pbadge}</span>
-    <span class="lbw-reg">${e.region||'—'}</span>
+    <span class="lbw-sw" style="background:${safeColor(e.color)}"></span>
+    <span class="lbw-name">${esc(e.name)}${pbadge}</span>
+    <span class="lbw-reg">${esc(e.region||'—')}</span>
     <span class="lbw-c">${(e.score||0).toLocaleString()}</span>
     <span class="lbw-c">LV${e.level}</span>
     <span class="lbw-c">${e.kills||0}</span>
@@ -2206,11 +2206,11 @@ function renderLbWindow(){
   let list = lbRegionFilter ? lbAll.filter(e=>e.region===lbRegionFilter) : lbAll;
   const regions=[...new Set(lbAll.map(e=>e.region).filter(Boolean))].sort();
   let html='<div class="lb-tabs"><span class="lb-tab'+(!lbRegionFilter?' on':'')+'" onclick="lbSetRegion(null)">ALL</span>';
-  for (const r of regions) html+=`<span class="lb-tab${lbRegionFilter===r?' on':''}" onclick="lbSetRegion(${JSON.stringify(r).replace(/"/g,'&quot;')})">${r}</span>`;
+  for (const r of regions) html+=`<span class="lb-tab${lbRegionFilter===r?' on':''}" onclick="lbSetRegion(${JSON.stringify(r).replace(/"/g,'&quot;')})">${esc(r)}</span>`;
   html+='</div>';
   if (lbRegionFilter){
     const hh=regionHolders.find(x=>x.name===lbRegionFilter);
-    if (hh) html+=`<div class="lb-sub">${hh.holder?('HELD BY <span style="color:'+(hh.color||'var(--ink)')+'">'+hh.holder+'</span> · '+(hh.tiles||0).toLocaleString()+' TILES'):'UNCLAIMED'}</div>`;
+    if (hh) html+=`<div class="lb-sub">${hh.holder?('HELD BY <span style="color:'+safeColor(hh.color,'var(--ink)')+'">'+esc(hh.holder)+'</span> · '+(hh.tiles||0).toLocaleString()+' TILES'):'UNCLAIMED'}</div>`;
   }
   html+='<div class="lbw-head"><span class="lbw-rank">#</span><span class="lbw-sw"></span><span class="lbw-name">NAME</span><span class="lbw-reg">REGION</span><span class="lbw-c">SCORE</span><span class="lbw-c">LV</span><span class="lbw-c">K</span><span class="lbw-c">KD</span></div>';
   html+='<div class="lbw-list">';
@@ -2237,9 +2237,9 @@ function buildRegionSwitcher(){
     for (const m of regionMetros){
       const hh=regionHolders.find(x=>x.name===m.name);
       const held = hh&&hh.holder
-        ? `<div style="font-size:6px;margin-top:3px;color:${hh.color||'var(--dim)'}">HELD BY ${hh.holder}</div>`
+        ? `<div style="font-size:6px;margin-top:3px;color:${safeColor(hh.color,'var(--dim)')}">HELD BY ${esc(hh.holder)}</div>`
         : `<div style="font-size:6px;margin-top:3px;color:var(--dim)">UNCLAIMED</div>`;
-      h+=`<div class="region-opt" data-x="${m.x}" data-y="${m.y}">${m.name}${held}</div>`;
+      h+=`<div class="region-opt" data-x="${m.x}" data-y="${m.y}">${esc(m.name)}${held}</div>`;
     }
     pop.innerHTML=h;
     pop.querySelectorAll('.region-opt').forEach(o=>o.onclick=()=>{ panTarget={x:+o.dataset.x+1,y:+o.dataset.y+1}; if(typeof zoomTarget!=='undefined') zoomTarget=Math.max(zoomTarget,0.6); pop.remove(); });
@@ -2264,7 +2264,7 @@ function renderDiscoveryWindow(){
   html+=`<div class="disc-chips">${chips(countries)}</div>`;
   const riv=me.topRivalries||{};
   const rivRows=arr=>(arr&&arr.length)
-    ? arr.map(r=>`<div class="disc-stat"><span>${String(r.name).toUpperCase()}</span><b>${r.count}</b></div>`).join('')
+    ? arr.map(r=>`<div class="disc-stat"><span>${esc(String(r.name).toUpperCase())}</span><b>${r.count}</b></div>`).join('')
     : '<div class="disc-empty">— no rivals yet —</div>';
   html+='<div class="disc-sec">▸ TOP RIVALRIES</div>';
   html+=`<div class="disc-cmp">
@@ -2476,11 +2476,17 @@ function applyServerStats(s) {
 }
 // CS1.6-style killfeed: prepend (newest on top), cap, fade out after a TTL.
 const KF_MAX=6, KF_TTL=6000;
-function kfEsc(s){ return String(s==null?'':s).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+// XSS output-encoding (OWASP A05). esc() escapes any user-controlled text before it goes into
+// innerHTML; safeColor() only lets a validated colour reach a style= attribute. Defence-in-depth: the
+// server already constrains stored usernames to [A-Za-z0-9_-] and colours to #rrggbb, but the client
+// never trusts that.
+function esc(s){ return String(s==null?'':s).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c])); }
+function safeColor(c,fb){ c=String(c==null?'':c); return (/^#[0-9a-fA-F]{3,8}$/.test(c)||/^var\(--[\w-]+\)$/.test(c))?c:(fb||'#888'); }
+const kfEsc = esc;  // legacy alias (killfeed)
 function pushKill(m) {
   const kf=$('killfeed'); if (!kf) return;
   const row=document.createElement('div'); row.className='kf-row';
-  const sw=c=>`<span class="kf-sw" style="background:${c||'#bbb'}"></span>`;
+  const sw=c=>`<span class="kf-sw" style="background:${safeColor(c,'#bbb')}"></span>`;
   if (m.killer) {
     row.innerHTML=`<span class="kf-name">${sw(m.killerColor)}♛ ${kfEsc(m.killer)}</span>`
       +`<span class="kf-x">⚔</span>`
@@ -2637,7 +2643,7 @@ function showInspectBox() {
     const prestigeRow = q.prestige > 0 ? `<div class="inspect-row"><span>PRESTIGE</span><span style="margin-left:auto;color:var(--yel)">P${q.prestige}</span></div>` : '';
     const creditsRow = q.id===me?.id ? `<div class="inspect-row"><span>CREDITS</span><span style="margin-left:auto;color:var(--grn)">${(me.credits||0).toLocaleString()}</span></div>` : '';
     rowsHtml = `
-      <div class="inspect-row"><span class="inspect-swatch" style="background:${col}"></span><span>${q.username||knownNames[q.id]||'???'}</span></div>
+      <div class="inspect-row"><span class="inspect-swatch" style="background:${safeColor(col)}"></span><span>${esc(q.username||knownNames[q.id]||'???')}</span></div>
       <div class="inspect-row"><span>HP</span><span style="margin-left:auto">${q.hp}/${q.maxHp}</span></div>
       <div class="inspect-row"><span>LEVEL</span><span style="margin-left:auto">${q.level||1}</span></div>
       ${prestigeRow}
@@ -2654,14 +2660,14 @@ function showInspectBox() {
     const a = t.data;
     typeLabel = 'ANT';
     rowsHtml = `
-      <div class="inspect-row"><span class="inspect-swatch" style="background:${a.color}"></span><span>${a.username}</span></div>
+      <div class="inspect-row"><span class="inspect-swatch" style="background:${safeColor(a.color)}"></span><span>${esc(a.username)}</span></div>
       <div class="inspect-row"><span>POS</span><span style="margin-left:auto">(${a.x},${a.y})</span></div>
     `;
   } else if (t.type === 'tile') {
     const tl = t.data;
     typeLabel = tl.owner ? 'TERRITORY' : 'UNCLAIMED';
     rowsHtml = tl.owner
-      ? `<div class="inspect-row"><span class="inspect-swatch" style="background:${tl.color}"></span><span>${tl.username||'???'}</span></div>
+      ? `<div class="inspect-row"><span class="inspect-swatch" style="background:${safeColor(tl.color)}"></span><span>${esc(tl.username||'???')}</span></div>
          <div class="inspect-row"><span>POS</span><span style="margin-left:auto">(${tl.x},${tl.y})</span></div>`
       : `<div class="inspect-row"><span>POS</span><span style="margin-left:auto">(${tl.x},${tl.y})</span></div>`;
   }
@@ -3956,8 +3962,8 @@ function admFilterPlayers() {
     const pb=p.npc?`<span style="color:var(--red)">NPC</span>`:(p.prestige>0?`<span style="color:var(--yel)">P${p.prestige}</span>`:`<span style="color:var(--dim)">—</span>`);
     html+=`<div class="adm-ptable-row" onclick="admSelectPlayer(${p.id})">
       <span style="display:flex;align-items:center;gap:4px;">
-        <span style="width:6px;height:6px;background:${col};border:1px solid var(--ink);flex-shrink:0;display:inline-block;"></span>
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.username}</span>
+        <span style="width:6px;height:6px;background:${safeColor(col)};border:1px solid var(--ink);flex-shrink:0;display:inline-block;"></span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.username)}</span>
       </span>
       ${pb}<span>${p.level}</span><span>${tiles}</span><span>${dot}</span>
     </div>`;
