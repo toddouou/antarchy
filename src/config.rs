@@ -317,15 +317,19 @@ pub fn snapshot_interval_secs() -> u64 {
 }
 
 /// Phase-6 super-tile factor (R2 Class-A lever B): each snapshot PNG covers S×S native chunks
-/// (S×256 px square). `HIVE_SNAP_TILE_CHUNKS`, default 4 (→1024 px), restricted to {1,2,4,8};
-/// invalid → 4. Higher = fewer Class-A keys when activity clusters, larger PNGs. MUST reach the
-/// client (sent as `snapTileCells = S*256`) so the browser keys the same `(sx,sy)` tiles. Read once.
+/// (S×256 px square). `HIVE_SNAP_TILE_CHUNKS`, default **8** (→2048 px = 64 chunks/key), restricted
+/// to {1,2,4,8,16}; invalid → 8. Higher = fewer Class-A keys when activity clusters (a contiguous
+/// frontier collapses up to S² chunks into one PutObject), larger PNGs (transient RGBA buffer =
+/// (S*256)²·4 B on the writer thread, one at a time — S=8→16 MB, S=16→64 MB). The bigger cold-load
+/// fetch costs only ~free egress/Class-B, so S trades cheap CPU/bytes for the scarce Class-A op. MUST
+/// reach the client (sent as `snapTileCells = S*256`) so the browser keys the same `(sx,sy)` tiles.
+/// Read once.
 pub fn snapshot_tile_chunks() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
     *V.get_or_init(|| {
         let s = std::env::var("HIVE_SNAP_TILE_CHUNKS").ok()
-            .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(4);
-        if [1, 2, 4, 8].contains(&s) { s } else { 4 }
+            .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(8);
+        if [1, 2, 4, 8, 16].contains(&s) { s } else { 8 }
     })
 }
 

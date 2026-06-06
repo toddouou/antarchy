@@ -818,6 +818,13 @@ pub fn snapshot_writer_loop(world: WorldState) {
     println!("[snapshot] writer started (sink: {}, interval {secs}s, super-tile S={s} → {}px)",
              sink.label(), s * 256);
     let mut last_class_a = crate::metrics::r2_ops().0; // denial-of-wallet watch baseline
+    // Content-dedup state (R2 Class-A lever): last-uploaded PNG hash per super-tile key, within the
+    // current epoch. A dirty super-tile whose rendered bytes match its last upload costs no PutObject.
+    // Process-local: empty on boot, so the first post-restart cycle re-uploads the canvas once (which
+    // is the intended `mark_all_dirty` behaviour); cleared on epoch roll so a post-wipe tile at the
+    // same (sx,sy) — a brand-new R2 object under the new epoch path — is never wrongly skipped.
+    let mut last_hash: FxHashMap<(u32, u32), u64> = FxHashMap::default();
+    let mut last_epoch: u64 = 0;
     loop {
         std::thread::sleep(interval);
 
@@ -833,6 +840,10 @@ pub fn snapshot_writer_loop(world: WorldState) {
             }
             (w.epoch, keys, retire, colors)
         };
+
+        // Epoch rolled (wipe/season) → the dedup cache keyed by (sx,sy) refers to the OLD epoch's
+        // objects; drop it so the new epoch's tiles all upload at least once.
+        if epoch != last_epoch { last_hash.clear(); last_epoch = epoch; }
 
         // Wipe cleanup: a rolled epoch orphaned its whole tile generation on R2 — delete the prefix.
         // Run off-lock, and before the empty-keys early-out so a wipe that left no dirty chunks still
@@ -871,21 +882,39 @@ pub fn snapshot_writer_loop(world: WorldState) {
         // (the dead owner's cells go transparent, survivors intact). Only a super-tile whose every
         // constituent chunk is empty is `all_empty` → its tile is deleted so R2 tracks live territory.
         let start = Instant::now();
-        let (mut ok, mut del, mut fail) = (0u32, 0u32, 0u32);
+        let (mut ok, mut skip, mut del, mut fail) = (0u32, 0u32, 0u32, 0u32);
         for snap in &snaps {
             let key = format!("snap/{epoch}/0/{}/{}.png", snap.sx, snap.sy);
-            let res = if snap.all_empty {
-                sink.delete(&key)
-            } else {
-                sink.put(&key, &crate::snapshot::rasterize_supertile(snap, &colors, s))
+            if snap.all_empty {
+                // Fully-cleared block → delete the key (free op) so R2 tracks live territory; forget
+                // its hash so a future repaint to identical bytes still re-uploads.
+                match sink.delete(&key) {
+                    Ok(())  => { del += 1; last_hash.remove(&(snap.sx, snap.sy)); }
+                    Err(e)  => { fail += 1; if fail <= 3 { eprintln!("[snapshot] {key} delete failed: {e}"); } }
+                }
+                continue;
+            }
+            let png = crate::snapshot::rasterize_supertile(snap, &colors, s);
+            // Content-dedup: the owner-change-precise dirty set still flags net-no-op oscillations
+            // (a cell A→B→A within one window) as dirty. Hash the rendered bytes and skip the
+            // PutObject when they're byte-identical to the last upload for this key — a free Class-A
+            // save. Hashing the PNG (not the owner-ids) also catches recolours, since a `set-color`
+            // changes the pixels without changing ownership.
+            let h = {
+                use std::hash::{Hash, Hasher};
+                let mut hh = rustc_hash::FxHasher::default();
+                png.hash(&mut hh);
+                hh.finish()
             };
-            match res {
-                Ok(()) if snap.all_empty => del  += 1,
-                Ok(())                   => ok   += 1,
-                Err(e) => { fail += 1; if fail <= 3 { eprintln!("[snapshot] {key} failed: {e}"); } }
+            if last_hash.get(&(snap.sx, snap.sy)) == Some(&h) { skip += 1; continue; }
+            match sink.put(&key, &png) {
+                Ok(())  => { ok += 1; last_hash.insert((snap.sx, snap.sy), h); }
+                Err(e)  => { fail += 1; if fail <= 3 { eprintln!("[snapshot] {key} failed: {e}"); } }
             }
         }
-        println!("[snapshot] epoch {epoch}: uploaded {ok}, deleted {del} ({fail} failed) in {:?}", start.elapsed());
+        if skip > 0 { crate::metrics::record_r2_skipped(skip as u64); }
+        println!("[snapshot] epoch {epoch}: uploaded {ok}, skipped {skip} (dedup), deleted {del} ({fail} failed) in {:?}",
+                 start.elapsed());
 
         // Denial-of-wallet watch (OWASP A09): surface a Class-A spike before the invoice does.
         let alert = crate::config::classa_alert_per_min();
@@ -985,6 +1014,7 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
         "r2ClassA":             r2a,
         "r2ClassB":             r2b,
         "r2Deletes":            r2del,
+        "r2Skipped":            crate::metrics::r2_skipped(),
         "r2ClassAPerMin":       (r2a as f64 / (secs / 60.0)).round() as u64,
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)

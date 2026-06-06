@@ -123,16 +123,24 @@ pub fn header_bytes() -> u64 { EGRESS.header_bytes.load(Ordering::Relaxed) }
 pub static R2_CLASS_A: AtomicU64 = AtomicU64::new(0);
 pub static R2_CLASS_B: AtomicU64 = AtomicU64::new(0);
 pub static R2_DELETES: AtomicU64 = AtomicU64::new(0);
+/// PutObject (Class-A) calls **avoided** by the content-dedup check (a dirty super-tile whose
+/// rendered bytes were byte-identical to the last upload). Pure savings counter — every increment
+/// here is a Class-A op that did NOT hit the invoice. Surfaced on `/egress-stats` next to `r2ClassA`.
+pub static R2_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
 pub fn record_class_a(n: u64) { R2_CLASS_A.fetch_add(n, Ordering::Relaxed); }
 #[allow(dead_code)]
 pub fn record_class_b(n: u64) { R2_CLASS_B.fetch_add(n, Ordering::Relaxed); }
 pub fn record_r2_delete(n: u64) { R2_DELETES.fetch_add(n, Ordering::Relaxed); }
+pub fn record_r2_skipped(n: u64) { R2_SKIPPED.fetch_add(n, Ordering::Relaxed); }
 
 /// `(class_a, class_b, deletes)` cumulative R2 op counts.
 pub fn r2_ops() -> (u64, u64, u64) {
     (R2_CLASS_A.load(Ordering::Relaxed), R2_CLASS_B.load(Ordering::Relaxed), R2_DELETES.load(Ordering::Relaxed))
 }
+
+/// Cumulative Class-A PutObjects skipped by content-dedup (see `R2_SKIPPED`).
+pub fn r2_skipped() -> u64 { R2_SKIPPED.load(Ordering::Relaxed) }
 
 // ---- Delivery-timing rings + per-connection memory gauge ------------------
 

@@ -268,3 +268,79 @@ Use the existing instrumentation — **no live-server disruption** (operator run
 2. **Phase B0–B1** behind the local-disk sink; eyeball PNGs.
 3. **Phase B2–B3** + epoch-on-tiling-change; test on :8090 against a real R2 bucket.
 4. **Phase C** (Cloudflare dashboard: enable paid + billing alert) once A+B are live.
+
+---
+
+## Update 2026-06-06 — Lever D (content-dedup) + S default 4→8  *(branch beta-v2)*
+
+**Trigger:** a fresh measurement showed **~600 Class-A ops / active-player-hour** (3,000/hr @ 5 active
+playtesters) — the real metric is *per active hour*, not per month, and the target is **≤ 60/active-hr**
+(a 10× cut) so the free tier (1 M/mo) holds ~100 globally-distributed players across a range of
+engagement. Operator chose to **keep the 300 s interval** (no Lever-A bump), so the cut comes from
+coarser tiles + a new dedup lever.
+
+**Audit conclusion (unchanged & important):** the snapshot writer is the **only** routine Class-A
+source. Exactly two call sites exist — `PutObject` per dirty super-tile per cycle (`snapshot.rs`
+`R2Sink::put`) and the `ListObjects` inside `delete_prefix` (`snapshot.rs`), which fires **only on a
+wipe**. There is no autosave-to-R2 (autosave is local-disk `world.snapshot`), no per-action write, and
+no within-cycle duplicate puts (the dirty set is owner-change-precise and `HashSet`-deduped). So the
+budget = **super-tiles uploaded/cycle × cycles/hr**, and the levers are S, interval, and dedup.
+
+**Shipped:**
+- **S default 4 → 8** (`config::snapshot_tile_chunks`): 2048 px PNG = 64 chunks/key. Allowed set
+  extended to **{1,2,4,8,16}** (S=16 → 4096 px / 256 chunks/key, 64 MB transient RGBA buffer — env
+  headroom only). Bigger S trades cheap CPU/bytes (egress + Class-B are ~free) for the scarce Class-A op.
+- **Lever D — content-dedup** (`server::snapshot_writer_loop`): a process-local
+  `last_hash: FxHashMap<(sx,sy)→u64>` (FxHasher over the **rendered PNG bytes**, so recolours via
+  `set-color` are caught too). A dirty super-tile whose bytes are byte-identical to its last upload
+  **skips the PutObject** — the owner-change-precise dirty set still flags net-no-op oscillations
+  (A→B→A within one window) as dirty, and this is what makes those free. Cleared on epoch roll (a
+  post-wipe tile at the same `(sx,sy)` is a brand-new R2 object under the new epoch path → never wrongly
+  skipped); the entry is removed when a block goes `all_empty`→delete. **Empty on boot**, so the first
+  post-restart cycle still re-uploads the whole canvas once (the intended `mark_all_dirty` behaviour) —
+  i.e. dedup does NOT reduce the per-restart re-upload spike; minimise gratuitous restarts, or persist
+  the hash map later if telemetry shows restart-driven spikes.
+- **Telemetry:** `metrics::R2_SKIPPED` / `record_r2_skipped` / `r2_skipped`; surfaced as `r2Skipped`
+  on `/egress-stats` and as `skipped N (dedup)` in the writer's per-cycle log line.
+
+**Why this is the substitute for a longer interval:** with the interval pinned at 300 s, the
+*oscillating-frontier* component can't be cut by fewer cycles. Dedup cuts the part of it that nets to
+no change, and bigger S coalesces the spatially-clustered remainder; together they cover the same
+ground Lever A would have.
+
+**Data-loss risk: NONE.** R2 is a render cache, not the source of truth — the authoritative state is
+the local `world.snapshot` (60 s autosave + shutdown handler). Interval/dedup changes only affect how
+stale a **cold-load / far-zoom** tile can be (≤ interval); connected players always see the live
+WS-authoritative overlay. A 64-bit hash collision could in theory skip a needed upload — astronomically
+unlikely, and it self-heals on the next genuine owner change.
+
+**Projected ops / active-player-hour (cumulative from the 600 baseline):**
+
+| After | ops/active-hr (typical) | ops/active-hr (worst: pure-advancing) | note |
+|---|---|---|---|
+| baseline (S=1, per-chunk) | 600 | 600 | measured |
+| + S=8 super-tiles | ~50–75 | ~60 | contiguous Langton territory coalesces ~8–12× |
+| + content-dedup | ~35–45 | ~60 (no net-no-ops to skip) | dedup only helps the oscillating share |
+
+Safe free-tier player count = `1,000,000 / (rate × hrs/player/mo)`:
+
+| rate | 20 hr/mo | 50 hr/mo | 100 hr/mo |
+|---|---|---|---|
+| **600 (baseline)** | 83 | 33 | 16 |
+| **60 (worst case)** | 833 | 333 | 166 |
+| **40 (typical)** | 1,250 | 500 | 250 |
+
+→ Even the worst case clears the ~100-player goal across all engagement levels; baseline could not.
+
+**⚠️ The projection assumes the LIVE server is still S=1** (legacy per-chunk; super-tiles built but
+never deployed — consistent with the "client recompile pending" status). **Verify before trusting the
+numbers:** (1) the `[snapshot] writer started … super-tile S=N` startup log on the live process;
+(2) `/egress-stats` `dirtySupertilesLen` vs `dirtyChunksPending` (the ratio is the live coalescing
+factor); (3) that `/etc/antarchy.env` doesn't pin `HIVE_SNAP_TILE_CHUNKS` to a small value. If the live
+server already runs S=4, this change adds only ~2× and won't hit 60 alone — then also raise S to 16
+and/or lengthen the interval.
+
+**Deploy:** rebuild + redeploy the binary (client is `include_str!`-embedded; it already reads
+`me.snapTileCells`, so no client edit — but the deployed binary must be this build so server S and
+client tile span agree). Re-measure on `/egress-stats` over a fixed playtest window and cross-check the
+summed writer-log `uploaded` against the Cloudflare R2 Class-A counter.
