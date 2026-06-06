@@ -712,7 +712,7 @@ pub fn level_for_xp(xp: f64, cfg: &Config) -> u16 {
 
 pub fn calc_score(tiles: u64, queen_placed_at_ms: Option<u64>, kills: u32) -> f64 {
     let secs = queen_placed_at_ms
-        .map(|t| (current_ms() - t) / 1000)
+        .map(|t| current_ms().saturating_sub(t) / 1000)   // saturating: tolerate a backwards clock step
         .unwrap_or(0);
     tiles as f64 + secs as f64 * 0.5 + kills as f64 * 500.0
 }

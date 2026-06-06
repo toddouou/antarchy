@@ -58,7 +58,10 @@ impl SessionStore {
         if let Ok(json) = serde_json::to_string(&*g) { let _ = fs::write(Self::path(), json); }
     }
 
-    /// Mint a fresh token for `user_id`, persist, and return it.
+    /// Mint a fresh token for `user_id`, persist, and return it. Opportunistically drops expired
+    /// tokens first (login is the natural cadence) so the in-RAM map and `sessions.json` stay bounded
+    /// by *live* sessions instead of growing forever — `validate` already ignores expired ones, but
+    /// nothing was ever evicting them between restarts.
     pub fn mint(&self, user_id: u32, handle: &str) -> String {
         let token = new_token();
         let now = current_ms();
@@ -66,7 +69,11 @@ impl SessionStore {
             user_id, handle: handle.to_string(), issued_ms: now,
             expires_ms: now + session_ttl_hours() * 3600 * 1000,
         };
-        self.inner.write().insert(token.clone(), sess);
+        {
+            let mut g = self.inner.write();
+            g.retain(|_, s| s.expires_ms > now);
+            g.insert(token.clone(), sess);
+        }
         self.save();
         token
     }

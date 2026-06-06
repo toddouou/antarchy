@@ -708,7 +708,22 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                             && (p.tx.is_some() || p.view_tx.is_some()))
                         .map(|(&id, _)| id)
                         .collect();
-                    let palette = Arc::new(get_palette(&w));
+                    // Palette (owner→colour) is consulted ONLY by tile frames; on ants-only cycles
+                    // finish_view never touches it, so skip the O(players) map build then.
+                    let palette = Arc::new(if include_tiles { get_palette(&w) } else { serde_json::Value::Null });
+                    // Precompute owner→ant-list ONCE per me-cycle (capped 120/owner) so each player's
+                    // `me` reads its own slice instead of rescanning the whole ant vec — that was
+                    // O(players × total_ants) under this read lock at 1 Hz.
+                    let ants_by_owner: Option<FxHashMap<u32, Vec<serde_json::Value>>> = if send_me {
+                        let mut m: FxHashMap<u32, Vec<serde_json::Value>> = FxHashMap::default();
+                        for a in &w.ants {
+                            let e = m.entry(a.owner).or_default();
+                            if e.len() < 120 {
+                                e.push(serde_json::json!([a.id, a.lifespan.saturating_sub(a.age), a.kind]));
+                            }
+                        }
+                        Some(m)
+                    } else { None };
                     // Phase-4 per-conn cap: when EGRESS_CAP_KBPS is set, a connection already sending
                     // faster than the cap skips this cycle's heavy viewport frame (the watch slot
                     // coalesces, so it just gets fewer frames). Dormant by default (cap = None).
@@ -737,7 +752,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                             raw:     if do_clients && !over_cap { snapshot_view(wref, pid, it) } else { None },
                             // Periodic `me` carries only the DYNAMIC fields (full=false); the static
                             // cfg/geo/world/spawn block ships once in `logged-in`.
-                            me:      if send_me { Some(build_player_info(wref, pid, false)) } else { None },
+                            me:      if send_me { Some(build_player_info(wref, pid, false, ants_by_owner.as_ref())) } else { None },
                             prev:    None,
                         }
                     }).collect());

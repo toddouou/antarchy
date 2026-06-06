@@ -61,7 +61,7 @@ pub fn handle_message(
         let color = {
             let c = msg["color"].as_str().unwrap_or("");
             if crate::config::valid_hex_color(c) { c.trim().to_string() }
-            else { HUES.first().copied().unwrap_or("#ff2e3f").to_string() }
+            else { HUES.first().copied().unwrap_or("#b5524a").to_string() }
         };
         let id      = world.next_player_id;
         world.next_player_id += 1;
@@ -80,7 +80,7 @@ pub fn handle_message(
         let welcome = create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, false, tx.clone());
         *player_id = Some(id);
         apply_bin_cap(world, id, &msg);
-        let me = build_player_info(world, id, true);
+        let me = build_player_info(world, id, true, None);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -107,7 +107,7 @@ pub fn handle_message(
         // their current queen level so their chrome shows immediately — WITHOUT firing popups/credit.
         backfill_peak_level(world, rec.id);
         apply_bin_cap(world, rec.id, &msg);
-        let me = build_player_info(world, rec.id, true);
+        let me = build_player_info(world, rec.id, true, None);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -127,7 +127,7 @@ pub fn handle_message(
         *player_id = Some(rec.id);
         backfill_peak_level(world, rec.id);
         apply_bin_cap(world, rec.id, &msg);
-        let me = build_player_info(world, rec.id, true);
+        let me = build_player_info(world, rec.id, true, None);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -160,8 +160,10 @@ pub fn handle_message(
         apply_bin_cap(world, id, &msg);
         // Reuse the normal logged-in payload so the guest gets the snapshot config (R2 base/epoch/
         // super-tile span) + geo to render territory from FREE R2, plus the initial queen roster.
-        let me = build_player_info(world, id, true);
+        let me = build_player_info(world, id, true, None);
         let _ = tx.send(json!({"t":"logged-in","spectator":true,"me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
+        // Metro centres so the landing-page spectator camera can prioritise queens inside metros.
+        let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
         let _ = tx.send(build_queen_roster(world));
         return;
     }
@@ -195,7 +197,7 @@ pub fn handle_message(
             u.color_chosen = true;
         }
         world.auth.save();
-        let me = build_player_info(world, pid, true);
+        let me = build_player_info(world, pid, true, None);
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
@@ -762,7 +764,8 @@ pub fn handle_message(
         let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
         let amount = msg["amount"].as_u64().unwrap_or(0);
         if let Some(tp) = world.players.get_mut(&tid) {
-            tp.credits = (tp.credits + amount).min(crate::config::CREDIT_CAP);
+            // saturating: CREDIT_CAP is u64::MAX, so a raw `+` could overflow on a huge admin amount.
+            tp.credits = tp.credits.saturating_add(amount).min(crate::config::CREDIT_CAP);
             let new_cr = tp.credits;
             if let Some(ttx) = &tp.tx {
                 let _ = ttx.send(json!({"t":"event","msg":format!("+{amount} CREDITS (ADMIN) · total {new_cr}")}).to_string());

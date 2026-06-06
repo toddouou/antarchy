@@ -118,7 +118,15 @@ pub fn build_region_holders(world: &World) -> String {
 /// (`tickRate`, world size, spawn, geo projection, cfg constants); `full=false` (the ≥1 Hz periodic
 /// push) omits it — the client retains the static fields from `logged-in` and merges the dynamic
 /// ones. Splitting this is the Phase-3 `me` trim (egress: the static block was ~half the payload).
-pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
+///
+/// `ants_by_owner`, when `Some`, is a per-cycle precomputed `owner → [[id, remainingLife, kind], …]`
+/// map (each capped at 120) so the periodic ≥1 Hz `me` for every connected player doesn't each rescan
+/// the *whole* ant vec — that was O(players × total_ants) under the viewport read lock. `None` falls
+/// back to the direct scan (used by the rare one-shot login/spectate calls).
+pub fn build_player_info(
+    world: &World, player_id: u32, full: bool,
+    ants_by_owner: Option<&FxHashMap<u32, Vec<Value>>>,
+) -> String {
     let c = cfg().clone();
     let Some(p) = world.players.get(&player_id) else {
         return json!({"t":"err","msg":"player not found"}).to_string();
@@ -126,7 +134,7 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
     let q = world.queens.get(&player_id);
     let tiles   = q.map(|q| q.cached_tiles).unwrap_or(0);
     let secs    = p.queen_placed_at
-        .map(|t| (current_ms() - t) / 1000)
+        .map(|t| current_ms().saturating_sub(t) / 1000)   // saturating: tolerate a backwards clock step
         .unwrap_or(0);
     let score   = calc_score(tiles, p.queen_placed_at, q.map(|q| q.kills).unwrap_or(0));
     let xp      = q.map(|q| q.xp).unwrap_or(0.0);
@@ -134,14 +142,20 @@ pub fn build_player_info(world: &World, player_id: u32, full: bool) -> String {
     let xp_next = q.map(|q| total_xp_for_level(q.level + 1, &c)).unwrap_or(c.xp_base);
 
     // Player's own live workers for the WORKERS active-list (capped at 120; each entry is
-    // [id, remaining_lifespan_ticks, kind]). Early-out once we have enough to bound the
-    // per-player scan a little. Client renders lifespan bars from this + cfg LIFESPAN.
-    let mut my_ants: Vec<Value> = Vec::new();
-    for a in world.ants.iter() {
-        if a.owner != player_id { continue; }
-        my_ants.push(json!([a.id, a.lifespan.saturating_sub(a.age), a.kind]));
-        if my_ants.len() >= 120 { break; }
-    }
+    // [id, remaining_lifespan_ticks, kind]). Use the per-cycle precomputed map when present (one pass
+    // over all ants shared across every viewer); else fall back to a direct, early-out scan.
+    let my_ants: Vec<Value> = match ants_by_owner {
+        Some(map) => map.get(&player_id).cloned().unwrap_or_default(),
+        None => {
+            let mut v: Vec<Value> = Vec::new();
+            for a in world.ants.iter() {
+                if a.owner != player_id { continue; }
+                v.push(json!([a.id, a.lifespan.saturating_sub(a.age), a.kind]));
+                if v.len() >= 120 { break; }
+            }
+            v
+        }
+    };
 
     let mut visited_countries: Vec<&String> = p.visited_countries.iter().collect();
     visited_countries.sort();
