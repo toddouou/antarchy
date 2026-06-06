@@ -58,9 +58,20 @@ only factual drift corrected.
 
 ## Code-quality findings (noted; not changed beyond the dep removal)
 
+- **Dead functions:** `snapshot::snapshot_dirty` (`src/snapshot.rs:47`) and `snapshot::rasterize_chunk`
+  (`src/snapshot.rs:142`) are `pub fn`s never called (this is a binary, so `pub` doesn't export them) —
+  the only two compiler warnings. Candidates for removal in a future pass; left untouched here.
 - `tokio-tungstenite` is used only by `server.rs`'s `egress_bench` — candidate to move to
   `[dev-dependencies]` (optional; left as a regular dep for now).
 - Three build dirs (`target/`, `target-dev/`, `target-check/`) — all gitignored, disk-only.
+
+## Verification — results
+
+- `cargo build` + `cargo build --release` (into `target-dev`): **succeed** (only the two pre-existing
+  dead-code warnings above; no error from the dep removal).
+- `cargo test`: **44 passed, 0 failed, 4 ignored** (the `#[ignore]` benchmarks).
+- `git grep`: no references to any deleted path in code/docs; all `include_str!`/`include_bytes!`
+  targets still present.
 
 ## Verification
 
