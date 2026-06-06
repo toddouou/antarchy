@@ -1,13 +1,18 @@
 # Antarchy.fun — Security & Anti-Cheat Hardening — P0 Tier (RESUMABLE CHECKPOINT)
 
-> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a Argon2id DONE.**
-> **Resume at:** §1 AoI zoom-leak fix. See "Execution order" + "Next concrete action" at the bottom.
+> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a + §1 DONE.**
+> **Resume at:** §2 anti-replay. See "Execution order" + "Next concrete action" at the bottom.
 >
 > Done so far:
 > - baseline commit (beta-v2 state) · `bbe539f`
-> - **§4a Argon2id** — `argon2`+`subtle` deps; `hash_pw_argon2`/`verify_pw`/`needs_rehash` +
->   `HIVE_ARGON2_*` knobs; transparent rehash-on-login in `api.rs`/`handlers.rs`; admin seed uses
->   argon2; 3 new auth tests. Builds; 38 tests pass; clippy clean.
+> - **§4a Argon2id** · `0fedcb3` — `argon2`+`subtle` deps; `hash_pw_argon2`/`verify_pw`/`needs_rehash`
+>   + `HIVE_ARGON2_*` knobs; transparent rehash-on-login in `api.rs`/`handlers.rs`; admin seed uses
+>   argon2; 3 new auth tests.
+> - **§1 AoI zoom-leak** — `config::clamp_view_span` + `max_view_span` (HIVE_MAX_VIEW_SPAN=4000) +
+>   `max_queens_per_frame` (256); clamp in `view-set` (`handlers.rs`) + defensively in `snapshot_view`;
+>   `cap_queens_to` (reveal-first, nearest-to-centre) in `network.rs`; 5 new tests.
+> - Running total: builds on `target-dev`; **43 tests pass**. (Pre-existing clippy style lints in the
+>   baseline remain — a `-D warnings` cleanup is P2 §12, out of scope for P0.)
 > Mirror of the approved plan at `~/.claude/plans/antarchy-fun-security-eager-comet.md`, kept in-repo
 > so any session can pick up without re-deriving context.
 
@@ -199,7 +204,8 @@ log.
 ## Execution order (commit boundaries)
 1. ~~`security-p0` branch off `beta-v1`.~~ ✅
 2. ~~§4a Argon2id foundation → build/clippy/test → commit.~~ ✅
-3. §1 AoI fix → tests → commit.  ← **NEXT**
+3. ~~§1 AoI fix → tests → commit.~~ ✅
+4. §2 anti-replay → tests → commit.  ← **NEXT**
 4. §2 anti-replay → tests → commit.
 5. §3 WS hardening → tests → commit.
 6. §4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.
@@ -208,8 +214,9 @@ log.
 9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**
 
 ## Next concrete action (resume here)
-Start **§1 AoI culling**: add `config::max_view_span()` (`HIVE_MAX_VIEW_SPAN`, default 4000) +
-`config::max_queens_per_frame()` (default 256); center-preserving clamp of the `view-set` rect in
-`handlers.rs:176` before storing `PlayerView`; re-clamp + cap the queens vector to
-`max_queens_per_frame` (nearest-to-center first) in `snapshot_view` (`network.rs:300`). Add a test
-that a max zoom-out view yields zero queens beyond the span cap and ≤ the per-frame cap.
+Start **§2 anti-replay + validation**: add `last_seq: u64` to `Player` (`world.rs`, transient, not
+persisted); the recompiled client emits a monotonic `seq` on mutating msgs (`place-ant`,
+`place-queen`, `shop-buy`, `relocate`). In `handle_message`, for those types reject `seq <= last_seq`
+(log `[anticheat] replay/dup`) else advance; absent seq (legacy) → process + count. Also reject
+non-finite XP in `admin-give-xp` (`xp.is_finite()`). Add a test that a duplicate/out-of-order seq is
+rejected while a fresh one passes.

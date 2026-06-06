@@ -295,6 +295,19 @@ fn cap_ants_by_id(ants: &mut Vec<(u32, i32, i32, i8, i8, u32, u8)>, cap: usize) 
     }
 }
 
+/// AoI queen cap (OWASP A01): trim `queens` to at most `cap`, always keeping `reveal` queens (the
+/// viewer's own / admin) and otherwise the nearest to (`cx`,`cy`). No-op at/under the cap. Squared
+/// distance is computed in `i64` so far-apart world coords can't overflow.
+fn cap_queens_to(queens: &mut Vec<QueenLite>, cx: i32, cy: i32, cap: usize) {
+    if queens.len() <= cap { return; }
+    queens.sort_by_key(|q| {
+        let dx = (q.x - cx) as i64;
+        let dy = (q.y - cy) as i64;
+        (!q.reveal, dx * dx + dy * dy)
+    });
+    queens.truncate(cap);
+}
+
 /// Phase A (under the World read lock): extract the minimal owned data for one client's
 /// viewport. Cheap relative to fog/base64/JSON — those happen in `finish_view`, unlocked.
 pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Option<RawView> {
@@ -303,10 +316,15 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     let ww = world.world_w as i32;
     let wh = world.world_h as i32;
 
-    let x0 = v.x0.max(0);
-    let y0 = v.y0.max(0);
-    let fw = (v.x1.min(ww) - x0).max(0);   // full requested tile span (clamped to world)
-    let fh = (v.y1.min(wh) - y0).max(0);
+    // AoI hard cap (OWASP A01, defense-in-depth): re-clamp the stored span so even a view that
+    // bypassed `view-set` can't widen the live-entity window past max_view_span. `view-set` already
+    // clamps on store; this guarantees the invariant at the serialization boundary too.
+    let (vx0, vy0, vx1, vy1) = crate::config::clamp_view_span(v.x0, v.y0, v.x1, v.y1);
+
+    let x0 = vx0.max(0);
+    let y0 = vy0.max(0);
+    let fw = (vx1.min(ww) - x0).max(0);   // full requested tile span (clamped to world)
+    let fh = (vy1.min(wh) - y0).max(0);
     if fw == 0 || fh == 0 { return None; }
 
     // LOD step: when the requested span exceeds MAX_DIM, downsample so the served grid stays
@@ -355,7 +373,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
                 owners[row + px] = world.tiles.get(wx as u32, wy as u32);
             }
         }
-        let queens: Vec<QueenLite> = world.queens.iter()
+        let mut queens: Vec<QueenLite> = world.queens.iter()
             .filter(|(_, q)| !q.dead)
             .filter(|(_, q)| !((q.x + q.size as i32) < x0 || q.x > x1 || (q.y + q.size as i32) < y0 || q.y > y1))
             .map(|(&qid, q)| {
@@ -371,6 +389,10 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
                 }
             })
             .collect();
+        // AoI entity cap (defense-in-depth): keep the viewer's own/revealed queens, then the
+        // nearest-to-centre, up to max_queens_per_frame — a crafted wide view can't enumerate all.
+        cap_queens_to(&mut queens, x0 + (x1 - x0) / 2, y0 + (y1 - y0) / 2,
+                      crate::config::max_queens_per_frame());
         (pad, pw, ph, owners, queens)
     } else {
         (0, 0, 0, Vec::new(), Vec::new())
@@ -801,6 +823,38 @@ mod tests {
         let mut c2 = mk(10_000);
         cap_ants_by_id(&mut c2, 4000);
         assert_eq!(c, c2, "same input ⇒ same kept set (frame-stable, no flicker)");
+    }
+
+    fn ql(qid: u32, x: i32, y: i32, reveal: bool) -> QueenLite {
+        QueenLite {
+            qid, x, y, size: 2, hp: 10, max_hp: 10, level: 1, color: "#888".into(),
+            username: "q".into(), prestige: 0, shield: 0, bubble_r: 30.0, reveal,
+        }
+    }
+
+    /// AoI queen cap keeps revealed (own/admin) queens unconditionally, then the nearest to centre,
+    /// and drops the rest — so a crafted wide view can't enumerate every queen on the map.
+    #[test]
+    fn queen_cap_keeps_revealed_and_nearest() {
+        let mut qs = vec![
+            ql(1, 10, 0, false),     // near
+            ql(2, 1_000, 0, false),  // far
+            ql(3, 500, 0, true),     // far-ish but REVEALED → must survive
+            ql(4, 20, 0, false),     // near
+        ];
+        cap_queens_to(&mut qs, 0, 0, 2);
+        let ids: Vec<u32> = qs.iter().map(|q| q.qid).collect();
+        assert_eq!(qs.len(), 2);
+        assert!(ids.contains(&3), "revealed queen is never dropped");
+        assert!(ids.contains(&1), "nearest non-revealed kept");
+        assert!(!ids.contains(&2), "farthest queen dropped");
+    }
+
+    #[test]
+    fn queen_cap_is_noop_under_cap() {
+        let mut qs = vec![ql(1, 0, 0, false), ql(2, 5, 0, false)];
+        cap_queens_to(&mut qs, 0, 0, 256);
+        assert_eq!(qs.len(), 2);
     }
 
     /// Phase-3 `bin` ants-only frame is packed binary (kind 3) + deflate; each record round-trips.

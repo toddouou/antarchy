@@ -465,6 +465,45 @@ pub fn guest_ant_cap() -> usize {
         .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(400).max(1))
 }
 
+// ---- AoI / map-hack guards (OWASP A01) ---------------------------------------------------------
+
+/// Hard cap on the **live viewport span** in world tiles. The client's requested view rectangle is
+/// clamped (center-preserving) to at most this on each axis *before* it decides which live ants/queens
+/// are serialized — independent of client zoom. This is what stops "zoom out to see the whole map's
+/// enemy queens": zoomed-out territory still renders from the free R2 super-tiles, but live entities
+/// never leak beyond the bound. `HIVE_MAX_VIEW_SPAN`, default 4000, min 64. Read once.
+pub fn max_view_span() -> i32 {
+    static V: OnceLock<i32> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_MAX_VIEW_SPAN").ok()
+        .and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(4000).max(64))
+}
+
+/// Hard cap on the number of live queens serialized into a single viewport frame (defense-in-depth
+/// for AoI: even a crafted view can't enumerate every queen). Nearest-to-centre are kept; the
+/// viewer's own / revealed queens are always kept. `HIVE_MAX_QUEENS_PER_FRAME`, default 256, min 1.
+pub fn max_queens_per_frame() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_MAX_QUEENS_PER_FRAME").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(256).max(1))
+}
+
+/// Center-preserving clamp of a requested view rectangle so neither axis span exceeds
+/// [`max_view_span`]. Also normalizes (`x0<=x1`, `y0<=y1`). The single source of truth used by both
+/// `view-set` (on store) and `snapshot_view` (defensively, on read). Computed in `i64` so an
+/// adversarial rect (e.g. spanning the whole `i32` range) can't overflow on the subtraction.
+pub fn clamp_view_span(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32, i32, i32) {
+    let max = max_view_span() as i64;
+    let (mut x0, mut x1) = (x0 as i64, x1 as i64);
+    let (mut y0, mut y1) = (y0 as i64, y1 as i64);
+    if x0 > x1 { std::mem::swap(&mut x0, &mut x1); }
+    if y0 > y1 { std::mem::swap(&mut y0, &mut y1); }
+    let w = x1 - x0;
+    if w > max { let cx = x0 + w / 2; x0 = cx - max / 2; x1 = x0 + max; }
+    let h = y1 - y0;
+    if h > max { let cy = y0 + h / 2; y0 = cy - max / 2; y1 = y0 + max; }
+    (x0 as i32, y0 as i32, x1 as i32, y1 as i32)
+}
+
 pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     let d = Config::default();
     let vals: &[(&'static str, f64)] = &[
@@ -589,4 +628,37 @@ pub fn current_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE AoI guarantee: a max-zoom-out / map-hack view spanning millions of tiles is clamped to at
+    /// most `max_view_span` on each axis, centred on the request — so live entities can never leak
+    /// beyond the server bound regardless of what the client claims.
+    #[test]
+    fn clamp_view_span_caps_a_giant_rect_around_its_center() {
+        let max = max_view_span();
+        let (cx, cy) = (750_000, 375_000);
+        let (x0, y0, x1, y1) =
+            clamp_view_span(cx - 5_000_000, cy - 5_000_000, cx + 5_000_000, cy + 5_000_000);
+        assert!(x1 - x0 <= max, "x span clamped to <= {max}, got {}", x1 - x0);
+        assert!(y1 - y0 <= max, "y span clamped to <= {max}, got {}", y1 - y0);
+        assert!(((x0 + x1) / 2 - cx).abs() <= 1, "centre preserved");
+        assert!(((y0 + y1) / 2 - cy).abs() <= 1, "centre preserved");
+    }
+
+    #[test]
+    fn clamp_view_span_leaves_small_rect_untouched_but_normalizes() {
+        assert_eq!(clamp_view_span(100, 200, 900, 1000), (100, 200, 900, 1000));
+        assert_eq!(clamp_view_span(900, 1000, 100, 200), (100, 200, 900, 1000));
+    }
+
+    #[test]
+    fn clamp_view_span_handles_full_i32_range_without_overflow() {
+        let (x0, y0, x1, y1) = clamp_view_span(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
+        assert!(x1 - x0 <= max_view_span());
+        assert!(y1 - y0 <= max_view_span());
+    }
 }
