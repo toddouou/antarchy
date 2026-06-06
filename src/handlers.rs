@@ -46,6 +46,10 @@ pub fn handle_message(
         if raw_u.len() < 3 || raw_u.len() > 20 {
             let _ = tx.send(err("Username 3-20 chars")); return;
         }
+        // Charset cap (also closes a stored-XSS vector via usernames rendered in the client).
+        if !raw_u.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            let _ = tx.send(err("Username: letters, numbers, _ or - only")); return;
+        }
         if pw.len() < 4 {
             let _ = tx.send(err("Password min 4 chars")); return;
         }
@@ -53,7 +57,12 @@ pub fn handle_message(
             let _ = tx.send(err("Username taken")); return;
         }
         let hue_idx = msg["hueIdx"].as_i64().unwrap_or(0) as i32;
-        let color   = msg["color"].as_str().unwrap_or(HUES.first().copied().unwrap_or("#ff2e3f")).to_string();
+        // Validate the colour to a #rrggbb hex; fall back to a starter hue (never store raw input).
+        let color = {
+            let c = msg["color"].as_str().unwrap_or("");
+            if crate::config::valid_hex_color(c) { c.trim().to_string() }
+            else { HUES.first().copied().unwrap_or("#ff2e3f").to_string() }
+        };
         let id      = world.next_player_id;
         world.next_player_id += 1;
         world.auth.users.insert(raw_u.clone(), UserRecord {

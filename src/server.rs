@@ -97,16 +97,21 @@ fn upgrade_guarded(ws: WebSocketUpgrade, headers: &HeaderMap, app: AppState) -> 
     if !origin_allowed(headers) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
+    // Resolve the session cookie → uid here, while we still have the upgrade request's headers. The
+    // game socket then authenticates from this server-validated id (the `enter` message), so the token
+    // never has to live in client JS.
+    let cookie_uid = session_uid_from_cookie(headers, &app.sessions);
     let max = crate::config::ws_max_msg();
     ws.max_message_size(max)
         .max_frame_size(max)
-        .on_upgrade(move |socket| handle_ws_connection(socket, app))
+        .on_upgrade(move |socket| handle_ws_connection(socket, app, cookie_uid))
         .into_response()
 }
 
 /// A PRESENT `Origin` must be in the allowlist; an ABSENT one (non-browser client / same-origin
-/// navigation) is allowed — cross-site WS hijack requires a browser, which always sends `Origin`.
-fn origin_allowed(headers: &HeaderMap) -> bool {
+/// navigation) is allowed — cross-site WS/CSRF requires a browser, which always sends `Origin`. Shared
+/// by the WS upgrade and the `/api/*` CSRF guard.
+pub(crate) fn origin_allowed(headers: &HeaderMap) -> bool {
     match headers.get(axum::http::header::ORIGIN) {
         None => true,
         Some(v) => match v.to_str() {
@@ -117,6 +122,21 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
             Err(_) => false,
         },
     }
+}
+
+/// Extract a cookie value by name from the `Cookie` header (no cookie crate). Matches `name=value`
+/// exactly within the `; `-separated list.
+pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    raw.split(';').find_map(|part| {
+        part.trim().strip_prefix(name)?.strip_prefix('=').map(|v| v.to_string())
+    })
+}
+
+/// Resolve the session cookie on a request to its (unexpired) user id, or `None`.
+fn session_uid_from_cookie(headers: &HeaderMap, sessions: &crate::session::SessionStore) -> Option<u32> {
+    let tok = cookie_value(headers, crate::config::session_cookie_name())?;
+    sessions.validate(&tok).map(|s| s.user_id)
 }
 
 /// `/reset` — the landing page handles the `?token=…` reset flow client-side, so just serve it.
@@ -183,7 +203,7 @@ async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
 
 // ---- WebSocket connection -------------------------------------------------
 
-async fn handle_ws_connection(socket: WebSocket, app: AppState) {
+async fn handle_ws_connection(socket: WebSocket, app: AppState, cookie_uid: Option<u32>) {
     let cmd_tx = app.cmd_tx.clone();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -297,11 +317,20 @@ async fn handle_ws_connection(socket: WebSocket, app: AppState) {
 
         let t = quick_msg_type(&text);
 
-        if t == "register" || t == "login" || t == "session" || t == "spectate" {
-            // All four enter the game via the Cmd::Auth plumbing (they need the connection senders +
-            // reply). `session` resolves its token → uid HERE (sessions live in AppState, not World),
-            // then routes an internal `session-login`. `spectate` creates an ephemeral guest player.
-            let raw = if t == "session" {
+        if t == "register" || t == "login" || t == "session" || t == "enter" || t == "spectate" {
+            // All enter the game via the Cmd::Auth plumbing (they need the connection senders + reply).
+            // `enter` authenticates from the **cookie** validated at upgrade (`cookie_uid`) — the token
+            // never touches client JS. `session` is the transitional token-in-message path. Both route
+            // an internal `session-login`. `spectate` creates an ephemeral guest player.
+            let raw = if t == "enter" {
+                match cookie_uid {
+                    Some(uid) => format!(r#"{{"t":"session-login","id":{uid},"bin":1}}"#),
+                    None => {
+                        let _ = prio_tx.try_send(r#"{"t":"err","msg":"Please log in","code":"session"}"#.to_string());
+                        continue;
+                    }
+                }
+            } else if t == "session" {
                 match session_token(&text).and_then(|tok| app.sessions.validate(&tok)) {
                     Some(s) => format!(r#"{{"t":"session-login","id":{},"bin":1}}"#, s.user_id),
                     None => {
@@ -944,6 +973,7 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/api/login",           post(crate::api::login))
         .route("/api/forgot-password", post(crate::api::forgot_password))
         .route("/api/reset-password",  post(crate::api::reset_password))
+        .route("/api/logout",          post(crate::api::logout))
         .route("/api/roster",          get(crate::api::roster)) // cached spectator fallback (free path)
         .with_state(AppState {
             world, cmd_tx,

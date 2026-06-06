@@ -32,6 +32,21 @@ pub async fn send_reset(to: &str, token: &str) {
     send(to, subject, &html, &format!("reset link {link}")).await;
 }
 
+/// Tell an existing account that someone tried to register again with their email. Sent on the
+/// enumeration-safe registration path so a would-be registrant gets the same "check your email"
+/// response whether or not the address is taken.
+pub async fn send_register_exists_notice(to: &str) {
+    let base = public_base_url().unwrap_or_default();
+    let subject = "Someone tried to sign up with your email";
+    let html = format!(
+        "<div style=\"font-family:system-ui,Segoe UI,sans-serif;max-width:480px;margin:auto\">\
+         <h2 style=\"color:#111\">antarchy.fun</h2>\
+         <p>Someone just tried to create a new account with this email, but you already have one.</p>\
+         <p>If it was you, just <a href=\"{base}/\" style=\"color:#c0392b\">log in</a> (or reset your \
+         password). If not, you can safely ignore this email.</p></div>");
+    send(to, subject, &html, "register-exists notice").await;
+}
+
 async fn send(to: &str, subject: &str, html: &str, dev_desc: &str) {
     let (Some(key), Some(from)) = (resend_api_key(), email_from()) else {
         println!("[email:DEV] to={to} · {subject} · {dev_desc}  \

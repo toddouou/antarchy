@@ -1762,14 +1762,11 @@ function connect() {
   ws.onopen=()=>{
     $('dot').className='dot ok'; $('cstat').textContent='CONNECTED';
     reconnectAttempts=0; // P7: successful connect resets the backoff
-    // beta-v2: login/registration live on the landing page. /play authenticates with the session
-    // token minted there; with no token we send the player back to the landing page to log in.
-    const token=localStorage.getItem('antarchy-session');
-    if (token) { const am=$('auth-modal'); if (am) am.style.display='none'; send({t:'session',token,bin:1}); return; }
-    // Legacy fallback: a pre-beta-v2 tab may still carry a username/password session.
-    const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
-    if (u&&p&&(reconnecting||sessionStorage.getItem('hive-active'))) { send({t:'login',username:u,password:p,bin:1}); return; }
-    location.href='/';   // no session → go to the landing page to log in / sign up
+    // beta-v2 cookie auth: the HttpOnly __Host- session cookie set on the landing page rides the WS
+    // upgrade automatically, so we just send `enter` (no token/password in JS — XSS-safe). A missing
+    // or expired cookie makes the server reply err code 'session', which redirects us back to '/'.
+    const am=$('auth-modal'); if (am) am.style.display='none';
+    send({t:'enter',bin:1});
   };
   // P7: exponential backoff + jitter (no synchronized reconnect storm after a server bounce). Keep
   // the last grid through a brief drop so we render from it instead of flashing white; discard it
@@ -3853,9 +3850,10 @@ $('admin-chk').onchange=e=>{
 $('btn-recenter').onclick=()=>{ AudioEngine.click(); if (me?.queen) panTarget={x:me.queen.x+1,y:me.queen.y+1}; };
 $('btn-logout').onclick=()=>{
   AudioEngine.click();
-  localStorage.removeItem('hive-u'); localStorage.removeItem('hive-p');
-  localStorage.removeItem('antarchy-session'); sessionStorage.removeItem('hive-active');
-  location.href='/';   // beta-v2: log out → back to the landing page
+  try{ localStorage.removeItem('antarchy-handle'); sessionStorage.removeItem('hive-active'); }catch(_){}
+  // Revoke the session server-side (clears the HttpOnly cookie), then return to the landing page.
+  // `credentials:'same-origin'` sends the cookie; the Origin header satisfies the CSRF guard.
+  fetch('/api/logout',{method:'POST',credentials:'same-origin'}).finally(()=>{ location.href='/'; });
 };
 
 /* AUTH */
@@ -3866,7 +3864,8 @@ function doLogin() {
   AudioEngine.click();
   const u=$('li-u').value.trim().toUpperCase(), p=$('li-p').value;
   if (!u||!p) { $('li-err').textContent='FILL BOTH FIELDS'; return; }
-  localStorage.setItem('hive-u',u); localStorage.setItem('hive-p',p);
+  // Never persist credentials in localStorage (XSS-exfiltratable). Sessions are HttpOnly cookies now;
+  // this legacy in-game form just authenticates the socket directly.
   send({t:'login', username:u, password:p, bin:1});
 }
 function doRegister() {
@@ -3877,7 +3876,7 @@ function doRegister() {
   const sel=document.querySelector('.hue-sw.sel');
   if (!sel) { $('r-err').textContent='PICK A HUE'; return; }
   const idx=+sel.dataset.idx;
-  localStorage.setItem('hive-u',u); localStorage.setItem('hive-p',p);
+  // No plaintext credential persistence — see doLogin().
   send({t:'register', username:u, password:p, color:HUES[idx], hueIdx:idx, bin:1});
 }
 HUES.forEach((c,i)=>{

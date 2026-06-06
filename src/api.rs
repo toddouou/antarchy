@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::header::{CACHE_CONTROL, CONTENT_TYPE},
-    http::{HeaderMap, StatusCode},
+    http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -29,8 +29,11 @@ use serde_json::json;
 use tokio::sync::oneshot;
 
 use crate::auth::{hash_pw_argon2, needs_rehash, verify_pw, UserRecord};
-use crate::config::{auth_rate_per_min, current_ms, sms_enabled, ADMIN_USERNAME, HUES};
-use crate::server::{AppState, Cmd};
+use crate::config::{
+    auth_rate_per_min, current_ms, secure_cookies, session_cookie_name, session_ttl_hours,
+    sms_enabled, ADMIN_USERNAME, HUES,
+};
+use crate::server::{origin_allowed, AppState, Cmd};
 use crate::world::{PendingReg, ResetToken, World};
 
 // ---- Operations + outcomes (cross the sim-thread boundary via Cmd::AuthApi) ---------------------
@@ -52,6 +55,10 @@ pub enum AuthOutcome {
     RegPending { reg_id: String, email: String, email_code: String, phone: String, phone_code: String, phone_required: bool },
     /// A code matched but the account isn't finalized yet (other channel still pending).
     VerifyProgress { email_ok: bool, phone_ok: bool, phone_required: bool },
+    /// Registration where the email is already taken. Enumeration-safe: the HTTP handler returns the
+    /// SAME shape as `RegPending` and instead emails the EXISTING owner a heads-up — so an attacker
+    /// can't tell "taken" from "fresh". No pending registration is created (`reg_id` is a throwaway).
+    RegExisting { email: String, reg_id: String, phone_required: bool },
     /// Account created/active — mint a session token for this identity.
     Verified { uid: u32, handle: String },
     /// Login OK — mint a session token.
@@ -92,18 +99,23 @@ fn do_register(world: &mut World, handle: String, email: String, phone: String,
     if password.len() < 8      { return deny("Password must be at least 8 characters"); }
     let uname = handle.to_uppercase();
     if uname == ADMIN_USERNAME                  { return deny("That handle is reserved"); }
+    // Handle-taken is revealed (handles are public on the leaderboard); EMAIL-taken is NOT (below).
     if world.auth.users.contains_key(&uname)    { return deny("That handle is taken"); }
-    if world.auth.email_taken(&email)           { return deny("An account with that email already exists"); }
 
-    let color = if color.trim().is_empty() {
-        HUES.first().copied().unwrap_or("#c0392b").to_string()
-    } else { color };
+    // Validate the colour to a #rrggbb hex (or fall back) — kills a stored-XSS vector via `style=`.
+    let color = sanitize_color(&color);
+    // Phone verification is required only when SMS is enabled AND a phone was supplied.
+    let phone_required = sms_enabled() && !phone.is_empty();
+
+    // Enumeration-safe email-taken: respond identically to a fresh registration (the caller emails the
+    // existing owner a heads-up instead of a code), so an attacker can't probe which emails exist.
+    if world.auth.email_taken(&email) {
+        return AuthOutcome::RegExisting { email, reg_id: crate::session::new_token(), phone_required };
+    }
 
     let email_code = gen_code();
     let phone_code = gen_code();
     let reg_id = crate::session::new_token();
-    // Phone verification is required only when SMS is enabled AND a phone was supplied.
-    let phone_required = sms_enabled() && !phone.is_empty();
 
     world.pending_regs.insert(reg_id.clone(), PendingReg {
         email: email.clone(), phone: phone.clone(), handle,
@@ -163,6 +175,17 @@ fn verify(world: &mut World, reg_id: String, code: String, is_email: bool) -> Au
 
 fn do_login(world: &mut World, ident: &str, password: &str) -> AuthOutcome {
     let ident = ident.trim();
+    // Per-account throttle (OWASP A07): bound brute-force on one account independently of the per-IP
+    // `/api/*` limiter — 10 attempts / 60 s window per identity, cleared on success. Soft (no hard
+    // lockout that becomes a DoS-by-proxy).
+    let key = ident.to_lowercase();
+    {
+        let now = current_ms();
+        let e = world.login_attempts.entry(key.clone()).or_insert((now, 0));
+        if now.saturating_sub(e.0) > 60_000 { *e = (now, 0); }
+        e.1 += 1;
+        if e.1 > 10 { return deny("Too many attempts — try again shortly"); }
+    }
     // Resolve by email, then phone, then legacy username — owned clones avoid borrow conflicts.
     let rec = world.auth.find_by_email(ident).cloned()
         .or_else(|| world.auth.find_by_phone(ident).cloned())
@@ -171,6 +194,7 @@ fn do_login(world: &mut World, ident: &str, password: &str) -> AuthOutcome {
     let Some(rec) = rec else { return deny("Invalid credentials"); };
     if !verify_pw(&rec.password_hash, password) { return deny("Invalid credentials"); }
     if world.auth.banned.contains(&rec.username) { return deny("This account is banned"); }
+    world.login_attempts.remove(&key); // a real success resets the counter
     // Transparent upgrade: a legacy SHA-256 (or under-cost) hash is re-hashed with Argon2id now that
     // we hold the plaintext and a confirmed match. One-time per account; persisted immediately.
     if needs_rehash(&rec.password_hash) {
@@ -221,12 +245,21 @@ pub fn gc(world: &mut World) {
     let now = current_ms();
     world.pending_regs.retain(|_, pr| now.saturating_sub(pr.created_ms) < 15 * 60_000);
     world.reset_tokens.retain(|_, rt| now.saturating_sub(rt.created_ms) < 60 * 60_000);
+    world.login_attempts.retain(|_, (start, _)| now.saturating_sub(*start) < 5 * 60_000);
 }
 
 fn valid_email(e: &str) -> bool {
     let parts: Vec<&str> = e.split('@').collect();
     parts.len() == 2 && !parts[0].is_empty()
         && parts[1].contains('.') && !parts[1].starts_with('.') && !parts[1].ends_with('.')
+}
+
+/// A safe `#rrggbb` colour, or the first starter hue if the input isn't a valid hex (prevents a
+/// stored-XSS payload from reaching `style="background:…"` on the client).
+fn sanitize_color(c: &str) -> String {
+    let c = c.trim();
+    if crate::config::valid_hex_color(c) { c.to_string() }
+    else { HUES.first().copied().unwrap_or("#c0392b").to_string() }
 }
 
 fn gen_code() -> String { format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32)) }
@@ -283,6 +316,7 @@ async fn call_sim(app: &AppState, op: AuthOp) -> AuthOutcome {
 }
 
 pub async fn register(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<RegisterBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
     if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }
     let op = AuthOp::Register {
         handle: b.handle, email: b.email, phone: b.phone, password: b.password,
@@ -294,15 +328,24 @@ pub async fn register(State(app): State<AppState>, headers: HeaderMap, Json(b): 
             if !phone.is_empty() { crate::sms::send_code(&phone, &phone_code).await; }
             Json(json!({ "ok": true, "regId": reg_id, "phoneRequired": phone_required })).into_response()
         }
+        AuthOutcome::RegExisting { email, reg_id, phone_required } => {
+            // Same response shape as RegPending; email the existing owner instead of a code.
+            crate::email::send_register_exists_notice(&email).await;
+            Json(json!({ "ok": true, "regId": reg_id, "phoneRequired": phone_required })).into_response()
+        }
         AuthOutcome::Error { msg } => bad(&msg),
         _ => bad("Unexpected response"),
     }
 }
 
-pub async fn verify_email(State(app): State<AppState>, Json(b): Json<VerifyBody>) -> Response {
+pub async fn verify_email(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<VerifyBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
+    if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }  // throttle code brute-force
     finish_verify(&app, call_sim(&app, AuthOp::VerifyEmail { reg_id: b.reg_id, code: b.code }).await)
 }
-pub async fn verify_phone(State(app): State<AppState>, Json(b): Json<VerifyBody>) -> Response {
+pub async fn verify_phone(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<VerifyBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
+    if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }
     finish_verify(&app, call_sim(&app, AuthOp::VerifyPhone { reg_id: b.reg_id, code: b.code }).await)
 }
 
@@ -310,7 +353,7 @@ fn finish_verify(app: &AppState, outcome: AuthOutcome) -> Response {
     match outcome {
         AuthOutcome::Verified { uid, handle } => {
             let token = app.sessions.mint(uid, &handle);
-            Json(json!({ "ok": true, "done": true, "token": token, "handle": handle })).into_response()
+            json_with_session(&token, json!({ "ok": true, "done": true, "handle": handle }))
         }
         AuthOutcome::VerifyProgress { email_ok, phone_ok, phone_required } =>
             Json(json!({ "ok": true, "done": false,
@@ -321,18 +364,34 @@ fn finish_verify(app: &AppState, outcome: AuthOutcome) -> Response {
 }
 
 pub async fn login(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<LoginBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
     if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }
     match call_sim(&app, AuthOp::Login { ident: b.ident, password: b.password }).await {
         AuthOutcome::LoggedIn { uid, handle } => {
             let token = app.sessions.mint(uid, &handle);
-            Json(json!({ "ok": true, "token": token, "handle": handle })).into_response()
+            json_with_session(&token, json!({ "ok": true, "handle": handle }))
         }
         AuthOutcome::Error { msg } => bad(&msg),
         _ => bad("Unexpected response"),
     }
 }
 
+/// Logout: revoke the server-side session (instant) and clear the cookie. CSRF-guarded since it's a
+/// cookie-authenticated state change.
+pub async fn logout(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
+    if let Some(tok) = crate::server::cookie_value(&headers, session_cookie_name()) {
+        app.sessions.revoke(&tok);
+    }
+    let mut resp = Json(json!({ "ok": true })).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&clear_cookie_header()) {
+        resp.headers_mut().insert(SET_COOKIE, hv);
+    }
+    resp
+}
+
 pub async fn forgot_password(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<ForgotBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
     if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }
     if let AuthOutcome::ForgotResult { send: Some((to, token)) } =
         call_sim(&app, AuthOp::Forgot { email: b.email }).await
@@ -343,7 +402,8 @@ pub async fn forgot_password(State(app): State<AppState>, headers: HeaderMap, Js
     Json(json!({ "ok": true })).into_response()
 }
 
-pub async fn reset_password(State(app): State<AppState>, Json(b): Json<ResetBody>) -> Response {
+pub async fn reset_password(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<ResetBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
     match call_sim(&app, AuthOp::Reset { token: b.token, password: b.password }).await {
         AuthOutcome::ResetOk => Json(json!({ "ok": true })).into_response(),
         AuthOutcome::Error { msg } => bad(&msg),
@@ -378,6 +438,34 @@ fn bad(msg: &str) -> Response {
 }
 fn reject_rate() -> Response {
     (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "ok": false, "error": "Too many requests — slow down" }))).into_response()
+}
+fn reject_csrf() -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "ok": false, "error": "bad origin" }))).into_response()
+}
+
+/// `Set-Cookie` value for a freshly minted session — hardened (`__Host-` + `Secure`) in prod, plain
+/// in http dev. `HttpOnly` keeps the token out of JS entirely (XSS can't read it); `SameSite=Lax`
+/// blocks cross-site sends.
+fn session_cookie_header(token: &str) -> String {
+    let max_age = session_ttl_hours() * 3600;
+    let name = session_cookie_name();
+    let secure = if secure_cookies() { "; Secure" } else { "" };
+    format!("{name}={token}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}")
+}
+/// `Set-Cookie` value that immediately clears the session cookie (logout).
+fn clear_cookie_header() -> String {
+    let name = session_cookie_name();
+    let secure = if secure_cookies() { "; Secure" } else { "" };
+    format!("{name}=; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age=0")
+}
+/// JSON response that also sets the session cookie. The token is delivered ONLY via the `HttpOnly`
+/// cookie — never in the JSON body — so client JS (and any XSS) can't read it.
+fn json_with_session(token: &str, body: serde_json::Value) -> Response {
+    let mut resp = Json(body).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&session_cookie_header(token)) {
+        resp.headers_mut().insert(SET_COOKIE, hv);
+    }
+    resp
 }
 
 /// Best-effort client IP for rate limiting — honours the reverse proxy's forwarding headers.

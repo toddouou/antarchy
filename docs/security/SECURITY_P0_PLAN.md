@@ -1,7 +1,7 @@
 # Antarchy.fun — Security & Anti-Cheat Hardening — P0 Tier (RESUMABLE CHECKPOINT)
 
-> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a + §1 + §2 + §3 DONE.**
-> **Resume at:** §4b cookie sessions. See "Execution order" + "Next concrete action" at the bottom.
+> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a+§1+§2+§3+§4b DONE.**
+> **Resume at:** §5 XSS escaping + CSP. See "Execution order" + "Next concrete action" at the bottom.
 >
 > Done so far:
 > - baseline commit (beta-v2 state) · `bbe539f`
@@ -23,6 +23,16 @@
 >   (`HIVE_WS_SEND_QUEUE`=1024), drop-on-full — `Player.tx`/`ctl_tx` + the per-conn channels switched
 >   over with every `tx.send(...)` call site unchanged. **Runtime-verified on :8090**: evil Origin→403,
 >   allowed/no-Origin→101, pages→200, admin/admin login OK under Argon2id.
+> - **§4b cookie sessions + CSRF + throttle + generic errors** — `__Host-`/`antarchy_session`
+>   HttpOnly+SameSite=Lax cookie (`config::secure_cookies`/`session_cookie_name`); login/verify set it,
+>   token no longer in the JSON body; WS auths from the cookie via the new `enter` message
+>   (`session_uid_from_cookie` at upgrade); `/api/logout` revokes + clears; CSRF `Origin` guard on all
+>   `/api/*` (shared `server::origin_allowed`); per-account login throttle (`World.login_attempts`) +
+>   `verify-email/phone` rate-limited; enumeration-safe email-taken (`RegExisting` → notify existing
+>   owner); username/color charset (`config::valid_hex_color`); client (`landing.html`+`client.html`)
+>   drops all localStorage token/password storage. **Runtime-verified on :8090**: CSRF evil→403/good→200,
+>   login Set-Cookie (no token in body), logout 200+clear+revoke, register→verify→cookie, enumeration-safe
+>   re-register, color sanitized, per-IP 429.
 > - Running total: builds on `target-dev`; **44 tests pass**. (Pre-existing clippy style lints in the
 >   baseline remain — a `-D warnings` cleanup is P2 §12, out of scope for P0.)
 > Mirror of the approved plan at `~/.claude/plans/antarchy-fun-security-eager-comet.md`, kept in-repo
@@ -219,8 +229,8 @@ log.
 3. ~~§1 AoI fix → tests → commit.~~ ✅
 4. ~~§2 anti-replay → tests → commit.~~ ✅
 5. ~~§3 WS hardening → tests → smoke → commit.~~ ✅
-6. §4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.  ← **NEXT**
-7. §5 XSS escaping + CSP headers → commit.
+6. ~~§4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.~~ ✅
+7. §5 XSS escaping + CSP headers → commit.  ← **NEXT**
 8. §0 egress/R2 telemetry → commit.
 9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**
 

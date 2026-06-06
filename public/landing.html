@@ -294,7 +294,7 @@
 //  AUTH  — calls the Rust /api/* endpoints; on success stores the session token + redirects to /play
 //==================================================================================================
 const HUES=['#ff3b4e','#ff9f1c','#ffd23f','#39d98a','#49b6ff','#7c5cff','#ff5da2','#b8c0cc'];
-const SS_TOKEN='antarchy-session', SS_HANDLE='antarchy-handle';
+const SS_HANDLE='antarchy-handle';  // non-secret display-name hint only; the session is an HttpOnly cookie
 const $=id=>document.getElementById(id);
 let regId=null, chosenHue=0;
 
@@ -310,8 +310,10 @@ async function postJSON(url,body){
     return j;
   }catch(e){ return {ok:false,error:'Network error — try again'}; }
 }
-function enterGame(token,handle){
-  try{ localStorage.setItem(SS_TOKEN,token); if(handle) localStorage.setItem(SS_HANDLE,handle); }catch(e){}
+// Auth is the HttpOnly __Host- session cookie set by the /api/* responses — the token never reaches
+// JS. We keep only a non-secret handle hint for the header CTA, then navigate to the game.
+function enterGame(handle){
+  try{ if(handle) localStorage.setItem(SS_HANDLE,handle); }catch(e){}
   location.href='/play';
 }
 
@@ -331,8 +333,9 @@ $('auth').onclick=e=>{ if(e.target===$('auth')) closeAuth(); };
 $('to-reg').onclick=()=>showStep('reg'); $('to-login').onclick=()=>showStep('login');
 $('to-login2').onclick=()=>showStep('login'); $('to-forgot').onclick=()=>showStep('forgot');
 
-// If already logged in, the header CTA becomes "Enter game".
-if(localStorage.getItem(SS_TOKEN)){ $('nav-signup').textContent='Enter game ▸'; $('nav-signup').onclick=()=>location.href='/play'; }
+// If we have a handle hint, surface "Enter game" (the cookie, if still valid, auths at /play; if not,
+// /play bounces back here to log in).
+if(localStorage.getItem(SS_HANDLE)){ $('nav-signup').textContent='Enter game ▸'; $('nav-signup').onclick=()=>location.href='/play'; }
 
 // LOGIN
 $('li-go').onclick=async()=>{ setErr('li-err','');
@@ -340,7 +343,7 @@ $('li-go').onclick=async()=>{ setErr('li-err','');
   if(!ident||!pw) return setErr('li-err','Enter your email/phone and password');
   $('li-go').disabled=true;
   const j=await postJSON('/api/login',{ident,password:pw}); $('li-go').disabled=false;
-  if(j.ok&&j.token) return enterGame(j.token,j.handle);
+  if(j.ok) return enterGame(j.handle);
   setErr('li-err',j.error||'Invalid credentials');
 };
 // REGISTER
@@ -363,7 +366,7 @@ $('ve-go').onclick=async()=>{ setErr('ve-err','');
   $('ve-go').disabled=true;
   const j=await postJSON('/api/verify-email',{regId,code}); $('ve-go').disabled=false;
   if(!j.ok) return setErr('ve-err',j.error||'Incorrect code');
-  if(j.done&&j.token) return enterGame(j.token,j.handle);
+  if(j.done) return enterGame(j.handle);
   if(j.phoneRequired) return showStep('vphone');
   setErr('ve-err','Verified — finishing up…');
 };
@@ -373,7 +376,7 @@ $('vp-go').onclick=async()=>{ setErr('vp-err','');
   $('vp-go').disabled=true;
   const j=await postJSON('/api/verify-phone',{regId,code}); $('vp-go').disabled=false;
   if(!j.ok) return setErr('vp-err',j.error||'Incorrect code');
-  if(j.done&&j.token) return enterGame(j.token,j.handle);
+  if(j.done) return enterGame(j.handle);
   setErr('vp-err','Verified — finishing up…');
 };
 // FORGOT

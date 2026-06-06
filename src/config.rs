@@ -52,6 +52,13 @@ pub fn gate_for_item(item: &str) -> Option<u16> {
     })
 }
 
+/// True for a safe `#rrggbb` colour string. Used at registration to reject anything that could carry
+/// a stored-XSS payload into the client's `style="background:…"`.
+pub fn valid_hex_color(c: &str) -> bool {
+    let c = c.trim();
+    c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Lifetime tile-count milestones (rounded "nice numbers"), ascending. Each is awarded **once per
 /// queen** — the first tick its peak tile count (`tiles_ever_held`) reaches the threshold. The XP
 /// per milestone scales with its 1-based index (`xp_tile_award × index`), so later milestones pay
@@ -420,6 +427,21 @@ pub fn session_ttl_hours() -> u64 {
     static V: OnceLock<u64> = OnceLock::new();
     *V.get_or_init(|| std::env::var("HIVE_SESSION_TTL_HOURS").ok()
         .and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(720).max(1))
+}
+
+/// Whether session cookies use the hardened `__Host-` prefix + `Secure` (HTTPS-only). Default **off**
+/// for local http dev (browsers reject `Secure`/`__Host-` over http); set `HIVE_SECURE_COOKIES=1` in
+/// production (behind Caddy TLS). Read once.
+pub fn secure_cookies() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| matches!(
+        std::env::var("HIVE_SECURE_COOKIES").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes"))
+}
+
+/// The session cookie name: `__Host-`-prefixed (hardened) in prod, plain in http dev.
+pub fn session_cookie_name() -> &'static str {
+    if secure_cookies() { "__Host-antarchy_session" } else { "antarchy_session" }
 }
 
 /// Public base URL of the deployment (e.g. "https://antarchy.fun") used to build verification / reset

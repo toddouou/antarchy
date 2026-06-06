@@ -338,6 +338,9 @@ pub struct World {
     /// Mutating gameplay messages must carry a strictly increasing `seq`; duplicates / out-of-order
     /// are rejected. Transient (RAM-only, never persisted); reset on (re)connect, cleared on disconnect.
     pub last_seq:        FxHashMap<u32, u64>,
+    /// Per-account login throttle (OWASP A07): `ident → (window_start_ms, attempts)`. Bounds password
+    /// brute-force per account independently of the per-IP `/api/*` limiter. Transient; GC'd in `api::gc`.
+    pub login_attempts:  FxHashMap<String, (u64, u32)>,
 }
 
 /// Base of the reserved guest-spectator id range (disjoint from real player ids, which start at 100
@@ -387,6 +390,7 @@ impl World {
             reset_tokens:    FxHashMap::default(),
             next_guest_seq:  0,
             last_seq:        FxHashMap::default(),
+            login_attempts:  FxHashMap::default(),
         }
     }
 
