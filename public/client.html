@@ -1790,7 +1790,11 @@ function connect() {
     if (new Uint8Array(e.data,0,1)[0] >= 16) handleCtlBin(e.data); else handleViewBin(e.data);
   };
 }
-function send(o) { if (ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+// Monotonic per-connection command sequence (anti-replay, OWASP A01/A06). The server enforces a
+// strictly increasing seq on mutating commands and ignores it elsewhere; a fresh connection (this
+// counter resets on reload) is matched by a server-side reset on (re)connect.
+let _cmdSeq = 0;
+function send(o) { if (ws&&ws.readyState===1) { o.seq = ++_cmdSeq; ws.send(JSON.stringify(o)); } }
 
 // P7 visibility cull: a hidden/backgrounded tab tells the server to stop sending viewport frames →
 // ~0 egress while away. Resuming re-subscribes; the next keyframe repaints. (Server gates on this in

@@ -14,6 +14,23 @@ fn err(msg: &str) -> String {
     json!({"t":"err","msg":msg}).to_string()
 }
 
+/// Anti-replay (OWASP A01/A06): accept a mutating command only when its client `seq` strictly exceeds
+/// the last one applied for this player. Messages without a `seq` (legacy clients / tooling) are
+/// accepted unprotected. A replayed or out-of-order `seq` is dropped — logged, with no client error
+/// (the original already applied). Per-connection state is reset on (re)connect and cleared on
+/// disconnect. NB: keyed by player id, so it assumes the one-connection-per-account model (the same as
+/// `conn_gen`); two simultaneous tabs on one account is not a supported configuration.
+fn check_seq(world: &mut World, pid: u32, msg: &Value) -> bool {
+    let Some(seq) = msg.get("seq").and_then(Value::as_u64) else { return true; };
+    let last = world.last_seq.entry(pid).or_insert(0);
+    if seq <= *last {
+        println!("[anticheat] dropped replay/out-of-order seq pid={pid} seq={seq} last={last}");
+        return false;
+    }
+    *last = seq;
+    true
+}
+
 /// Returns (player_id, msg_to_send) or None if message is silently ignored.
 pub fn handle_message(
     world:     &mut World,
@@ -217,6 +234,7 @@ pub fn handle_message(
 
     // ---- Place queen ----
     if t == "place-queen" {
+        if !check_seq(world, pid, &msg) { return; }
         if world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false) {
             let _ = tx.send(err("Already have a queen")); return;
         }
@@ -260,6 +278,7 @@ pub fn handle_message(
 
     // ---- Place ant ----
     if t == "place-ant" {
+        if !check_seq(world, pid, &msg) { return; }
         let c = cfg();
         // Copy out p/q data before dropping borrows — get_queen_map() needs &mut World
         let (ants_avail, unlimited_ants) = match world.players.get(&pid) {
@@ -510,7 +529,7 @@ pub fn handle_message(
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
         let tid = msg["targetId"].as_u64().unwrap_or(0) as u32;
         let xp  = msg["xp"].as_f64().unwrap_or(0.0);
-        if xp <= 0.0 { return; }
+        if !xp.is_finite() || xp <= 0.0 { return; }  // reject NaN/∞ before it poisons q.xp
         let c = cfg().clone();
         if let Some(q) = world.queens.get_mut(&tid) {
             if !q.dead {
@@ -629,6 +648,7 @@ pub fn handle_message(
 
     // ---- Shop buy ----
     if t == "shop-buy" {
+        if !check_seq(world, pid, &msg) { return; }
         use crate::config::{
             PRICE_RELOCATE, PRICE_DEFENDER, PRICE_WORKER,
             PRICE_BRUTE, PRICE_SHIELD, SHIELD_MS, DEFENDER_MS,
@@ -827,6 +847,9 @@ fn create_or_reconnect_player(
     tx: UnboundedSender<String>,
 ) -> Option<String> {
     use crate::config::current_ms;
+    // Anti-replay: a (re)connect begins a fresh client command-seq stream (page reload resets the
+    // client counter), so reset the server-side last-seq for this player.
+    world.last_seq.remove(&id);
     let c = cfg();
     let daily = c.daily_ants;
     drop(c);
@@ -924,5 +947,19 @@ mod tests {
         assert_eq!(validate_worker_placement(&mut w, pid, (1005, 1005), (0, -1), q), Err("Enemy tile inside bubble"));
         // An unknown heading falls back to up.
         assert_eq!(validate_worker_placement(&mut w, pid, (1006, 1004), (9, 9), q), Ok((0, -1)));
+    }
+
+    #[test]
+    fn seq_rejects_replay_and_out_of_order() {
+        let mut w = World::new();
+        let pid = 7u32;
+        assert!(check_seq(&mut w, pid, &serde_json::json!({"seq": 1})));
+        assert!(check_seq(&mut w, pid, &serde_json::json!({"seq": 2})));
+        assert!(!check_seq(&mut w, pid, &serde_json::json!({"seq": 2})), "duplicate rejected");
+        assert!(!check_seq(&mut w, pid, &serde_json::json!({"seq": 1})), "out-of-order rejected");
+        assert!(check_seq(&mut w, pid, &serde_json::json!({"seq": 3})), "advancing seq accepted");
+        assert!(check_seq(&mut w, pid, &serde_json::json!({})), "legacy (no seq) accepted unprotected");
+        w.last_seq.remove(&pid); // a (re)connect resets the stream
+        assert!(check_seq(&mut w, pid, &serde_json::json!({"seq": 1})), "post-reset low seq accepted");
     }
 }

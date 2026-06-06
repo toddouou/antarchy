@@ -320,6 +320,10 @@ pub struct World {
     pub reset_tokens:    FxHashMap<String, ResetToken>,
     /// Rolling counter for allocating guest spectator ids in the reserved hi range (`GUEST_ID_BASE+`).
     pub next_guest_seq:  u32,
+    /// Anti-replay (OWASP A01/A06): the last accepted client command `seq` per connected player id.
+    /// Mutating gameplay messages must carry a strictly increasing `seq`; duplicates / out-of-order
+    /// are rejected. Transient (RAM-only, never persisted); reset on (re)connect, cleared on disconnect.
+    pub last_seq:        FxHashMap<u32, u64>,
 }
 
 /// Base of the reserved guest-spectator id range (disjoint from real player ids, which start at 100
@@ -368,6 +372,7 @@ impl World {
             pending_regs:    FxHashMap::default(),
             reset_tokens:    FxHashMap::default(),
             next_guest_seq:  0,
+            last_seq:        FxHashMap::default(),
         }
     }
 

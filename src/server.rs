@@ -372,6 +372,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                     }
                     Ok(Cmd::Disconnect { pid, conn_gen }) => {
                         w.paused_views.remove(&pid); // don't leave a reconnecting player stuck paused
+                        w.last_seq.remove(&pid);     // anti-replay: drop per-connection seq state
                         let uname = w.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
                         // Snapshot current state for the welcome-back diff (read before the &mut borrow).
                         let q = w.queens.get(&pid);

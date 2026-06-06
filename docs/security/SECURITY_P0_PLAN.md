@@ -1,17 +1,22 @@
 # Antarchy.fun — Security & Anti-Cheat Hardening — P0 Tier (RESUMABLE CHECKPOINT)
 
-> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a + §1 DONE.**
-> **Resume at:** §2 anti-replay. See "Execution order" + "Next concrete action" at the bottom.
+> **STATUS: IN PROGRESS on branch `security-p0` (off `beta-v1`). §4a + §1 + §2 DONE.**
+> **Resume at:** §3 WebSocket hardening. See "Execution order" + "Next concrete action" at the bottom.
 >
 > Done so far:
 > - baseline commit (beta-v2 state) · `bbe539f`
 > - **§4a Argon2id** · `0fedcb3` — `argon2`+`subtle` deps; `hash_pw_argon2`/`verify_pw`/`needs_rehash`
 >   + `HIVE_ARGON2_*` knobs; transparent rehash-on-login in `api.rs`/`handlers.rs`; admin seed uses
 >   argon2; 3 new auth tests.
-> - **§1 AoI zoom-leak** — `config::clamp_view_span` + `max_view_span` (HIVE_MAX_VIEW_SPAN=4000) +
->   `max_queens_per_frame` (256); clamp in `view-set` (`handlers.rs`) + defensively in `snapshot_view`;
->   `cap_queens_to` (reveal-first, nearest-to-centre) in `network.rs`; 5 new tests.
-> - Running total: builds on `target-dev`; **43 tests pass**. (Pre-existing clippy style lints in the
+> - **§1 AoI zoom-leak** · `6b76460` — `config::clamp_view_span` + `max_view_span`
+>   (HIVE_MAX_VIEW_SPAN=4000) + `max_queens_per_frame` (256); clamp in `view-set` (`handlers.rs`) +
+>   defensively in `snapshot_view`; `cap_queens_to` (reveal-first, nearest-to-centre) in `network.rs`;
+>   5 new tests.
+> - **§2 anti-replay** — `World.last_seq` map (transient; reset on (re)connect in
+>   `create_or_reconnect_player`, cleared on disconnect in `server.rs`); `check_seq` guard on
+>   `place-queen`/`place-ant`/`shop-buy`; client emits monotonic `seq` in `send()`; `admin-give-xp`
+>   rejects non-finite XP; 1 new test.
+> - Running total: builds on `target-dev`; **44 tests pass**. (Pre-existing clippy style lints in the
 >   baseline remain — a `-D warnings` cleanup is P2 §12, out of scope for P0.)
 > Mirror of the approved plan at `~/.claude/plans/antarchy-fun-security-eager-comet.md`, kept in-repo
 > so any session can pick up without re-deriving context.
@@ -205,18 +210,19 @@ log.
 1. ~~`security-p0` branch off `beta-v1`.~~ ✅
 2. ~~§4a Argon2id foundation → build/clippy/test → commit.~~ ✅
 3. ~~§1 AoI fix → tests → commit.~~ ✅
-4. §2 anti-replay → tests → commit.  ← **NEXT**
-4. §2 anti-replay → tests → commit.
-5. §3 WS hardening → tests → commit.
+4. ~~§2 anti-replay → tests → commit.~~ ✅
+5. §3 WS hardening → tests → commit.  ← **NEXT**
 6. §4b cookies/CSRF/throttle/generic-errors + client → tests → smoke → commit.
 7. §5 XSS escaping + CSP headers → commit.
 8. §0 egress/R2 telemetry → commit.
 9. SECURITY.md + CHANGELOG-security.md + residual-risk → commit. **PAUSE for review.**
 
 ## Next concrete action (resume here)
-Start **§2 anti-replay + validation**: add `last_seq: u64` to `Player` (`world.rs`, transient, not
-persisted); the recompiled client emits a monotonic `seq` on mutating msgs (`place-ant`,
-`place-queen`, `shop-buy`, `relocate`). In `handle_message`, for those types reject `seq <= last_seq`
-(log `[anticheat] replay/dup`) else advance; absent seq (legacy) → process + count. Also reject
-non-finite XP in `admin-give-xp` (`xp.is_finite()`). Add a test that a duplicate/out-of-order seq is
-rejected while a fresh one passes.
+Start **§3 WebSocket hardening** in `server.rs` + `config.rs`: (1) cap inbound frames via
+`WebSocketUpgrade::max_message_size`/`max_frame_size` (env `HIVE_WS_MAX_MSG`, default 64 KiB);
+(2) `Origin` allowlist on the upgrade (`config::allowed_origins()`, env `HIVE_ALLOWED_ORIGINS`,
+default public base + `localhost:PORT`) → 403 on mismatch; (3) bound `prio_tx`/`ctl_tx_conn` to
+`mpsc::channel(HIVE_WS_SEND_QUEUE=1024)` with `try_send`, disconnect on a full priority queue
+(update `world.rs` `send_to`/`broadcast` + `Player.tx`/`ctl_tx` types accordingly); (4) write-task
+`Ping` interval + idle close after `HIVE_WS_IDLE_SECS` (60). NOTE: switching `Player.tx` from
+`UnboundedSender` to bounded `Sender` touches every `tx.send(...)` site — do it as one careful pass.
