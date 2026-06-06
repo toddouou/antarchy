@@ -125,6 +125,7 @@ impl PlayerSnapshot {
             next_refill:         self.next_refill,
             queen_placed_at:     self.queen_placed_at,
             npc:                 self.npc,
+            guest:               false,
             view:                None,
             tx:                  None,
             view_tx:             None,
@@ -158,7 +159,9 @@ pub fn serialize_world(world: &World) -> io::Result<Vec<u8>> {
         tiles:          &world.tiles,
         ants:           &world.ants,
         queens:         &world.queens,
-        players:        world.players.values().map(PlayerSnapshot::from_player).collect(),
+        // Guests are ephemeral spectators (RAM-only) — never persist them.
+        players:        world.players.values().filter(|p| !p.guest)
+                            .map(PlayerSnapshot::from_player).collect(),
         next_player_id: world.next_player_id,
         tick:           world.tick,
         started_at:     world.started_at,
@@ -336,7 +339,7 @@ mod tests {
         });
         w.players.insert(42, Player {
             id: 42, username: "ALICE".into(), color: "#abc".into(), hue_idx: 3,
-            ants_avail: 7, next_refill: 123_456, queen_placed_at: Some(42), npc: false,
+            ants_avail: 7, next_refill: 123_456, queen_placed_at: Some(42), npc: false, guest: false,
             view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 5,
             prestige: 2, credits: 50, defenders: vec![1, 2, 3],
             visited_countries:  ["US".to_string()].into_iter().collect(),

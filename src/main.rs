@@ -1,5 +1,7 @@
+mod api;
 mod auth;
 mod config;
+mod email;
 mod fog;
 mod handlers;
 mod metrics;
@@ -7,7 +9,9 @@ mod network;
 mod persist;
 mod regions;
 mod server;
+mod session;
 mod simulation;
+mod sms;
 mod snapshot;
 mod tile_map;
 mod world;

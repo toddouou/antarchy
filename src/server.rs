@@ -6,7 +6,7 @@ use axum::{
     extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -42,6 +42,10 @@ pub enum Cmd {
     Message { pid: u32, raw: String },
     /// Connection closed — only clears tx if conn_gen still matches.
     Disconnect { pid: u32, conn_gen: u64 },
+    /// beta-v2 REST auth (register/verify/login/forgot/reset) from an `/api/*` HTTP handler. Runs on
+    /// the sim thread (mutates only `auth` + transient maps), replies via oneshot. No conn senders —
+    /// the HTTP handler does any email/SMS send + session mint after the reply.
+    AuthApi { op: crate::api::AuthOp, reply: oneshot::Sender<crate::api::AuthOutcome> },
 }
 
 pub type CmdTx = mpsc::UnboundedSender<Cmd>;
@@ -49,23 +53,44 @@ type CmdRx = mpsc::UnboundedReceiver<Cmd>;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub world:  WorldState,
-    pub cmd_tx: CmdTx,
+    pub world:    WorldState,
+    pub cmd_tx:   CmdTx,
+    /// beta-v2 session tokens (landing → game handoff). Own lock; never the World lock.
+    pub sessions: crate::session::SessionStore,
+    /// Per-IP rate limiter for the `/api/*` endpoints.
+    pub rate:     crate::api::RateLimiter,
 }
 
-static CLIENT_HTML: &str = include_str!("../public/client.html");
+static CLIENT_HTML:  &str = include_str!("../public/client.html");
+static LANDING_HTML: &str = include_str!("../public/landing.html");
 
 // ---- HTTP handlers --------------------------------------------------------
 
+/// Root `/` — serves the **landing page** on a normal GET, upgrades to a guest-spectator WebSocket
+/// when requested. (Login/registration live on the landing page now; the game moved to `/play`.)
 async fn root_handler(
     ws_opt: Option<WebSocketUpgrade>,
     State(app): State<AppState>,
 ) -> Response {
     match ws_opt {
-        Some(ws) => ws.on_upgrade(|socket| handle_ws_connection(socket, app.cmd_tx)).into_response(),
+        Some(ws) => ws.on_upgrade(move |socket| handle_ws_connection(socket, app)).into_response(),
+        None     => Html(LANDING_HTML).into_response(),
+    }
+}
+
+/// `/play` — serves the game client on GET, upgrades to an authed game WebSocket when requested.
+async fn play_handler(
+    ws_opt: Option<WebSocketUpgrade>,
+    State(app): State<AppState>,
+) -> Response {
+    match ws_opt {
+        Some(ws) => ws.on_upgrade(move |socket| handle_ws_connection(socket, app)).into_response(),
         None     => Html(CLIENT_HTML).into_response(),
     }
 }
+
+/// `/reset` — the landing page handles the `?token=…` reset flow client-side, so just serve it.
+async fn landing_page() -> impl IntoResponse { Html(LANDING_HTML) }
 
 static FAVICON: &[u8] = include_bytes!("../favicon.png");
 
@@ -88,7 +113,7 @@ async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
         let i = ((ring.len() as f64 - 1.0) * p).round() as usize;
         ring[i.min(ring.len() - 1)]
     };
-    let connected = w.players.values().filter(|p| !p.npc && p.tx.is_some()).count();
+    let connected = w.players.values().filter(|p| !p.npc && !p.guest && p.tx.is_some()).count();
 
     // Viewport CPU + per-connection memory walls (recorded by the viewport thread, off-lock).
     let dirty_chunk_touches = w.tiles.dirty_chunk_touches();
@@ -128,7 +153,8 @@ async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
 
 // ---- WebSocket connection -------------------------------------------------
 
-async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
+async fn handle_ws_connection(socket: WebSocket, app: AppState) {
+    let cmd_tx = app.cmd_tx.clone();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Priority channel: events, confirmations, errors — raw text, never dropped, ordered.
@@ -221,12 +247,24 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
 
         let t = quick_msg_type(&text);
 
-        if t == "register" || t == "login" {
+        if t == "register" || t == "login" || t == "session" || t == "spectate" {
+            // All four enter the game via the Cmd::Auth plumbing (they need the connection senders +
+            // reply). `session` resolves its token → uid HERE (sessions live in AppState, not World),
+            // then routes an internal `session-login`. `spectate` creates an ephemeral guest player.
+            let raw = if t == "session" {
+                match session_token(&text).and_then(|tok| app.sessions.validate(&tok)) {
+                    Some(s) => format!(r#"{{"t":"session-login","id":{},"bin":1}}"#, s.user_id),
+                    None => {
+                        let _ = prio_tx.send(r#"{"t":"err","msg":"Session expired — please log in again","code":"session"}"#.to_string());
+                        continue;
+                    }
+                }
+            } else { text };
             // Auth: push to cmd queue, await reply (≤ 1 tick = ~20 ms)
             let (reply_tx, reply_rx) = oneshot::channel();
             // Clone the viewport sender so the sim loop can write to this connection's slot
             if cmd_tx.send(Cmd::Auth {
-                raw: text,
+                raw,
                 out_tx: prio_tx.clone(),
                 ctl_tx: ctl_tx_conn.clone(),
                 view_tx: view_tx_conn.clone(),
@@ -250,6 +288,12 @@ async fn handle_ws_connection(socket: WebSocket, cmd_tx: CmdTx) {
     if let Some(pid) = player_id {
         let _ = cmd_tx.send(Cmd::Disconnect { pid, conn_gen });
     }
+}
+
+/// Extract the `token` field from a `{t:"session",token:"…"}` message (full parse — auth is rare).
+fn session_token(raw: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw).ok()
+        .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
 }
 
 /// Extract the message type string without a full JSON parse.
@@ -307,6 +351,11 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                         });
                         let _ = reply.send(result);
                     }
+                    Ok(Cmd::AuthApi { op, reply }) => {
+                        // beta-v2 REST auth: mutate auth + transient maps on the sim thread, reply.
+                        let outcome = crate::api::apply(&mut w, op);
+                        let _ = reply.send(outcome);
+                    }
                     Ok(Cmd::Message { pid, raw }) => {
                         let parsed = match serde_json::from_str::<serde_json::Value>(&raw) {
                             Ok(v) => v,
@@ -344,7 +393,13 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                                 p.away         = Some(snap);
                             }
                         }
-                        println!("[disconnect] {uname} ({pid})");
+                        // Guests are ephemeral spectators — fully remove on disconnect (no welcome-back,
+                        // no persistence). Their reserved hi-range id makes this unambiguous.
+                        if crate::world::is_guest_id(pid) {
+                            w.players.remove(&pid);
+                        } else {
+                            println!("[disconnect] {uname} ({pid})");
+                        }
                     }
                     Err(_) => break,  // empty queue
                 }
@@ -367,6 +422,9 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                     }
                 }
             }
+
+            // beta-v2: GC expired pending registrations + reset tokens (cheap; throttled ~40 s).
+            if w.tick % 600 == 0 { crate::api::gc(&mut w); }
 
             // Season rollover: once uptime exceeds the configured season length, wipe the
             // world and start a fresh season (compaction keeps RAM flat across the churn).
@@ -519,6 +577,18 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                         last_lb_sent = tick;
                     }
                     last_lb_tick = tick;
+
+                    // beta-v2 spectator: the live queen roster (jump targets). Guests get NO queens in
+                    // viewport frames (queens ride tile frames, which guests never receive), so they
+                    // render queens from this. Sent ONLY to guests, as small text → negligible egress.
+                    if w.players.values().any(|p| p.guest) {
+                        let roster = crate::network::build_queen_roster(&w);
+                        for p in w.players.values() {
+                            if p.guest {
+                                if let Some(tx) = &p.tx { let _ = tx.send(roster.clone()); }
+                            }
+                        }
+                    }
                 }
 
                 // Server stats (~1 Hz) — header bar + admin cards for every client. Small (~150 B);
@@ -548,11 +618,19 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     // faster than the cap skips this cycle's heavy viewport frame (the watch slot
                     // coalesces, so it just gets fewer frames). Dormant by default (cap = None).
                     // Never affects `me` or the NEVER-DROP one-shots on tx/ctl_tx.
-                    let cap = crate::config::egress_cap_kbps();
+                    let player_cap = crate::config::egress_cap_kbps();
+                    let guest_cap  = crate::config::guest_egress_kbps();
                     let now_ms = crate::config::current_ms();
                     let wref: &World = &w;
                     let jobs: Vec<ClientJob> = pool.install(|| pids.par_iter().map(|&pid| {
                         let p = wref.players.get(&pid);
+                        let is_guest = p.map(|p| p.guest).unwrap_or(false);
+                        // EGRESS GUARD: guests NEVER receive tile frames — their territory renders from
+                        // free R2 super-tiles. Force ants-only for guests regardless of the cycle, so
+                        // the heavy ownership-grid bytes only ever ship to real (authed) players.
+                        let it = include_tiles && !is_guest;
+                        // Guests bill against the dedicated (tighter) cap; players against EGRESS_CAP_KBPS.
+                        let cap = if is_guest { Some(guest_cap) } else { player_cap };
                         let over_cap = cap.is_some_and(|c|
                             p.and_then(|p| p.egress_meter.as_ref()).is_some_and(|m| m.kbps(now_ms) > c));
                         ClientJob {
@@ -561,7 +639,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                             tx:      p.and_then(|p| p.tx.clone()),
                             ctl_tx:  p.and_then(|p| p.ctl_tx.clone()),
                             bin:     p.map(|p| p.bin).unwrap_or(false),
-                            raw:     if do_clients && !over_cap { snapshot_view(wref, pid, include_tiles) } else { None },
+                            raw:     if do_clients && !over_cap { snapshot_view(wref, pid, it) } else { None },
                             // Periodic `me` carries only the DYNAMIC fields (full=false); the static
                             // cfg/geo/world/spawn block ships once in `logged-in`.
                             me:      if send_me { Some(build_player_info(wref, pid, false)) } else { None },
@@ -801,12 +879,26 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
     let port = cfg().port;
 
     let app = Router::new()
-        .route("/",           get(root_handler))
+        .route("/",           get(root_handler))        // landing page (GET) / guest spectator (WS)
+        .route("/play",       get(play_handler))        // game client (GET) / authed game (WS)
+        .route("/reset",      get(landing_page))        // password-reset lands here (?token=…)
         .route("/favicon.png", get(favicon_handler))
         .route("/health",     get(health_handler))
         .route("/world-info", get(world_info_handler))
         .route("/egress-stats", get(egress_stats_handler))
-        .with_state(AppState { world, cmd_tx });
+        // ---- beta-v2 REST auth (landing page calls these) ----
+        .route("/api/register",        post(crate::api::register))
+        .route("/api/verify-email",    post(crate::api::verify_email))
+        .route("/api/verify-phone",    post(crate::api::verify_phone))
+        .route("/api/login",           post(crate::api::login))
+        .route("/api/forgot-password", post(crate::api::forgot_password))
+        .route("/api/reset-password",  post(crate::api::reset_password))
+        .route("/api/roster",          get(crate::api::roster)) // cached spectator fallback (free path)
+        .with_state(AppState {
+            world, cmd_tx,
+            sessions: crate::session::SessionStore::load(),
+            rate:     crate::api::RateLimiter::default(),
+        });
 
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr).await
@@ -889,6 +981,7 @@ mod egress_bench {
                     id: 100_000 + i as u32, username: uname,
                     password_hash: hash_pw("x"), color: "#3a86ff".into(),
                     hue_idx: 0, is_admin: true, color_chosen: true, peak_level: 0,
+                    ..Default::default()
                 });
             }
         }
@@ -908,7 +1001,11 @@ mod egress_bench {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let app = Router::new().route("/", get(root_handler))
-                .with_state(AppState { world: world.clone(), cmd_tx: cmd_tx.clone() });
+                .with_state(AppState {
+                    world: world.clone(), cmd_tx: cmd_tx.clone(),
+                    sessions: crate::session::SessionStore::new(),
+                    rate:     crate::api::RateLimiter::default(),
+                });
             tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
             tokio::time::sleep(Duration::from_millis(300)).await;
 

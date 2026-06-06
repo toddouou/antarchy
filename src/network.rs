@@ -51,15 +51,42 @@ pub fn build_leaderboard(world: &World) -> String {
     json!({"t": "leaderboard", "entries": entries}).to_string()
 }
 
+/// Compact roster of live queens — the spectator landing page's "jump between queens" source. Guests
+/// receive NO queens in viewport frames (queens ride tile frames, which guests never get), so this is
+/// how the spectator canvas knows where queens are. Capped to the top N by level so the frame stays
+/// small; sent only to guests on the leaderboard cadence (≈0.75 Hz) → negligible egress.
+const ROSTER_TOP_N: usize = 200;
+pub fn build_queen_roster(world: &World) -> String {
+    let mut qs: Vec<(u16, Value)> = world.queens.iter()
+        .filter(|(_, q)| !q.dead)
+        .map(|(&id, q)| {
+            let p = world.players.get(&id);
+            (q.level, json!({
+                "id":    id,
+                "name":  p.map(|p| p.username.clone()).unwrap_or_default(),
+                "color": p.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
+                "level": q.level,
+                "x": q.x, "y": q.y,
+            }))
+        })
+        .collect();
+    qs.sort_by(|a, b| b.0.cmp(&a.0));
+    qs.truncate(ROSTER_TOP_N);
+    let queens: Vec<Value> = qs.into_iter().map(|(_, v)| v).collect();
+    json!({"t": "queen-roster", "queens": queens}).to_string()
+}
+
 /// World-wide server stats pushed to every connected client (~1 Hz). Replaces per-client
 /// `/health` polling — built once, broadcast to all, so cost is O(1) not O(players) HTTP
 /// hits against the world lock. Drives the header bar + admin status cards.
 pub fn build_server_stats(world: &World) -> String {
-    let online = world.players.values().filter(|p| !p.npc && p.tx.is_some()).count();
+    let online = world.players.values().filter(|p| !p.npc && !p.guest && p.tx.is_some()).count();
+    let spectators = world.players.values().filter(|p| p.guest).count();
     let queens = world.queens.values().filter(|q| !q.dead).count();
     json!({
         "t":       "server-stats",
         "online":  online,
+        "spectators": spectators,
         "ants":    world.ants.len(),
         "queens":  queens,
         "tick":    world.tick,
@@ -305,7 +332,9 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
             .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
             .map(|a| (a.id, a.x, a.y, a.dx, a.dy, a.owner, a.kind))
             .collect();
-        cap_ants_by_id(&mut a, cfg().ant_view_cap as usize);
+        // EGRESS GUARD: guests get a much tighter ant cap than players (territory is free via R2).
+        let ant_cap = if p.guest { crate::config::guest_ant_cap() } else { cfg().ant_view_cap as usize };
+        cap_ants_by_id(&mut a, ant_cap);
         a
     };
 

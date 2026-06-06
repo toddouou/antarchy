@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>antarchy.fun — planet-scale ant warfare</title>
+<meta name="description" content="A real-time, planet-scale multiplayer war fought with Langton's-ant workers. Place your queen on the real Earth, paint territory, besiege rival queens.">
+<!-- Google AdSense -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8322666756328568" crossorigin="anonymous"></script>
+<link rel="icon" href="/favicon.png" type="image/png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#12161b; --panel2:#171c22; --ink:#e8e6e0; --dim:#8b929c;
+    --line:#252c34; --red:#ff3b4e; --amber:#ffb02e; --grn:#39d98a; --blu:#49b6ff;
+    --shadow:0 0 0 1px var(--line), 0 18px 50px rgba(0,0,0,.55);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:'IBM Plex Mono',ui-monospace,monospace;-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .mono{font-family:'IBM Plex Mono',monospace}
+  .pixel{font-family:'Press Start 2P',monospace}
+  .vt{font-family:'VT323',monospace}
+  h1,h2,h3{margin:0;font-weight:600}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+
+  /* Header */
+  header{position:sticky;top:0;z-index:40;background:rgba(11,13,16,.86);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line)}
+  .hdr{display:flex;align-items:center;gap:18px;height:58px}
+  .logo{display:flex;align-items:center;gap:10px}
+  .logo .mark{color:var(--red);font-size:18px}
+  .logo .name{font-family:'Press Start 2P',monospace;font-size:13px;letter-spacing:1px}
+  .live{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--grn);
+    border:1px solid var(--line);border-radius:999px;padding:4px 9px}
+  .live .dot{width:7px;height:7px;border-radius:50%;background:var(--grn);box-shadow:0 0 8px var(--grn);
+    animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .hstats{display:flex;gap:18px;margin-left:auto;font-size:12px;color:var(--dim)}
+  .hstats b{color:var(--ink)}
+  .hstats .s{display:none}
+  @media(min-width:740px){ .hstats .s{display:inline} }
+  .btn{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:13px;cursor:pointer;
+    border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+    padding:9px 16px;border-radius:8px;transition:.15s;white-space:nowrap}
+  .btn:hover{border-color:#3a4450;background:#1d242c}
+  .btn.primary{background:var(--red);border-color:var(--red);color:#160203}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.amber{background:var(--amber);border-color:var(--amber);color:#1a1203}
+  .hdr .btn{margin-left:8px}
+
+  /* Hero */
+  .hero{position:relative;height:clamp(420px,64vh,680px);overflow:hidden;border-bottom:1px solid var(--line)}
+  #stage{position:absolute;inset:0;width:100%;height:100%;display:block;background:#0a1118}
+  .hero-grad{position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(180deg,rgba(11,13,16,.55) 0%,rgba(11,13,16,0) 22%,rgba(11,13,16,0) 55%,rgba(11,13,16,.92) 100%)}
+  .hero-inner{position:absolute;left:0;right:0;bottom:0;padding:26px 0 34px;pointer-events:none}
+  .hero-inner .wrap{pointer-events:auto}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:11px;letter-spacing:2px;color:var(--amber);
+    text-transform:uppercase;margin-bottom:12px}
+  .hero h1{font-family:'VT323',monospace;font-size:clamp(38px,7vw,76px);line-height:.94;letter-spacing:1px}
+  .hero h1 em{color:var(--red);font-style:normal}
+  .hero p{max-width:560px;color:var(--dim);font-size:15px;margin:12px 0 20px}
+  .cta-row{display:flex;gap:12px;flex-wrap:wrap}
+  .watch-chip{position:absolute;top:14px;left:0;right:0;display:flex;justify-content:center;pointer-events:none}
+  .watch-chip .inner{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--ink);
+    background:rgba(7,9,12,.72);border:1px solid var(--line);border-radius:999px;padding:6px 14px;
+    backdrop-filter:blur(4px)}
+  .watch-chip .swatch{width:10px;height:10px;border-radius:3px}
+  .watch-chip .mode{color:var(--dim)}
+
+  /* Ad zones */
+  .adband{padding:18px 0;display:flex;justify-content:center;background:#0a0c0f}
+  .adslot{width:100%;max-width:970px;min-height:90px;display:flex;align-items:center;justify-content:center;
+    border:1px dashed var(--line);border-radius:8px;overflow:hidden;color:#39414b;font-size:11px;letter-spacing:2px}
+  .adslot ins{display:block}
+
+  /* Sections */
+  section.block{padding:62px 0;border-bottom:1px solid var(--line)}
+  .kicker{font-size:11px;letter-spacing:3px;color:var(--amber);text-transform:uppercase;margin-bottom:10px}
+  .block h2{font-family:'VT323',monospace;font-size:clamp(30px,4.4vw,46px);margin-bottom:8px}
+  .lead{color:var(--dim);max-width:620px;margin-bottom:34px}
+  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+  .card .n{font-family:'Press Start 2P',monospace;font-size:12px;color:var(--red);margin-bottom:14px}
+  .card h3{font-size:16px;margin-bottom:8px}
+  .card p{color:var(--dim);font-size:13.5px;line-height:1.55}
+
+  /* Live stats strip */
+  .strip{background:linear-gradient(180deg,#0e1217,#0b0d10)}
+  .grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1px;background:var(--line);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .stat{background:var(--panel);padding:26px 20px;text-align:center}
+  .stat .v{font-family:'VT323',monospace;font-size:46px;line-height:1;color:var(--ink)}
+  .stat .k{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-top:8px}
+  .stat .v.red{color:var(--red)} .stat .v.amber{color:var(--amber)} .stat .v.grn{color:var(--grn)} .stat .v.blu{color:var(--blu)}
+
+  footer{padding:40px 0;color:var(--dim);font-size:12px}
+  .foot{display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between}
+  .foot a{color:var(--dim)} .foot a:hover{color:var(--ink)}
+
+  /* Auth modal */
+  .modal-bg{position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;
+    background:rgba(5,6,8,.72);backdrop-filter:blur(4px);padding:18px}
+  .modal-bg.open{display:flex}
+  .modal{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow);padding:26px}
+  .modal .x{float:right;cursor:pointer;color:var(--dim);font-size:18px;line-height:1}
+  .modal .x:hover{color:var(--ink)}
+  .modal h2{font-family:'VT323',monospace;font-size:30px;margin-bottom:2px}
+  .modal .sub{color:var(--dim);font-size:12.5px;margin-bottom:18px}
+  .step{display:none} .step.active{display:block}
+  label{display:block;font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;margin:12px 0 5px}
+  input{width:100%;background:#0c1014;border:1px solid var(--line);border-radius:8px;color:var(--ink);
+    font-family:'IBM Plex Mono',monospace;font-size:14px;padding:11px 12px;outline:none}
+  input:focus{border-color:#3a4450}
+  .code{letter-spacing:8px;text-align:center;font-size:22px}
+  .row{display:flex;gap:10px} .row>*{flex:1}
+  .hues{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-top:6px}
+  .hue{height:26px;border-radius:6px;cursor:pointer;border:2px solid transparent}
+  .hue.sel{border-color:#fff;box-shadow:0 0 0 2px #000}
+  .modal .btn{width:100%;margin-top:18px;justify-content:center;text-align:center}
+  .err{color:var(--red);font-size:12px;min-height:16px;margin-top:10px}
+  .ok{color:var(--grn);font-size:12px;min-height:16px;margin-top:10px}
+  .switch{margin-top:16px;font-size:12px;color:var(--dim);text-align:center}
+  .switch a{color:var(--blu);cursor:pointer}
+  .hint{font-size:11px;color:var(--dim);margin-top:6px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hdr">
+    <div class="logo"><span class="mark">▲</span><span class="name">ANTARCHY</span></div>
+    <div class="live"><span class="dot"></span> LIVE</div>
+    <div class="hstats">
+      <span><b id="s-online">—</b><span class="s"> players</span></span>
+      <span><b id="s-ants">—</b><span class="s"> ants</span></span>
+      <span><b id="s-queens">—</b><span class="s"> queens</span></span>
+    </div>
+    <button class="btn" id="nav-login">Log in</button>
+    <button class="btn primary" id="nav-signup">Play free</button>
+  </div>
+</header>
+
+<!-- HERO : live spectator -->
+<div class="hero">
+  <canvas id="stage"></canvas>
+  <div class="hero-grad"></div>
+  <div class="watch-chip"><div class="inner">
+    <span class="swatch" id="watch-sw" style="background:#ff3b4e"></span>
+    <span id="watch-name">scanning the front…</span>
+    <span class="mode" id="watch-mode"></span>
+  </div></div>
+  <div class="hero-inner"><div class="wrap">
+    <div class="eyebrow">● real-time · real earth · zero install</div>
+    <h1>Command an <em>ant empire</em><br>across the planet.</h1>
+    <p>Drop your queen anywhere on the real world map and unleash Langton's-ant workers
+       that paint territory, build highways, and besiege rival queens. This is the live world — right now.</p>
+    <div class="cta-row">
+      <button class="btn primary" id="hero-cta">⚑ Claim your spawn</button>
+      <button class="btn" id="hero-watch">Keep watching ↓</button>
+    </div>
+  </div></div>
+</div>
+
+<!-- AD #1 : between hero and how-it-works -->
+<div class="adband"><div class="adslot">
+  <ins class="adsbygoogle" style="display:block;width:100%;height:90px"
+       data-ad-client="ca-pub-8322666756328568"
+       data-ad-slot="0000000001"
+       data-ad-format="horizontal"
+       data-full-width-responsive="true"></ins>
+</div></div>
+
+<!-- HOW IT WORKS -->
+<section class="block"><div class="wrap">
+  <div class="kicker">How it works</div>
+  <h2>One queen. Ten thousand ants. The whole Earth.</h2>
+  <p class="lead">Antarchy is a single, persistent, planet-scale battlefield. No matches, no lobbies — just
+     one living world where every painted pixel is contested territory.</p>
+  <div class="steps">
+    <div class="card"><div class="n">01</div><h3>Place your queen</h3>
+      <p>Pick any spot on the real-world map — your hometown, a contested capital, the open ocean's edge —
+         and plant your hive.</p></div>
+    <div class="card"><div class="n">02</div><h3>Deploy ant workers</h3>
+      <p>Each worker follows Langton's-ant rules: flipping tiles, building highways, and emergently
+         painting your colony's color across the grid.</p></div>
+    <div class="card"><div class="n">03</div><h3>Take territory</h3>
+      <p>Tiles you paint are yours. Climb the live global leaderboard as your empire's footprint grows
+         across countries and continents.</p></div>
+    <div class="card"><div class="n">04</div><h3>Besiege rival queens</h3>
+      <p>Send brutes to break enemy lines and grind down rival queens. Level up, unlock shields,
+         relocations, and heavier units.</p></div>
+  </div>
+</div></section>
+
+<!-- AD #2 : between how-it-works and live stats -->
+<div class="adband"><div class="adslot">
+  <ins class="adsbygoogle" style="display:block;width:100%;height:90px"
+       data-ad-client="ca-pub-8322666756328568"
+       data-ad-slot="0000000002"
+       data-ad-format="horizontal"
+       data-full-width-responsive="true"></ins>
+</div></div>
+
+<!-- LIVE STATS STRIP -->
+<section class="block strip"><div class="wrap">
+  <div class="kicker">The world right now</div>
+  <h2>A war that never stops.</h2>
+  <p class="lead">These numbers are live from the running world — updated every second straight from the engine.</p>
+  <div class="grid4">
+    <div class="stat"><div class="v red"   id="g-online">—</div><div class="k">Commanders online</div></div>
+    <div class="stat"><div class="v amber" id="g-ants">—</div><div class="k">Ants marching</div></div>
+    <div class="stat"><div class="v grn"   id="g-queens">—</div><div class="k">Queens reigning</div></div>
+    <div class="stat"><div class="v blu"   id="g-spectators">—</div><div class="k">Watching now</div></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap foot">
+  <div>▲ antarchy.fun — planet-scale Langton's-ant warfare.</div>
+  <div><a id="foot-play">Play</a> · <a href="/health">Status</a> · <span>© 2026</span></div>
+</div></footer>
+
+<!-- AUTH MODAL -->
+<div class="modal-bg" id="auth">
+  <div class="modal">
+    <span class="x" id="auth-x">✕</span>
+    <!-- LOGIN -->
+    <div class="step active" data-step="login">
+      <h2>Welcome back</h2><div class="sub">Log in with your email or phone.</div>
+      <label>Email or phone</label><input id="li-ident" autocomplete="username" placeholder="you@example.com">
+      <label>Password</label><input id="li-pw" type="password" autocomplete="current-password" placeholder="••••••••">
+      <button class="btn primary" id="li-go">Log in →</button>
+      <div class="err" id="li-err"></div>
+      <div class="switch"><a id="to-forgot">Forgot password?</a> · New here? <a id="to-reg">Create account</a></div>
+    </div>
+    <!-- REGISTER -->
+    <div class="step" data-step="reg">
+      <h2>Join the war</h2><div class="sub">Your handle is public; email & phone keep your empire safe.</div>
+      <label>Handle (public name)</label><input id="r-handle" maxlength="20" placeholder="ANTLORD">
+      <label>Email</label><input id="r-email" type="email" autocomplete="email" placeholder="you@example.com">
+      <label>Phone <span style="text-transform:none;color:var(--dim)">(optional)</span></label>
+      <input id="r-phone" type="tel" autocomplete="tel" placeholder="+1 555 0100">
+      <div class="row">
+        <div><label>Password</label><input id="r-pw" type="password" placeholder="min 8 chars"></div>
+        <div><label>Confirm</label><input id="r-pw2" type="password" placeholder="repeat"></div>
+      </div>
+      <label>Colony color</label><div class="hues" id="r-hues"></div>
+      <button class="btn primary" id="r-go">Create account →</button>
+      <div class="err" id="r-err"></div>
+      <div class="switch">Already enlisted? <a id="to-login">Log in</a></div>
+    </div>
+    <!-- VERIFY EMAIL -->
+    <div class="step" data-step="vemail">
+      <h2>Check your email</h2><div class="sub">We sent a 6-digit code to <b id="ve-to">your inbox</b>.</div>
+      <label>Verification code</label><input id="ve-code" class="code" inputmode="numeric" maxlength="6" placeholder="000000">
+      <button class="btn primary" id="ve-go">Verify email →</button>
+      <div class="err" id="ve-err"></div>
+      <div class="hint">No email yet? Check spam, or wait a moment. (In dev, the code is printed to the server console.)</div>
+    </div>
+    <!-- VERIFY PHONE -->
+    <div class="step" data-step="vphone">
+      <h2>Verify your phone</h2><div class="sub">Enter the 6-digit code we texted you.</div>
+      <label>Verification code</label><input id="vp-code" class="code" inputmode="numeric" maxlength="6" placeholder="000000">
+      <button class="btn primary" id="vp-go">Verify phone →</button>
+      <div class="err" id="vp-err"></div>
+    </div>
+    <!-- FORGOT -->
+    <div class="step" data-step="forgot">
+      <h2>Reset password</h2><div class="sub">We'll email you a reset link.</div>
+      <label>Email</label><input id="fp-email" type="email" placeholder="you@example.com">
+      <button class="btn primary" id="fp-go">Send reset link →</button>
+      <div class="ok" id="fp-ok"></div><div class="err" id="fp-err"></div>
+      <div class="switch"><a id="to-login2">← Back to log in</a></div>
+    </div>
+    <!-- RESET (from email link ?token=) -->
+    <div class="step" data-step="reset">
+      <h2>Choose a new password</h2><div class="sub">Set a new password for your account.</div>
+      <label>New password</label><input id="rs-pw" type="password" placeholder="min 8 chars">
+      <label>Confirm</label><input id="rs-pw2" type="password" placeholder="repeat">
+      <button class="btn primary" id="rs-go">Reset password →</button>
+      <div class="ok" id="rs-ok"></div><div class="err" id="rs-err"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+//==================================================================================================
+//  AUTH  — calls the Rust /api/* endpoints; on success stores the session token + redirects to /play
+//==================================================================================================
+const HUES=['#ff3b4e','#ff9f1c','#ffd23f','#39d98a','#49b6ff','#7c5cff','#ff5da2','#b8c0cc'];
+const SS_TOKEN='antarchy-session', SS_HANDLE='antarchy-handle';
+const $=id=>document.getElementById(id);
+let regId=null, chosenHue=0;
+
+function openAuth(step){ $('auth').classList.add('open'); showStep(step||'login'); }
+function closeAuth(){ $('auth').classList.remove('open'); }
+function showStep(s){ document.querySelectorAll('.step').forEach(e=>e.classList.toggle('active',e.dataset.step===s)); }
+function setErr(id,m){ $(id).textContent=m||''; }
+
+async function postJSON(url,body){
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({ok:false,error:'Bad server response'}));
+    return j;
+  }catch(e){ return {ok:false,error:'Network error — try again'}; }
+}
+function enterGame(token,handle){
+  try{ localStorage.setItem(SS_TOKEN,token); if(handle) localStorage.setItem(SS_HANDLE,handle); }catch(e){}
+  location.href='/play';
+}
+
+// build hue picker
+(function(){ const h=$('r-hues'); HUES.forEach((c,i)=>{ const d=document.createElement('div');
+  d.className='hue'+(i===0?' sel':''); d.style.background=c; d.onclick=()=>{ chosenHue=i;
+    document.querySelectorAll('.hue').forEach((x,j)=>x.classList.toggle('sel',j===i)); }; h.appendChild(d); }); })();
+
+// nav + switches
+$('nav-login').onclick=()=>openAuth('login');
+$('nav-signup').onclick=()=>openAuth('reg');
+$('hero-cta').onclick=()=>openAuth('reg');
+$('foot-play').onclick=()=>openAuth('login');
+$('hero-watch').onclick=()=>window.scrollTo({top:window.innerHeight*0.62,behavior:'smooth'});
+$('auth-x').onclick=closeAuth;
+$('auth').onclick=e=>{ if(e.target===$('auth')) closeAuth(); };
+$('to-reg').onclick=()=>showStep('reg'); $('to-login').onclick=()=>showStep('login');
+$('to-login2').onclick=()=>showStep('login'); $('to-forgot').onclick=()=>showStep('forgot');
+
+// If already logged in, the header CTA becomes "Enter game".
+if(localStorage.getItem(SS_TOKEN)){ $('nav-signup').textContent='Enter game ▸'; $('nav-signup').onclick=()=>location.href='/play'; }
+
+// LOGIN
+$('li-go').onclick=async()=>{ setErr('li-err','');
+  const ident=$('li-ident').value.trim(), pw=$('li-pw').value;
+  if(!ident||!pw) return setErr('li-err','Enter your email/phone and password');
+  $('li-go').disabled=true;
+  const j=await postJSON('/api/login',{ident,password:pw}); $('li-go').disabled=false;
+  if(j.ok&&j.token) return enterGame(j.token,j.handle);
+  setErr('li-err',j.error||'Invalid credentials');
+};
+// REGISTER
+$('r-go').onclick=async()=>{ setErr('r-err','');
+  const handle=$('r-handle').value.trim(), email=$('r-email').value.trim(),
+        phone=$('r-phone').value.trim(), pw=$('r-pw').value, pw2=$('r-pw2').value;
+  if(handle.length<3) return setErr('r-err','Handle must be 3–20 characters');
+  if(!email.includes('@')) return setErr('r-err','Enter a valid email');
+  if(pw.length<8) return setErr('r-err','Password must be at least 8 characters');
+  if(pw!==pw2) return setErr('r-err','Passwords do not match');
+  $('r-go').disabled=true;
+  const j=await postJSON('/api/register',{handle,email,phone,password:pw,color:HUES[chosenHue],hueIdx:chosenHue});
+  $('r-go').disabled=false;
+  if(!j.ok) return setErr('r-err',j.error||'Could not register');
+  regId=j.regId; $('ve-to').textContent=email; showStep('vemail');
+};
+// VERIFY EMAIL
+$('ve-go').onclick=async()=>{ setErr('ve-err','');
+  const code=$('ve-code').value.trim(); if(code.length<6) return setErr('ve-err','Enter the 6-digit code');
+  $('ve-go').disabled=true;
+  const j=await postJSON('/api/verify-email',{regId,code}); $('ve-go').disabled=false;
+  if(!j.ok) return setErr('ve-err',j.error||'Incorrect code');
+  if(j.done&&j.token) return enterGame(j.token,j.handle);
+  if(j.phoneRequired) return showStep('vphone');
+  setErr('ve-err','Verified — finishing up…');
+};
+// VERIFY PHONE
+$('vp-go').onclick=async()=>{ setErr('vp-err','');
+  const code=$('vp-code').value.trim(); if(code.length<6) return setErr('vp-err','Enter the 6-digit code');
+  $('vp-go').disabled=true;
+  const j=await postJSON('/api/verify-phone',{regId,code}); $('vp-go').disabled=false;
+  if(!j.ok) return setErr('vp-err',j.error||'Incorrect code');
+  if(j.done&&j.token) return enterGame(j.token,j.handle);
+  setErr('vp-err','Verified — finishing up…');
+};
+// FORGOT
+$('fp-go').onclick=async()=>{ setErr('fp-err',''); $('fp-ok').textContent='';
+  const email=$('fp-email').value.trim(); if(!email.includes('@')) return setErr('fp-err','Enter a valid email');
+  $('fp-go').disabled=true; const j=await postJSON('/api/forgot-password',{email}); $('fp-go').disabled=false;
+  $('fp-ok').textContent='If an account exists for that email, a reset link is on its way.';
+};
+// RESET (token from email link)
+$('rs-go').onclick=async()=>{ setErr('rs-err',''); $('rs-ok').textContent='';
+  const pw=$('rs-pw').value, pw2=$('rs-pw2').value;
+  const token=new URLSearchParams(location.search).get('token');
+  if(!token) return setErr('rs-err','Missing reset token — use the link from your email');
+  if(pw.length<8) return setErr('rs-err','Password must be at least 8 characters');
+  if(pw!==pw2) return setErr('rs-err','Passwords do not match');
+  $('rs-go').disabled=true; const j=await postJSON('/api/reset-password',{token,password:pw}); $('rs-go').disabled=false;
+  if(!j.ok) return setErr('rs-err',j.error||'Reset failed');
+  $('rs-ok').textContent='Password reset! You can log in now.'; setTimeout(()=>showStep('login'),1400);
+};
+// open reset step automatically when arriving from an email link
+if(location.pathname==='/reset' || new URLSearchParams(location.search).get('token')){ openAuth('reset'); }
+
+//==================================================================================================
+//  LIVE SPECTATOR  — guest WebSocket. Territory = FREE R2 super-tiles; only a tiny capped ant feed
+//  rides the WS. Auto-camera jumps between live queens and locks onto a real ant as it builds.
+//==================================================================================================
+const CELL=5;
+const cv=$('stage'), ctx=cv.getContext('2d');
+let view={x:32768,y:32768,zoom:0.5}, panTarget=null, zoomTarget=0.5;
+let WORLD=null, palette={0:'#ffffff'}, SNAP_BASE='', SNAP_EPOCH=0, SNAP_CHUNK=1024, BASEMAP_URL='';
+let roster=[], ants=[], prevAnt=new Map(), lastAntAt=performance.now(), antDt=0;
+const _td=new TextDecoder();
+const osmCache=new Map(), snapCache=new Map(); const OSM_RETRY=20000, SNAP_RETRY=15000;
+
+function resize(){ const r=cv.getBoundingClientRect(), d=window.devicePixelRatio||1;
+  cv.width=Math.max(1,r.width*d); cv.height=Math.max(1,r.height*d); ctx.setTransform(d,0,0,d,0,0); }
+window.addEventListener('resize',resize); resize();
+
+// ---- WebSocket ----
+let ws=null;
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host+'/');
+  ws.binaryType='arraybuffer';
+  ws.onopen=()=>ws.send(JSON.stringify({t:'spectate',bin:1}));
+  ws.onmessage=e=>{
+    if(typeof e.data==='string'){ handle(JSON.parse(e.data)); return; }
+    if(new Uint8Array(e.data,0,1)[0]>=16) ctlBin(e.data); else viewBin(e.data);
+  };
+  ws.onclose=()=>{ setTimeout(connect,2500); };
+  ws.onerror=()=>{ try{ws.close();}catch(_){} };
+}
+async function inflateRaw(u8){ const ds=new DecompressionStream('deflate-raw');
+  const s=new Blob([u8]).stream().pipeThrough(ds); return new Uint8Array(await new Response(s).arrayBuffer()); }
+async function ctlBin(ab){ try{ const u8=new Uint8Array(ab); const b=await inflateRaw(u8.subarray(1)); handle(JSON.parse(_td.decode(b))); }catch(e){} }
+async function viewBin(ab){ try{
+  const u8=new Uint8Array(ab), kind=u8[0];
+  if(kind===0){ applyAnts(JSON.parse(_td.decode(u8.subarray(1)))); return; }
+  if(kind===3){
+    const pb=await inflateRaw(u8.subarray(1));
+    const dv=new DataView(pb.buffer,pb.byteOffset,pb.byteLength);
+    const tick=Number(dv.getBigUint64(12,true)), n=dv.getUint32(20,true);
+    let o=24; const a=new Array(n);
+    for(let i=0;i<n;i++){ a[i]=[dv.getUint32(o,true),dv.getInt32(o+4,true),dv.getInt32(o+8,true),
+        dv.getInt8(o+12),dv.getInt8(o+13),dv.getUint32(o+14,true),dv.getUint8(o+18)]; o+=19; }
+    applyAnts({ants:a,tick}); return;
+  }
+  // guests never receive tile keyframes/deltas (kind 1/2) — ignore if any slip through.
+}catch(e){} }
+function applyAnts(m){
+  const np=new Map(); for(const a of ants) np.set(a[0],{x:a[1],y:a[2]}); prevAnt=np;
+  ants=m.ants||[]; const now=performance.now(), dt=now-lastAntAt;
+  if(dt>4&&dt<500) antDt=antDt?antDt*0.6+dt*0.4:dt; lastAntAt=now;
+}
+function handle(m){
+  switch(m.t){
+    case 'logged-in':{ const me=m.me||{};
+      WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY};
+      if(me.snapshotBase!=null) SNAP_BASE=me.snapshotBase;
+      if(me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells;
+      if(me.epoch!=null){ SNAP_EPOCH=me.epoch; snapCache.clear(); }
+      if(me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
+      if(me.id!=null&&me.color) palette[me.id]=me.color;
+      if(WORLD&&view.x===32768){ view.x=WORLD.spawnX; view.y=WORLD.spawnY; }
+      break; }
+    case 'queen-roster':{ roster=m.queens||[]; for(const q of roster) palette[q.id]=q.color;
+      if(!director.started&&roster.length) startDirector(); break; }
+    case 'server-stats': applyStats(m); break;
+    case 'spectator-full': goFreeFallback(); break;
+    default: break;
+  }
+}
+function applyStats(s){
+  const set=(id,v)=>{ const e=$(id); if(e) e.textContent=(v??'—'); };
+  set('s-online',s.online); set('s-ants',fmt(s.ants)); set('s-queens',s.queens);
+  set('g-online',s.online); set('g-ants',fmt(s.ants)); set('g-queens',s.queens); set('g-spectators',s.spectators??0);
+}
+function fmt(n){ if(n==null) return '—'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'k'; return ''+n; }
+
+//-- FREE fallback: guest cap hit. Poll the cached roster so the map still lives; no WS ant feed. --
+let freeMode=false;
+function goFreeFallback(){ if(freeMode) return; freeMode=true; try{ws.close();}catch(_){}
+  if(!WORLD){ fetch('/world-info').then(r=>r.json()).then(w=>{ WORLD={w:w.worldW||w.world_w,h:w.worldH||w.world_h,geo:w.geo,spawnX:w.spawnX||w.spawn_x,spawnY:w.spawnY||w.spawn_y}; if(WORLD&&view.x===32768){view.x=WORLD.spawnX;view.y=WORLD.spawnY;} }).catch(()=>{}); }
+  const poll=()=>{ fetch('/api/roster').then(r=>r.json()).then(d=>{ roster=d.queens||[]; for(const q of roster) palette[q.id]=q.color; if(!director.started&&roster.length) startDirector(); }).catch(()=>{}); };
+  poll(); setInterval(poll,5000);
+  fetch('/health').then(r=>r.json()).then(h=>applyStats({online:h.connected,ants:h.ants,queens:h.queens,spectators:0})).catch(()=>{});
+}
+
+//==================================================================================================
+//  GEO PROJECTION + LAYER RENDERING  (ported from the game client — identical Mercator math)
+//==================================================================================================
+function osmTileUrl(z,x,y){ const s=['a','b','c'][(x+y)%3];
+  if(BASEMAP_URL) return BASEMAP_URL.replace('{s}',s).replace('{z}',z).replace('{x}',x).replace('{y}',y);
+  return `https://${s}.tile.openstreetmap.org/${z}/${x}/${y}.png`; }
+function getImg(cache,key,url,retry){ const c=cache.get(key);
+  if(c){ if(!(c.failed&&performance.now()-c.failedAt>retry)) return c; }
+  const img=new Image(); img.crossOrigin='anonymous';
+  const e={img,loaded:false,failed:false,failedAt:0};
+  img.onload=()=>{e.loaded=true;e.failed=false;}; img.onerror=()=>{e.failed=true;e.failedAt=performance.now();};
+  img.src=url; cache.set(key,e); if(cache.size>1024) cache.delete(cache.keys().next().value); return e; }
+function gameToOsmTile(tx,ty,n,geo,cl){ const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
+  const mY=mY0+(WORLD.spawnY-ty)*geo.tileMeters/(111111*(180/Math.PI)*cl);
+  const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cl);
+  return {x:Math.max(0,Math.min(n-1,Math.floor(((lon+180)/360)*n))),y:Math.max(0,Math.min(n-1,Math.floor((1-mY/Math.PI)*n/2)))}; }
+function osmCorner(ox,oy,n,geo,cl){ const lon=ox/n*360-180, mY=Math.PI*(1-2*oy/n);
+  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
+  return {tx:WORLD.spawnX+(lon-geo.capitolLon)*111111*cl/geo.tileMeters,
+          ty:WORLD.spawnY-(mY-mY0)*111111*(180/Math.PI)*cl/geo.tileMeters}; }
+function drawOsm(cp,W,H){ if(!WORLD||!WORLD.geo) return; const geo=WORLD.geo, cl=Math.cos(geo.capitolLat*Math.PI/180)||1;
+  const z=Math.max(1,Math.min(18,Math.round(Math.log2(cp*40075016.686*cl/(geo.tileMeters*256))))), n=Math.pow(2,z);
+  const gx0=view.x-W/(2*cp),gy0=view.y-H/(2*cp),gx1=view.x+W/(2*cp),gy1=view.y+H/(2*cp);
+  const tl=gameToOsmTile(gx0,gy0,n,geo,cl), br=gameToOsmTile(gx1,gy1,n,geo,cl);
+  for(let ox=tl.x-1;ox<=br.x+1;ox++) for(let oy=tl.y-1;oy<=br.y+1;oy++){
+    if(ox<0||oy<0||ox>=n||oy>=n) continue;
+    const e=getImg(osmCache,`${z}/${ox}/${oy}`,osmTileUrl(z,ox,oy),OSM_RETRY); if(!e.loaded) continue;
+    const a=osmCorner(ox,oy,n,geo,cl), b=osmCorner(ox+1,oy+1,n,geo,cl);
+    const px=(W/2+(a.tx-view.x)*cp)|0, py=(H/2+(a.ty-view.y)*cp)|0;
+    const pw=((W/2+(b.tx-view.x)*cp)|0)-px, ph=((H/2+(b.ty-view.y)*cp)|0)-py;
+    if(pw>0&&ph>0) ctx.drawImage(e.img,px,py,pw,ph); } }
+function drawSnap(cp,W,H){ if(!SNAP_BASE||!WORLD) return;
+  const gx0=view.x-W/(2*cp),gy0=view.y-H/(2*cp),gx1=view.x+W/(2*cp),gy1=view.y+H/(2*cp);
+  const cx0=Math.floor(gx0/SNAP_CHUNK),cy0=Math.floor(gy0/SNAP_CHUNK),cx1=Math.floor(gx1/SNAP_CHUNK),cy1=Math.floor(gy1/SNAP_CHUNK);
+  if((cx1-cx0+1)*(cy1-cy0+1)>400) return;
+  ctx.globalAlpha=0.82;
+  for(let cx=cx0;cx<=cx1;cx++) for(let cy=cy0;cy<=cy1;cy++){ if(cx<0||cy<0) continue;
+    const e=getImg(snapCache,`${SNAP_EPOCH}/${cx}/${cy}`,`${SNAP_BASE}/snap/${SNAP_EPOCH}/0/${cx}/${cy}.png`,SNAP_RETRY);
+    if(!e.loaded) continue; const wx=cx*SNAP_CHUNK,wy=cy*SNAP_CHUNK;
+    const px=(W/2+(wx-view.x)*cp)|0, py=(H/2+(wy-view.y)*cp)|0, sz=(SNAP_CHUNK*cp)|0;
+    if(sz>0){ ctx.imageSmoothingEnabled=false; ctx.drawImage(e.img,px,py,sz+1,sz+1); } }
+  ctx.globalAlpha=1; }
+function toRGB(hex){ hex=hex||'#9b3027'; if(hex[0]==='#') hex=hex.slice(1);
+  if(hex.length===3) hex=hex.split('').map(c=>c+c).join(''); const n=parseInt(hex,16);
+  return [(n>>16)&255,(n>>8)&255,n&255]; }
+
+function render(){
+  const W=cv.clientWidth, H=cv.clientHeight, cp=CELL*view.zoom;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle='#0a1118'; ctx.fillRect(0,0,W,H);
+  if(WORLD){ drawOsm(cp,W,H); drawSnap(cp,W,H); }
+  // queens
+  for(const q of roster){
+    const px=W/2+(q.x-view.x)*cp, py=H/2+(q.y-view.y)*cp;
+    if(px<-40||py<-40||px>W+40||py>H+40) continue;
+    const s=Math.max(8,Math.min(26,cp*(2+q.level*0.15)));
+    ctx.fillStyle=q.color||'#ddd';
+    ctx.fillRect((px-s/2)|0,(py-s/2)|0,s|0,s|0);
+    ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=2; ctx.strokeRect((px-s/2)|0,(py-s/2)|0,s|0,s|0);
+    if(cp>1.2){ ctx.fillStyle='#fff'; ctx.font='10px IBM Plex Mono'; ctx.textAlign='center';
+      ctx.fillText('♛ '+(q.name||''),px,py-s/2-4); }
+  }
+  // ants (interpolated, color by owner)
+  const tickI=antDt||(1000/15), t=Math.min(1,(performance.now()-lastAntAt)/tickI);
+  for(const a of ants){ const [id,ax,ay,adx,ady,owner,kind]=a;
+    const p=prevAnt.get(id); let lx=ax,ly=ay;
+    if(p){ const dxT=ax-p.x,dyT=ay-p.y; let tr=(Math.abs(dxT)+Math.abs(dyT))*t;
+      if(adx!==0){ const ys=Math.min(tr,Math.abs(dyT)); ly=p.y+Math.sign(dyT)*ys; tr-=ys; lx=p.x+Math.sign(dxT)*Math.min(tr,Math.abs(dxT)); }
+      else{ const xs=Math.min(tr,Math.abs(dxT)); lx=p.x+Math.sign(dxT)*xs; tr-=xs; ly=p.y+Math.sign(dyT)*Math.min(tr,Math.abs(dyT)); } }
+    const px=W/2+(lx-view.x)*cp, py=H/2+(ly-view.y)*cp;
+    if(px<-8||py<-8||px>W+8||py>H+8) continue;
+    const [r,g,b]=toRGB(palette[owner]); ctx.fillStyle=`rgb(${(r*0.5)|0},${(g*0.5)|0},${(b*0.5)|0})`;
+    if(kind===1){ const bs=Math.max(3,cp*2); ctx.fillRect(px|0,py|0,bs|0,bs|0); }
+    else{ const sz=Math.max(1.5,cp*0.9); ctx.fillRect(px|0,py|0,sz|0,sz|0); }
+  }
+}
+
+//==================================================================================================
+//  SPECTATOR DIRECTOR — jump between live queens, then lock-follow a real ant as it builds.
+//==================================================================================================
+const director={started:false,idx:0,mode:'idle',followId:null};
+function setViewport(){ if(!WORLD) return; const W=cv.clientWidth,H=cv.clientHeight,cp=CELL*view.zoom;
+  const x0=Math.floor(view.x-W/(2*cp)),y0=Math.floor(view.y-H/(2*cp)),x1=Math.ceil(view.x+W/(2*cp)),y1=Math.ceil(view.y+H/(2*cp));
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'view-set',x0,y0,x1,y1})); }
+let lastVS=0;
+function startDirector(){ if(director.started) return; director.started=true; nextQueen(); }
+function nextQueen(){
+  if(!roster.length){ setTimeout(nextQueen,3000); return; }
+  director.idx=(director.idx+1)%roster.length; const q=roster[director.idx];
+  director.mode='toQueen'; director.followId=null;
+  panTarget={x:q.x,y:q.y}; zoomTarget=0.7;
+  $('watch-sw').style.background=q.color||'#fff';
+  $('watch-name').textContent=q.name||'a queen';
+  $('watch-mode').textContent='· holding the line';
+  // after arriving, try to follow a nearby ant; then move on to the next queen
+  setTimeout(()=>followNearAnt(q),2600);
+  setTimeout(nextQueen,9000);
+}
+function followNearAnt(q){
+  if(director.idx<0) return;
+  let best=null,bd=1e18;
+  for(const a of ants){ const dx=a[1]-q.x,dy=a[2]-q.y,d=dx*dx+dy*dy; if(a[5]===q.id&&d<bd){bd=d;best=a;} }
+  if(!best){ for(const a of ants){ const dx=a[1]-view.x,dy=a[2]-view.y,d=dx*dx+dy*dy; if(d<bd){bd=d;best=a;} } }
+  if(best){ director.mode='followAnt'; director.followId=best[0]; zoomTarget=1.9;
+    $('watch-mode').textContent='· following a worker'; }
+}
+function tickDirector(){
+  if(director.mode==='followAnt'&&director.followId!=null){
+    const a=ants.find(x=>x[0]===director.followId);
+    if(a){ panTarget={x:a[1],y:a[2]}; } else { director.followId=null; }
+  }
+}
+
+//==================================================================================================
+//  MAIN LOOP — camera lerp + render + throttled viewport
+//==================================================================================================
+function frame(now){
+  tickDirector();
+  if(panTarget){ view.x+=(panTarget.x-view.x)*0.08; view.y+=(panTarget.y-view.y)*0.08; }
+  view.zoom+=(zoomTarget-view.zoom)*0.06;
+  if(now-lastVS>180){ setViewport(); lastVS=now; }
+  render();
+  requestAnimationFrame(frame);
+}
+
+// AdSense init (slots may be blank until approved/created in the dashboard)
+try{ (adsbygoogle=window.adsbygoogle||[]).push({}); (adsbygoogle=window.adsbygoogle||[]).push({}); }catch(e){}
+
+connect();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

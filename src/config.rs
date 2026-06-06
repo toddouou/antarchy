@@ -365,6 +365,81 @@ pub fn r2_config() -> Option<R2Config> {
     }).clone()
 }
 
+// ---- beta-v2 auth / landing / spectator env (all read once via OnceLock) -----------------------
+
+/// Resend API key for transactional email (verification codes + reset links). `None` → email send
+/// is **dormant** and `email::send_*` logs the code to the server console instead (dev fallback).
+pub fn resend_api_key() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_RESEND_API_KEY").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
+/// Verified sender address Resend mails are sent `from` (e.g. "Antarchy <noreply@antarchy.fun>").
+pub fn email_from() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_EMAIL_FROM").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
+/// SMS/phone verification master switch. Default **off** → the phone-code step is optional (accounts
+/// finalize on email verification alone) and `sms::send_code` just logs. Flip on once a provider is
+/// wired so phone verification becomes required.
+pub fn sms_enabled() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| matches!(
+        std::env::var("HIVE_SMS_ENABLED").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes"))
+}
+
+/// Session-token lifetime in hours. `HIVE_SESSION_TTL_HOURS`, default 720 (30 days), min 1.
+pub fn session_ttl_hours() -> u64 {
+    static V: OnceLock<u64> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_SESSION_TTL_HOURS").ok()
+        .and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(720).max(1))
+}
+
+/// Public base URL of the deployment (e.g. "https://antarchy.fun") used to build verification / reset
+/// links in emails. Empty → links fall back to a relative path.
+pub fn public_base_url() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_PUBLIC_BASE_URL").ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())).clone()
+}
+
+/// Per-IP rate limit for the `/api/*` auth endpoints, requests per minute. `HIVE_AUTH_RATE_PER_MIN`,
+/// default 20, min 1. Guards the cost-amplifying send endpoints (register / forgot-password).
+pub fn auth_rate_per_min() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_AUTH_RATE_PER_MIN").ok()
+        .and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(20).max(1))
+}
+
+/// EGRESS GUARD — hard ceiling on concurrent guest spectators. `HIVE_MAX_GUESTS`, default 200.
+/// Worst-case guest live-egress is bounded by `max_guests × guest_egress_kbps`. Beyond it the landing
+/// page degrades to the free path (R2 territory + cached roster). 0 disables guest spectating.
+pub fn max_guests() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_MAX_GUESTS").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(200))
+}
+
+/// EGRESS GUARD — per-guest egress cap in KB/s, reusing the Phase-4 down-shift. `HIVE_GUEST_EGRESS_KBPS`,
+/// default 24. Over-budget guests skip heavy viewport cycles (the watch slot coalesces). Independent of
+/// the global `EGRESS_CAP_KBPS` (which stays the players' cap).
+pub fn guest_egress_kbps() -> f64 {
+    static V: OnceLock<f64> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_GUEST_EGRESS_KBPS").ok()
+        .and_then(|s| s.trim().parse::<f64>().ok()).filter(|v| *v > 0.0).unwrap_or(24.0))
+}
+
+/// EGRESS GUARD — max ants shipped to a guest per viewport frame (vs the 4000 player `ant_view_cap`).
+/// `HIVE_GUEST_ANT_CAP`, default 400. A tight follow-cam rarely even hits it; the cap bounds the
+/// pathological zoomed-in-but-wide guest view.
+pub fn guest_ant_cap() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_GUEST_ANT_CAP").ok()
+        .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(400).max(1))
+}
+
 pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     let d = Config::default();
     let vals: &[(&'static str, f64)] = &[

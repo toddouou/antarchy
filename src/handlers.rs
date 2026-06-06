@@ -6,8 +6,8 @@ use crate::config::{
     cfg, apply_admin_param, reset_to_defaults, queen_size_for_level, total_xp_for_level, level_for_xp,
     current_ms, HUES, ADMIN_USERNAME,
 };
-use crate::network::{build_leaderboard, build_player_info};
-use crate::simulation::{apply_peak_unlocks, kill_queen, spawn_npc, wipe_world_and_users};
+use crate::network::{build_leaderboard, build_player_info, build_queen_roster};
+use crate::simulation::{apply_peak_unlocks, kill_queen, spawn_npc, wipe_world, wipe_world_and_users};
 use crate::world::{Ant, Player, PlayerView, Queen, World};
 
 fn err(msg: &str) -> String {
@@ -46,6 +46,10 @@ pub fn handle_message(
             color: color.clone(), hue_idx,
             is_admin: false, color_chosen: true,
             peak_level: 0,
+            // Legacy WS register has no email/phone; handle mirrors the username. beta-v2 accounts
+            // come through the REST /api/* path which sets email/phone/handle properly.
+            handle: raw_u.clone(),
+            ..Default::default()
         });
         world.auth.save();
         let welcome = create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, false, tx.clone());
@@ -78,6 +82,57 @@ pub fn handle_message(
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
         if let Some(w) = welcome { let _ = tx.send(w); }
+        return;
+    }
+
+    // ---- Session-token login (game client at /play) ----
+    // The WS task already validated the token against AppState.sessions and rewrote it into this
+    // trusted internal message carrying the resolved user id — so we skip the password check.
+    if t == "session-login" {
+        let id  = msg["id"].as_u64().unwrap_or(0) as u32;
+        let rec = world.auth.find_by_id(id).cloned();
+        let Some(rec) = rec else { let _ = tx.send(err("Account not found")); return; };
+        if world.auth.banned.contains(&rec.username) { let _ = tx.send(err("BANNED")); return; }
+        let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
+        *player_id = Some(rec.id);
+        backfill_peak_level(world, rec.id);
+        apply_bin_cap(world, rec.id, &msg);
+        let me = build_player_info(world, rec.id, true);
+        let lb = build_leaderboard(world);
+        let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
+        let _ = tx.send(lb);
+        if let Some(w) = welcome { let _ = tx.send(w); }
+        return;
+    }
+
+    // ---- Spectate (landing-page guest: ephemeral, read-only, egress-capped) ----
+    if t == "spectate" {
+        let max = crate::config::max_guests();
+        if max == 0 || world.guest_count() >= max {
+            // At the guest ceiling — the landing page falls back to the FREE path (R2 + /api/roster).
+            let _ = tx.send(json!({"t":"spectator-full"}).to_string());
+            return; // player_id stays None → this connection can't drive the sim further
+        }
+        let id = world.alloc_guest_id();
+        world.players.insert(id, Player {
+            id, username: "spectator".into(), color: "#8a8a8a".into(), hue_idx: -1,
+            ants_avail: 0, next_refill: 0, queen_placed_at: None,
+            npc: false, guest: true, view: None,
+            tx: Some(tx.clone()), view_tx: None, ctl_tx: None, egress_meter: None, bin: false,
+            conn_gen: 1, prestige: 0, credits: 0, defenders: Vec::new(),
+            visited_countries: Default::default(), visited_continents: Default::default(),
+            lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0,
+            unlimited_credits: false, unlimited_ants: false,
+            killed_by: Default::default(), kills_of: Default::default(), away: None,
+        });
+        *player_id = Some(id);
+        // bin negotiation → guests get the compressed ant frames (kind 3) for minimal egress.
+        apply_bin_cap(world, id, &msg);
+        // Reuse the normal logged-in payload so the guest gets the snapshot config (R2 base/epoch/
+        // super-tile span) + geo to render territory from FREE R2, plus the initial queen roster.
+        let me = build_player_info(world, id, true);
+        let _ = tx.send(json!({"t":"logged-in","spectator":true,"me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
+        let _ = tx.send(build_queen_roster(world));
         return;
     }
 
@@ -315,7 +370,11 @@ pub fn handle_message(
                 world.send_to(target_id, json!({"t":"event","msg":"[ADMIN] LEVEL DOWN"}).to_string());
             }
             "spawn-npc"  => spawn_npc(world, pid, None, None),
-            "wipe-world" => wipe_world_and_users(world),
+            // beta-v2: the everyday WIPE clears the world but CONSERVES every account forever
+            // (accounts + verification state live in users.json, untouched by wipe_world).
+            "wipe-world" => wipe_world(world),
+            // The rare full reset: also delete all non-admin accounts (type-"NUKE" button).
+            "wipe-world-and-users" => wipe_world_and_users(world),
             _ => {}
         }
         return;
@@ -784,7 +843,7 @@ fn create_or_reconnect_player(
         ants_avail: daily,
         next_refill: now + 24 * 3600 * 1000,
         queen_placed_at: None,
-        npc: false, view: None,
+        npc: false, guest: false, view: None,
         tx: Some(tx), view_tx: None,
         ctl_tx: None, egress_meter: None, bin: false,
         conn_gen: 1,

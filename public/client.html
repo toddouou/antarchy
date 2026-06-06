@@ -1758,15 +1758,18 @@ const AudioEngine = (() => {
    =================================================================== */
 function connect() {
   const proto=location.protocol==='https:'?'wss':'ws';
-  ws=new WebSocket(proto+'://'+location.host);
+  ws=new WebSocket(proto+'://'+location.host+'/play');
   ws.onopen=()=>{
     $('dot').className='dot ok'; $('cstat').textContent='CONNECTED';
     reconnectAttempts=0; // P7: successful connect resets the backoff
+    // beta-v2: login/registration live on the landing page. /play authenticates with the session
+    // token minted there; with no token we send the player back to the landing page to log in.
+    const token=localStorage.getItem('antarchy-session');
+    if (token) { const am=$('auth-modal'); if (am) am.style.display='none'; send({t:'session',token,bin:1}); return; }
+    // Legacy fallback: a pre-beta-v2 tab may still carry a username/password session.
     const u=localStorage.getItem('hive-u'), p=localStorage.getItem('hive-p');
-    if (u&&p) {
-      $('li-u').value=u; $('li-p').value=p;
-      if (reconnecting||sessionStorage.getItem('hive-active')) { send({t:'login',username:u,password:p,bin:1}); }
-    }
+    if (u&&p&&(reconnecting||sessionStorage.getItem('hive-active'))) { send({t:'login',username:u,password:p,bin:1}); return; }
+    location.href='/';   // no session → go to the landing page to log in / sign up
   };
   // P7: exponential backoff + jitter (no synchronized reconnect storm after a server bounce). Keep
   // the last grid through a brief drop so we render from it instead of flashing white; discard it
@@ -1945,6 +1948,8 @@ function handle(msg) {
       break;
     }
     case 'err':
+      // beta-v2: an expired/invalid session token → clear it and return to the landing page to log in.
+      if (msg.code==='session') { try{ localStorage.removeItem('antarchy-session'); }catch(_){} location.href='/'; return; }
       toast(msg.msg); $('li-err').textContent=msg.msg; $('r-err').textContent=msg.msg;
       // Pre-login error: keep the auth modal up and surface the message inline on whichever step
       // the user is on (login OR a register step). Do NOT jump them to the login step — a stray
@@ -2054,10 +2059,11 @@ function handle(msg) {
     case 'force-logout':
       // Sent on admin WIPE: this account no longer exists. Drop stored creds and return to the
       // login screen (mirrors the logout button). Brief toast first so the reason is visible.
-      toast((msg.reason||'LOGGED OUT')+' — RE-REGISTER');
+      toast((msg.reason||'LOGGED OUT'));
       localStorage.removeItem('hive-u'); localStorage.removeItem('hive-p');
+      localStorage.removeItem('antarchy-session');
       sessionStorage.removeItem('hive-active');
-      setTimeout(()=>location.reload(), 1500);
+      setTimeout(()=>{ location.href='/'; }, 1500);
       break;
     case 'world-wiped':
       toast('[ADMIN] WORLD WIPED');
@@ -3843,7 +3849,9 @@ $('admin-chk').onchange=e=>{
 $('btn-recenter').onclick=()=>{ AudioEngine.click(); if (me?.queen) panTarget={x:me.queen.x+1,y:me.queen.y+1}; };
 $('btn-logout').onclick=()=>{
   AudioEngine.click();
-  localStorage.removeItem('hive-u'); localStorage.removeItem('hive-p'); location.reload();
+  localStorage.removeItem('hive-u'); localStorage.removeItem('hive-p');
+  localStorage.removeItem('antarchy-session'); sessionStorage.removeItem('hive-active');
+  location.href='/';   // beta-v2: log out → back to the landing page
 };
 
 /* AUTH */

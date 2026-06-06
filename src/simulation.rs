@@ -269,6 +269,15 @@ pub fn wipe_world(world: &mut World) {
         }
     }
     world.broadcast(r#"{"t":"event","msg":"[ADMIN] WORLD WIPED · ALL QUEENS REMOVED"}"#);
+
+    // Persist the now-empty world immediately so a restart right after a wipe can't reload pre-wipe
+    // queens (the periodic autosave might be ~60 s away). Accounts are untouched — `wipe_world`
+    // never modifies `world.auth`, so every registered user is conserved across the wipe. The
+    // season-rollover caller gets an extra, harmless save.
+    let path = cfg().save_file.clone();
+    if let Err(e) = crate::persist::save(world, &path) {
+        eprintln!("[persist] post-wipe save failed: {e}");
+    }
 }
 
 /// Admin-only destructive wipe (the panel's type-"WIPE" button): clears the map **and** deletes
@@ -354,7 +363,7 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
         id, username: format!("NPC_{id}"), color: hue,
         hue_idx: hue_idx as i32,
         ants_avail: 0, next_refill: 0, queen_placed_at: None,
-        npc: true, view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0,
+        npc: true, guest: false, view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0,
         prestige: 0, credits: 0,
         defenders: Vec::new(),
         visited_countries: Default::default(), visited_continents: Default::default(),
@@ -1162,7 +1171,7 @@ mod tests {
     fn mk_player(id: u32) -> crate::world::Player {
         crate::world::Player {
             id, username: String::new(), color: String::new(), hue_idx: 0,
-            ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
+            ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false, guest: false,
             view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
             defenders: Vec::new(), visited_countries: Default::default(),
             visited_continents: Default::default(), lifetime_kills: 0,
@@ -1312,7 +1321,7 @@ mod bench {
                 kills: 0, bubble_r: 30.0, last_attacker: None, dead: false, tiles_ever_held: 0,
                 cached_tiles: 0, npc: false, shield: 0, shield_expiry: None, region: String::new() });
             w.players.insert(id, Player { id, username: String::new(), color: String::new(),
-                hue_idx: 0, ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false,
+                hue_idx: 0, ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false, guest: false,
                 view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
                 defenders: Vec::new(), visited_countries: Default::default(),
                 visited_continents: Default::default(), lifetime_kills: 0, lifetime_peak_tiles: 0,

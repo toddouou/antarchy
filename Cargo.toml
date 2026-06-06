@@ -31,6 +31,9 @@ png               = "0.17"
 # path is compile-verified; activation is gated at runtime on SNAPSHOT_CDN + env creds. rustls TLS
 # to avoid a system OpenSSL dependency on the build host.
 rust-s3           = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+# beta-v2 transactional email (Resend HTTPS POST). rustls to match the no-system-OpenSSL stance above;
+# shares the rustls/hyper stack already pulled by rust-s3 + tokio. Dormant until HIVE_RESEND_API_KEY set.
+reqwest           = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [profile.release]
 opt-level      = 3

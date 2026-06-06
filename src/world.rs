@@ -141,6 +141,11 @@ pub struct Player {
     pub next_refill:     u64,
     pub queen_placed_at: Option<u64>,
     pub npc:             bool,
+    /// Ephemeral read-only spectator (landing-page guest). Receives viewport **ant** frames but
+    /// NEVER tile frames (its territory renders from free R2 super-tiles), and is excluded from the
+    /// leaderboard, daily refills, and persistence. Allocated a reserved hi-range id; removed on
+    /// disconnect. The single authoritative "this connection costs minimal egress" marker.
+    pub guest:           bool,
     pub view:            Option<PlayerView>,
     pub tx:              Option<UnboundedSender<String>>,
     pub view_tx:         Option<watch::Sender<Option<Vec<u8>>>>,
@@ -225,6 +230,38 @@ pub struct QueenHit {
     pub dmg_mult:  f32,
 }
 
+// ---- beta-v2 auth: transient pending state (RAM-only, NEVER persisted) ----------------------------
+
+/// A registration awaiting email/phone code entry. Lives only in `World.pending_regs` keyed by a
+/// random `regId`; a restart just asks the user to register again (keeps it out of world.snapshot,
+/// avoiding the bincode-wipe risk). Promoted into a durable `auth.UserRecord` only on verification.
+#[derive(Debug, Clone)]
+pub struct PendingReg {
+    pub email:          String,  // lowercase
+    pub phone:          String,  // E.164 ("" if none)
+    pub handle:         String,  // public display name
+    pub password_hash:  String,
+    pub color:          String,
+    pub hue_idx:        i32,
+    pub email_code:     String,  // 6-digit
+    pub phone_code:     String,  // 6-digit
+    pub email_ok:       bool,
+    pub phone_ok:       bool,
+    /// Whether phone verification is required to finalize (captured = sms_enabled() at register time).
+    pub phone_required: bool,
+    pub created_ms:     u64,
+    /// Failed code-entry attempts; the pending reg is dropped past a small cap (brute-force guard).
+    pub attempts:       u32,
+}
+
+/// A password-reset grant: a random token → the account it resets, with a creation stamp for expiry.
+/// Transient (RAM-only) — an expired/lost reset simply isn't honoured after a restart.
+#[derive(Debug, Clone)]
+pub struct ResetToken {
+    pub username:   String,  // UPPERCASE key into auth.users
+    pub created_ms: u64,
+}
+
 // ---- World ----------------------------------------------------------------
 
 /// King-of-the-hill result for one metro: who holds the most painted tiles inside its radius.
@@ -276,7 +313,22 @@ pub struct World {
     /// epoch rolls). The snapshot writer thread drains this and deletes `snap/{epoch}/` off-lock, so
     /// a wipe reclaims R2 space instead of leaking the whole previous canvas. Transient; not persisted.
     pub snapshot_retire: Vec<u64>,
+    // ---- beta-v2 auth: transient maps + guest allocator (RAM-only, never persisted) ----
+    /// Unverified registrations awaiting code entry, keyed by random regId. GC'd in the tick loop.
+    pub pending_regs:    FxHashMap<String, PendingReg>,
+    /// Live password-reset tokens, keyed by random token. GC'd in the tick loop.
+    pub reset_tokens:    FxHashMap<String, ResetToken>,
+    /// Rolling counter for allocating guest spectator ids in the reserved hi range (`GUEST_ID_BASE+`).
+    pub next_guest_seq:  u32,
 }
+
+/// Base of the reserved guest-spectator id range (disjoint from real player ids, which start at 100
+/// and increment via `next_player_id`). Guests get `GUEST_ID_BASE + (seq % GUEST_ID_SPAN)`.
+pub const GUEST_ID_BASE: u32 = 0xF000_0000;
+pub const GUEST_ID_SPAN: u32 = 0x0FFF_FFFF;
+
+/// True if `id` is a guest-spectator id (the reserved hi range).
+pub fn is_guest_id(id: u32) -> bool { id >= GUEST_ID_BASE }
 
 /// Capacity of the tick-duration ring (≈ a few seconds of history at 50 Hz).
 pub const TICK_RING_CAP: usize = 240;
@@ -313,7 +365,22 @@ impl World {
             tick_ms_pos:     0,
             epoch:           current_ms() / 1000,
             snapshot_retire: Vec::new(),
+            pending_regs:    FxHashMap::default(),
+            reset_tokens:    FxHashMap::default(),
+            next_guest_seq:  0,
         }
+    }
+
+    /// Allocate the next guest-spectator id in the reserved hi range.
+    pub fn alloc_guest_id(&mut self) -> u32 {
+        let id = GUEST_ID_BASE + (self.next_guest_seq % GUEST_ID_SPAN);
+        self.next_guest_seq = self.next_guest_seq.wrapping_add(1);
+        id
+    }
+
+    /// Current number of connected guest spectators (for the `HIVE_MAX_GUESTS` ceiling).
+    pub fn guest_count(&self) -> usize {
+        self.players.values().filter(|p| p.guest).count()
     }
 
     /// Roll the Phase-6 snapshot epoch to a fresh value (seconds since the Unix epoch). Called on
