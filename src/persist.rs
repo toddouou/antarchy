@@ -246,6 +246,9 @@ pub fn restore(world: &mut World, snap: WorldSnapshot) {
     world.dirty_tick = world.tick;
     // Phase-6: a restored world must re-upload its whole painted canvas to R2 once.
     world.tiles.mark_all_dirty();
+    // Pan-radius bounds are runtime-only (serde-skipped) → rebuild from the restored cells so
+    // returning players keep the home region that matches their existing territory.
+    world.tiles.rebuild_bounds();
 
     let tiles = world.tiles.total_tiles();
     println!("[persist] restored: {tiles} tiles, {queens} queens, {players} players, {ants} ants (tick {})", world.tick);

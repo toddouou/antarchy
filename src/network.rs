@@ -200,6 +200,24 @@ pub fn build_player_info(
         Value::Null
     };
 
+    // Camera home-region half-extent (tiles): the default radius, grown to enclose the player's whole
+    // territory (+margin) so they can always see it. Sent on every `me` so the box expands live.
+    let pan_radius: u32 = {
+        let def = crate::config::home_pan_radius();
+        match (q, world.tiles.owner_bounds(player_id)) {
+            (Some(q), Some(b)) => {
+                // Compute in i64 (queen coords are signed, bounds are u32) → widest half-extent from
+                // the queen to any territory edge, + margin, clamped back into u32 and floored at def.
+                let (qx, qy) = (q.x as i64, q.y as i64);
+                let hx = (qx - b[0] as i64).max(b[2] as i64 - qx);
+                let hy = (qy - b[1] as i64).max(b[3] as i64 - qy);
+                let grown = hx.max(hy).max(0) as u64 + crate::config::pan_margin() as u64;
+                (grown.min(u32::MAX as u64) as u32).max(def)
+            }
+            _ => def,
+        }
+    };
+
     // Dynamic fields — sent on every periodic `me` (≥1 Hz).
     let mut info = json!({
         "t": "me",
@@ -230,6 +248,9 @@ pub fn build_player_info(
             "totalKills":  total_kills,
         },
         "shield":    q.map(|q| q.shield).unwrap_or(0),
+        // The client clamps `view.x/y` to this box (half-extent, tiles) around the queen — keeps
+        // players near their region and bounds the basemap tile universe (R2 free-tier).
+        "panRadius": pan_radius,
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
         "ants": my_ants,
@@ -246,11 +267,17 @@ pub fn build_player_info(
         info["spawnX"]   = json!(c.spawn_x);
         info["spawnY"]   = json!(c.spawn_y);
         info["spawnPan"] = json!(c.spawn_pan);
-        info["geo"] = json!({
-            "capitolLat": c.capitol_lat,
-            "capitolLon": c.capitol_lon,
-            "tileMeters":  c.tile_meters,
-        });
+        // Geo projection (game↔lat/lon) goes ONLY to authed players — the `/play` client needs it for
+        // the basemap + geolocation. Guests/spectators are deliberately denied it so the public landing
+        // page can't reverse-project a queen's game coords to its real-world location (concealment).
+        // Same reason `basemapUrl` is withheld below — the landing page draws no basemap.
+        if !p.guest {
+            info["geo"] = json!({
+                "capitolLat": c.capitol_lat,
+                "capitolLon": c.capitol_lon,
+                "tileMeters":  c.tile_meters,
+            });
+        }
         info["cfg"] = json!({
             "BUBBLE_R":   c.bubble_r,
             "DAILY_ANTS": c.daily_ants,
@@ -261,7 +288,10 @@ pub fn build_player_info(
         // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
         if let Some(base) = crate::config::snapshot_public_base() { info["snapshotBase"] = json!(base); }
-        if let Some(bm)   = crate::config::basemap_url()          { info["basemapUrl"]  = json!(bm); }
+        // Basemap only for authed players (guests render territory from R2 on a blank background).
+        if !p.guest {
+            if let Some(bm) = crate::config::basemap_url() { info["basemapUrl"] = json!(bm); }
+        }
         // Phase-6 lever B: super-tile span in game cells (S×256). The client keys snapshot tiles by
         // `floor(gx / snapTileCells)`, which must equal the server's `(sx,sy)` super-tile index.
         info["snapTileCells"] = json!(crate::config::snapshot_tile_chunks() * 256);

@@ -850,6 +850,11 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
 <main class="canvas-area">
   <canvas id="map"></canvas>
+  <!-- OSM attribution (ODbL/usage-policy requirement). Shown whenever the basemap is visible. -->
+  <a id="osm-attrib" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener"
+     style="position:absolute;bottom:2px;right:4px;z-index:30;font:11px/1.4 system-ui,sans-serif;
+            color:#1a1a1a;background:rgba(255,255,255,.62);padding:1px 6px;border-radius:4px;
+            text-decoration:none;pointer-events:auto;display:none;">© OpenStreetMap contributors</a>
   <div id="dir-overlay"><svg width="48" height="48" viewBox="0 0 48 48">
     <line x1="24" y1="24" x2="24" y2="8" stroke="#ff2e3f" stroke-width="4" stroke-linecap="round"/>
     <polygon points="24,4 30,18 18,18" fill="#ff2e3f"/>
@@ -1989,6 +1994,7 @@ function handle(msg) {
       builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
       if (me.colorChosen === false) { $('auth-modal').style.display='grid'; showStep('admin-color'); return; }
       $('auth-modal').style.display='none';
+      updateOsmAttrib();   // basemap is now active → show the OSM attribution
       $('pname').textContent=me.username;
       $('pfp').textContent=me.username[0];
       $('pfp').style.color=me.color;
@@ -2574,18 +2580,31 @@ const ctx=cvs.getContext('2d',{alpha:false});
 const CELL=4;
 function resize() { const r=cvs.getBoundingClientRect(); cvs.width=r.width; cvs.height=r.height; }
 function clampView() {
-  // Min zoom: viewport must not exceed world bounds
-  const minZoomW = cvs.width  / (CELL * WORLD.w);
-  const minZoomH = cvs.height / (CELL * WORLD.h);
-  const minZoom = Math.max(minZoomW, minZoomH, 0.0001);
+  // Min zoom: viewport must not exceed world bounds.
+  let minZoom = Math.max(cvs.width / (CELL * WORLD.w), cvs.height / (CELL * WORLD.h), 0.0001);
+
+  // HOME REGION (Part 1): once a queen is placed, restrict the camera to a box of half-extent
+  // `me.panRadius` (tiles, server-grown to enclose the player's territory) centred on the queen.
+  // This keeps players near their own region — and bounds the basemap tile universe so the self-
+  // hosted OSM cache stays inside R2's free tier. Skipped during spawn/placement (`panLocked`) so
+  // geolocation can still find the player's real area.
+  let bx0 = 0, by0 = 0, bx1 = WORLD.w, by1 = WORLD.h;
+  if (!panLocked && me && me.queen && !me.queen.dead && me.panRadius > 0) {
+    const R = me.panRadius;
+    bx0 = Math.max(0, me.queen.x - R); by0 = Math.max(0, me.queen.y - R);
+    bx1 = Math.min(WORLD.w, me.queen.x + R); by1 = Math.min(WORLD.h, me.queen.y + R);
+    // Can't zoom out past the region box.
+    minZoom = Math.max(minZoom, cvs.width / (CELL * (bx1 - bx0)), cvs.height / (CELL * (by1 - by0)));
+  }
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
-  // Clamp position: keep view center inside world
+
+  // Clamp the camera centre so the viewport stays inside the box (centre on it if the box is
+  // smaller than the viewport on that axis).
   const cp = CELL * view.zoom;
-  const halfW = cvs.width / (2*cp);
-  const halfH = cvs.height / (2*cp);
-  view.x = clamp(view.x, halfW, WORLD.w - halfW);
-  view.y = clamp(view.y, halfH, WORLD.h - halfH);
+  const halfW = cvs.width / (2*cp), halfH = cvs.height / (2*cp);
+  view.x = (2*halfW >= bx1 - bx0) ? (bx0 + bx1) / 2 : clamp(view.x, bx0 + halfW, bx1 - halfW);
+  view.y = (2*halfH >= by1 - by0) ? (by0 + by1) / 2 : clamp(view.y, by0 + halfH, by1 - halfH);
 }
 window.addEventListener('resize', () => { resize(); clampView(); });
 resize();
@@ -2742,25 +2761,78 @@ function inspectAtTile(tile) {
 /* ===================================================================
    OSM TILE SYSTEM — fetch/cache/draw OpenStreetMap tiles directly on canvas
    =================================================================== */
-const OSM_RETRY_MS = 30000; // don't re-request a failed tile more than once per 30s
+const OSM_RETRY_MS = 30000;   // don't re-request a failed tile more than once per 30s
+const OSM_MEM_BUDGET = 1500;  // in-memory decoded-tile cap (true-LRU); bounded panning keeps a region resident
+
+/* ---- Persistent tile cache (IndexedDB) -----------------------------------------------------------
+   Basemap tiles come from our own $0-egress Cloudflare/R2 cache and are immutable, so once a tile is
+   on disk it never needs the network again. This survives reloads → the home region paints instantly
+   on return AND we stop re-reading R2 (keeps R2 Class-B inside the free tier). Best-effort: any IDB
+   failure (private mode / quota) silently degrades to network-only. Format-agnostic: whatever the
+   cache serves (PNG today, WebP later) the browser decodes transparently — no client-side transcode. */
+let _osmDB=null, _osmDBP=null;
+function osmDB(){
+  if (_osmDB)  return Promise.resolve(_osmDB);
+  if (_osmDBP) return _osmDBP;
+  _osmDBP = new Promise((res,rej)=>{
+    let r; try{ r=indexedDB.open('antarchy-osm',1); }catch(e){ return rej(e); }
+    r.onupgradeneeded=()=>{ try{ r.result.createObjectStore('tiles'); }catch(e){} };
+    r.onsuccess=()=>{ _osmDB=r.result; res(_osmDB); };
+    r.onerror =()=>rej(r.error);
+  });
+  return _osmDBP;
+}
+function idbGetTile(key){
+  return osmDB().then(db=>new Promise(res=>{
+    try{ const rq=db.transaction('tiles','readonly').objectStore('tiles').get(key);
+         rq.onsuccess=()=>res(rq.result||null); rq.onerror=()=>res(null); }
+    catch(e){ res(null); }
+  })).catch(()=>null);
+}
+function idbPutTile(key, blob){
+  osmDB().then(db=>{ try{ db.transaction('tiles','readwrite').objectStore('tiles').put(blob,key); }catch(e){} }).catch(()=>{});
+}
+function blobToImage(blob){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(blob); const img=new Image();
+    img.onload =()=>{ URL.revokeObjectURL(url); res(img); };
+    img.onerror=()=>{ URL.revokeObjectURL(url); rej(new Error('decode')); };
+    img.src=url;   // blob: is same-origin → untainted, so the water-sampler can still read pixels
+  });
+}
+// Load one tile entry: IndexedDB (disk) first, then the network (persisting the bytes to IDB).
+// Populates e.img/loaded/failed when done; the render loop polls `e.loaded`.
+async function _loadOsmTile(key, z, x, y, e){
+  try{
+    let blob = await idbGetTile(key);
+    if (!blob){
+      const resp = await fetch(osmTileUrl(z,x,y), {mode:'cors', credentials:'omit'});
+      if (!resp.ok) throw new Error('http '+resp.status);
+      blob = await resp.blob();
+      idbPutTile(key, blob);
+    }
+    e.img = await blobToImage(blob);
+    e.loaded = true; e.failed = false;
+  }catch(err){
+    e.failed = true; e.failedAt = performance.now();
+  }
+}
 function getOsmTile(z, x, y) {
   const key=`${z}/${x}/${y}`;
   const cached = osmCache.get(key);
   if (cached) {
-    // Loaded or still-pending tiles are returned as-is. A previously-failed tile is
-    // re-requested only after a backoff window — otherwise a single 4xx would retry
-    // every frame, hammering (and getting IP-blocked by) the tile server.
-    if (!(cached.failed && performance.now() - cached.failedAt > OSM_RETRY_MS)) return cached;
+    // Loaded or still-pending tiles are returned as-is. A previously-failed tile is re-requested only
+    // after a backoff window — otherwise a single 4xx would retry every frame, hammering the server.
+    if (!(cached.failed && performance.now() - cached.failedAt > OSM_RETRY_MS)) {
+      osmCache.delete(key); osmCache.set(key, cached);   // touch → most-recently-used
+      return cached;
+    }
   }
-  const img=new Image();
-  const e={img, loaded:false, failed:false, failedAt:0};
-  img.crossOrigin='anonymous';
-  img.src=osmTileUrl(z,x,y);
-  img.onload=()=>{ e.loaded=true; e.failed=false; };
-  img.onerror=()=>{ e.loaded=false; e.failed=true; e.failedAt=performance.now(); };
+  const e={img:null, loaded:false, failed:false, failedAt:0};
   osmCache.set(key, e);
-  // LRU eviction: keep cache under 512 tiles to prevent unbounded memory growth
-  if (osmCache.size > 512) osmCache.delete(osmCache.keys().next().value);
+  _loadOsmTile(key, z, x, y, e);
+  // True-LRU eviction: oldest (front of the insertion-ordered Map) goes first.
+  while (osmCache.size > OSM_MEM_BUDGET) osmCache.delete(osmCache.keys().next().value);
   return e;
 }
 
@@ -2816,6 +2888,15 @@ function drawOsmTiles(cp, canvasW, canvasH) {
       const px=(canvasW/2+(x0-view.x)*cp)|0, py=(canvasH/2+(y0-view.y)*cp)|0;
       const pw=((canvasW/2+(x1-view.x)*cp)|0)-px, ph=((canvasH/2+(y1-view.y)*cp)|0)-py;
       if (pw>0&&ph>0) ctx.drawImage(e.img, px, py, pw, ph);
+    }
+  }
+  // Prefetch one ring beyond the drawn tiles (Part 4) so a pan reveals already-loaded tiles. Warmed
+  // only — they paint once they enter view. Bounded panning keeps this set small.
+  for (let ox=tl.x-2; ox<=br.x+2; ox++) {
+    for (let oy=tl.y-2; oy<=br.y+2; oy++) {
+      if (ox<0||oy<0||ox>=n||oy>=n) continue;
+      if (ox>=tl.x-1 && ox<=br.x+1 && oy>=tl.y-1 && oy<=br.y+1) continue; // already touched above
+      getOsmTile(osmZ, ox, oy);
     }
   }
 }
@@ -2955,6 +3036,13 @@ function doGeolocate() {
 function toggleMap() {
   mapVisible = !mapVisible;
   tileCacheDirty = true;
+  updateOsmAttrib();
+}
+
+// OSM attribution is required whenever the basemap is on screen; hide it when the map is toggled off.
+function updateOsmAttrib() {
+  const el = $('osm-attrib');
+  if (el) el.style.display = mapVisible ? 'block' : 'none';
 }
 
 // LOD territory overview: paint the downsampled grid into a small offscreen (1px per
@@ -3557,6 +3645,7 @@ cvs.addEventListener('wheel', e => {
   e.preventDefault();
   const f=e.deltaY<0?1.15:1/1.15;
   zoomTarget = clamp(zoomTarget*f, 0.0001, 16);
+  clampView(); // enforce the home-region zoom-out cap immediately (not just next frame)
 }, {passive:false});
 
 /* ===================================================================

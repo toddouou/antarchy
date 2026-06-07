@@ -66,6 +66,12 @@ pub struct TileMap {
     /// Class-A writes). Seeded with every chunk on boot/restore so a loaded world fully uploads once.
     #[serde(skip)]
     dirty_chunks: FxHashSet<u64>,
+    /// player_id → painted-territory bounding box `[min_x, min_y, max_x, max_y]`. Expand-only while
+    /// the owner holds ≥1 tile (dropped when their count hits 0). Drives the camera "home region"
+    /// pan radius (`build_player_info`) so a player can always see their whole territory. Runtime-only
+    /// (rebuildable from cells); restored via `rebuild_bounds`.
+    #[serde(skip)]
+    bounds: FxHashMap<u32, [u32; 4]>,
 }
 
 impl Default for TileMap {
@@ -79,6 +85,7 @@ impl Default for TileMap {
             last_touched_chunk: None,
             dirty_chunk_touches: 0,
             dirty_chunks: FxHashSet::default(),
+            bounds:    FxHashMap::default(),
         }
     }
 }
@@ -127,9 +134,62 @@ impl TileMap {
             *e -= 1;
             if *e <= 0 {
                 self.counts.remove(&owner);
+                self.bounds.remove(&owner);   // last tile gone → reset the pan box on next paint
                 if let Some(i) = self.id_to_idx.remove(&owner) {
                     self.free.push(i);
                 }
+            }
+        }
+    }
+
+    /// Expand `owner`'s territory bounding box to include `(x, y)` (expand-only; reset when the owner
+    /// drops to 0 tiles). Cheap O(1) per paint — keeps the camera home-region radius current.
+    #[inline]
+    fn expand_bounds(&mut self, owner: u32, x: u32, y: u32) {
+        let b = self.bounds.entry(owner).or_insert([x, y, x, y]);
+        if x < b[0] { b[0] = x; }
+        if y < b[1] { b[1] = y; }
+        if x > b[2] { b[2] = x; }
+        if y > b[3] { b[3] = y; }
+    }
+
+    /// `owner`'s painted-territory bounding box `[min_x, min_y, max_x, max_y]`, or `None` if they
+    /// hold no tiles. Used to grow a player's pan radius so they can always see their whole territory.
+    pub fn owner_bounds(&self, owner: u32) -> Option<[u32; 4]> {
+        self.bounds.get(&owner).copied()
+    }
+
+    /// Recompute every owner's bounding box from the live cells. Called after a snapshot restore
+    /// (where `bounds` deserialized empty) so returning players keep their grown pan radius.
+    pub fn rebuild_bounds(&mut self) {
+        self.bounds.clear();
+        let keys: Vec<u64> = self.chunks.keys().copied().collect();
+        for key in keys {
+            let (cx, cy) = Self::chunk_coords(key);
+            let (bx, by) = (cx << CHUNK_SHIFT, cy << CHUNK_SHIFT);
+            match self.chunks.get(&key) {
+                Some(Chunk::Uniform(i)) => {
+                    let owner = self.palette[*i as usize];
+                    if owner != 0 {
+                        self.expand_bounds(owner, bx, by);
+                        self.expand_bounds(owner, bx + CHUNK_MASK, by + CHUNK_MASK);
+                    }
+                }
+                Some(Chunk::Dense { cells, .. }) => {
+                    // Resolve idx→owner up front (needs &self.palette) so the expand loop can borrow mut.
+                    let owned: Vec<(u32, u32)> = cells.iter().enumerate().filter_map(|(li, &i)| {
+                        if i == 0 { return None; }
+                        let owner = self.palette[i as usize];
+                        if owner == 0 { return None; }
+                        Some((owner, li as u32))
+                    }).collect();
+                    for (owner, li) in owned {
+                        let x = bx + (li & CHUNK_MASK);
+                        let y = by + (li >> CHUNK_SHIFT);
+                        self.expand_bounds(owner, x, y);
+                    }
+                }
+                None => {}
             }
         }
     }
@@ -289,6 +349,7 @@ impl TileMap {
             self.dec_count(old_owner);
         }
         self.inc_count(new_owner);
+        self.expand_bounds(new_owner, x, y);
         self.note_dirty(key);
     }
 
@@ -301,6 +362,7 @@ impl TileMap {
         self.free.clear();
         self.dirty_chunks.clear();
         self.last_touched_chunk = None;
+        self.bounds.clear();
     }
 
     /// Clear every tile owned by `owner` (→ unclaimed) and drop the owner's count + index.
@@ -309,6 +371,7 @@ impl TileMap {
     /// `remaining` lets later chunks skip the scan once all of the owner's tiles are found.
     pub fn clear_owner(&mut self, owner: u32) {
         if owner == 0 { return; }
+        self.bounds.remove(&owner);   // territory forfeited → reset the pan box
         let oi = match self.id_to_idx.get(&owner) {
             Some(&i) => i,
             None     => { self.counts.remove(&owner); return; }
@@ -490,6 +553,34 @@ mod tests {
         assert_eq!(count(&tm, 7), 2);
         assert_eq!(count(&tm, 8), 2);
         assert_eq!(count(&tm, 9), 1);
+    }
+
+    #[test]
+    fn owner_bounds_expand_reset_and_rebuild() {
+        let mut tm = TileMap::default();
+        assert_eq!(tm.owner_bounds(5), None, "no tiles → no bounds");
+        tm.set(100, 200, 5);
+        tm.set(120, 180, 5);
+        tm.set(90, 260, 5);
+        // bbox = [min_x, min_y, max_x, max_y] over all of owner 5's cells.
+        assert_eq!(tm.owner_bounds(5), Some([90, 180, 120, 260]));
+
+        // Expand-only: clearing the western-most cell does NOT shrink the live bbox.
+        tm.set(90, 260, 0);
+        assert_eq!(tm.owner_bounds(5), Some([90, 180, 120, 260]));
+
+        // Dropping the owner's last tile resets the box.
+        tm.set(100, 200, 0);
+        tm.set(120, 180, 0);
+        assert_eq!(tm.owner_bounds(5), None, "0 tiles → bounds dropped");
+
+        // rebuild_bounds reconstructs from live cells (covers the post-restore path).
+        tm.set(1000, 2000, 7);
+        tm.set(1050, 1990, 7);
+        tm.bounds.clear();                       // simulate a serde-skipped restore
+        assert_eq!(tm.owner_bounds(7), None);
+        tm.rebuild_bounds();
+        assert_eq!(tm.owner_bounds(7), Some([1000, 1990, 1050, 2000]));
     }
 
     #[test]

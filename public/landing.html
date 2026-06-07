@@ -69,18 +69,35 @@
   .btn.amber{background:var(--amber);border-color:var(--amber);color:var(--on-amber)}
   .hdr .btn{margin-left:8px}
 
+  /* Theme switch — iconic sun/moon toggle, no text labels. Thumb slides under the active icon. */
+  .theme-switch{position:relative;display:inline-flex;align-items:center;flex:0 0 auto;
+    width:54px;height:28px;margin-left:8px;border-radius:999px;border:1px solid var(--line);
+    background:var(--input-bg);cursor:pointer;padding:0;transition:border-color .15s}
+  .theme-switch:hover{border-color:var(--btn-hover-border)}
+  .theme-switch .ts-thumb{position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;
+    background:var(--panel2);box-shadow:0 1px 3px rgba(0,0,0,.45);transition:transform .22s ease;z-index:1}
+  html[data-theme="light"] .theme-switch .ts-thumb{transform:translateX(26px)}
+  .theme-switch svg{position:absolute;top:50%;margin-top:-7px;width:14px;height:14px;z-index:2;
+    pointer-events:none;color:var(--dim);transition:color .2s}
+  .theme-switch .ts-moon{left:6px}
+  .theme-switch .ts-sun{right:6px}
+  html[data-theme="dark"] .theme-switch .ts-moon{color:var(--blu)}
+  html[data-theme="light"] .theme-switch .ts-sun{color:var(--amber)}
+
   /* Hero */
   .hero{position:relative;height:clamp(420px,64vh,680px);overflow:hidden;border-bottom:1px solid var(--line)}
-  #stage{position:absolute;inset:0;width:100%;height:100%;display:block;background:#0a1118}
+  #stage{position:absolute;inset:0;width:100%;height:100%;display:block;background:var(--bg)}
   .hero-grad{position:absolute;inset:0;pointer-events:none;
     background:linear-gradient(180deg,rgba(11,13,16,.55) 0%,rgba(11,13,16,0) 22%,rgba(11,13,16,0) 55%,rgba(11,13,16,.92) 100%)}
   .hero-inner{position:absolute;left:0;right:0;bottom:0;padding:26px 0 34px;pointer-events:none}
   .hero-inner .wrap{pointer-events:auto}
   .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:11px;letter-spacing:2px;color:var(--amber);
-    text-transform:uppercase;margin-bottom:12px}
-  .hero h1{font-family:'VT323',monospace;font-size:clamp(38px,7vw,76px);line-height:.94;letter-spacing:1px;color:var(--hero-ink)}
+    text-transform:uppercase;margin-bottom:12px;text-shadow:0 1px 6px rgba(0,0,0,.6)}
+  .hero h1{font-family:'VT323',monospace;font-size:clamp(38px,7vw,76px);line-height:.94;letter-spacing:1px;
+    color:var(--hero-ink);text-shadow:0 2px 16px rgba(0,0,0,.65),0 1px 3px rgba(0,0,0,.7)}
   .hero h1 em{color:var(--red);font-style:normal}
-  .hero p{max-width:560px;color:var(--hero-dim);font-size:15px;margin:12px 0 20px}
+  .hero p{max-width:560px;color:var(--hero-dim);font-size:15px;margin:12px 0 20px;
+    text-shadow:0 1px 10px rgba(0,0,0,.75),0 1px 2px rgba(0,0,0,.7)}
   .cta-row{display:flex;gap:12px;flex-wrap:wrap}
   .watch-chip{position:absolute;top:14px;left:0;right:0;display:flex;justify-content:center;pointer-events:none}
   .watch-chip .inner{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--hero-ink);
@@ -158,7 +175,11 @@
       <span><b id="s-ants">—</b><span class="s"> ants</span></span>
       <span><b id="s-queens">—</b><span class="s"> queens</span></span>
     </div>
-    <button class="btn" id="theme-toggle" aria-label="Toggle dark or light theme" aria-pressed="false" title="Toggle dark / light theme">🌙</button>
+    <button class="theme-switch" id="theme-toggle" role="switch" aria-checked="false" aria-label="Toggle dark or light theme" title="Toggle dark / light theme">
+      <svg class="ts-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12.9 2.6a9.5 9.5 0 1 0 8.5 13.9A7.7 7.7 0 0 1 12.9 2.6z"/></svg>
+      <svg class="ts-sun" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M19.4 4.6l-1.8 1.8M6.4 17.6l-1.8 1.8"/></g></svg>
+      <span class="ts-thumb"></span>
+    </button>
     <button class="btn" id="nav-login">Log in</button>
     <button class="btn primary" id="nav-signup">Play free</button>
   </div>
@@ -189,7 +210,7 @@
 <div class="adband"><div class="adslot">
   <ins class="adsbygoogle" style="display:block;width:100%;height:90px"
        data-ad-client="ca-pub-8322666756328568"
-       data-ad-slot="0000000001"
+       data-ad-slot="1225857888"
        data-ad-format="horizontal"
        data-full-width-responsive="true"></ins>
 </div></div>
@@ -220,7 +241,7 @@
 <div class="adband"><div class="adslot">
   <ins class="adsbygoogle" style="display:block;width:100%;height:90px"
        data-ad-client="ca-pub-8322666756328568"
-       data-ad-slot="0000000002"
+       data-ad-slot="5501664729"
        data-ad-format="horizontal"
        data-full-width-responsive="true"></ins>
 </div></div>
@@ -279,6 +300,7 @@
       <button class="btn primary" id="ve-go">Verify email →</button>
       <div class="err" id="ve-err"></div>
       <div class="hint">No email yet? Check spam, or wait a moment. (In dev, the code is printed to the server console.)</div>
+      <div class="switch">Didn't get it? <a id="ve-resend">Resend code</a><span class="hint" id="ve-resend-wait" style="display:none"></span></div>
     </div>
     <!-- VERIFY PHONE -->
     <div class="step" data-step="vphone">
@@ -356,9 +378,13 @@ $('to-login2').onclick=()=>showStep('login'); $('to-forgot').onclick=()=>showSte
 // THEME — dark by default; the pre-paint script already applied any saved choice. <button> is
 // natively keyboard-operable (Enter/Space); we keep the chosen theme in localStorage.
 const THEME_KEY='antarchy-theme';
+// Canvas backdrop colour, kept in sync with the active theme's --bg (dark #0b0d10 / light #f5f3ec).
+let BG_COLOR='#0b0d10';
+function refreshMapBg(){ try{ const c=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(); if(c) BG_COLOR=c; }catch(e){} }
 function applyTheme(t){ const th=(t==='light')?'light':'dark'; document.documentElement.dataset.theme=th;
   try{ localStorage.setItem(THEME_KEY,th); }catch(e){}
-  const b=$('theme-toggle'); if(b){ b.textContent=th==='light'?'☀':'🌙'; b.setAttribute('aria-pressed',String(th==='light')); } }
+  refreshMapBg();
+  const b=$('theme-toggle'); if(b) b.setAttribute('aria-checked',String(th==='light')); }
 function toggleTheme(){ applyTheme(document.documentElement.dataset.theme==='light'?'dark':'light'); }
 $('theme-toggle').onclick=toggleTheme;
 applyTheme(document.documentElement.dataset.theme==='light'?'light':'dark');
@@ -390,15 +416,30 @@ $('r-go').onclick=async()=>{ setErr('r-err','');
   if(!j.ok) return setErr('r-err',j.error||'Could not register');
   regId=j.regId; $('ve-to').textContent=email; showStep('vemail');
 };
-// VERIFY EMAIL
-$('ve-go').onclick=async()=>{ setErr('ve-err','');
-  const code=$('ve-code').value.trim(); if(code.length<6) return setErr('ve-err','Enter the 6-digit code');
+// VERIFY EMAIL — one path shared by the button and auto-submit (6 digits typed or pasted).
+async function verifyEmail(){ setErr('ve-err','');
+  const code=$('ve-code').value.replace(/\D/g,'').slice(0,6);
+  if(code.length<6) return setErr('ve-err','Enter the 6-digit code');
   $('ve-go').disabled=true;
   const j=await postJSON('/api/verify-email',{regId,code}); $('ve-go').disabled=false;
   if(!j.ok) return setErr('ve-err',j.error||'Incorrect code');
   if(j.done) return enterGame(j.handle);
   if(j.phoneRequired) return showStep('vphone');
   setErr('ve-err','Verified — finishing up…');
+}
+$('ve-go').onclick=verifyEmail;
+// keep the field digits-only; auto-submit the instant 6 digits are entered or pasted.
+$('ve-code').addEventListener('input',e=>{ const v=e.target.value.replace(/\D/g,'').slice(0,6);
+  if(v!==e.target.value) e.target.value=v; if(v.length===6) verifyEmail(); });
+// RESEND email code — 30 s client cooldown (the server also rate-limits per IP).
+let resendBusy=false;
+$('ve-resend').onclick=async()=>{ if(resendBusy||!regId) return; setErr('ve-err','');
+  const a=$('ve-resend'), w=$('ve-resend-wait'); resendBusy=true; a.style.opacity='.5';
+  const j=await postJSON('/api/resend-code',{regId});
+  if(!j.ok){ resendBusy=false; a.style.opacity=''; return setErr('ve-err',j.error||'Could not resend'); }
+  let s=30; w.style.display='inline';
+  (function tick(){ if(s<=0){ resendBusy=false; w.style.display='none'; a.style.opacity=''; return; }
+    w.textContent=' — sent ✓ (resend in '+s+'s)'; s--; setTimeout(tick,1000); })();
 };
 // VERIFY PHONE
 $('vp-go').onclick=async()=>{ setErr('vp-err','');
@@ -564,8 +605,10 @@ function toRGB(hex){ hex=hex||'#9b3027'; if(hex[0]==='#') hex=hex.slice(1);
 
 function render(){
   const W=cv.clientWidth, H=cv.clientHeight, cp=CELL*view.zoom;
-  ctx.clearRect(0,0,W,H); ctx.fillStyle='#0a1118'; ctx.fillRect(0,0,W,H);
-  if(WORLD){ drawOsm(cp,W,H); drawSnap(cp,W,H); }
+  // Theme-aware backdrop (dark/light). The public spectator view deliberately draws NO basemap so a
+  // top player's real-world location can't be read off the map — only their territory + queens show.
+  ctx.clearRect(0,0,W,H); ctx.fillStyle=BG_COLOR; ctx.fillRect(0,0,W,H);
+  if(WORLD){ drawSnap(cp,W,H); }
   // queens
   for(const q of roster){
     const px=W/2+(q.x-view.x)*cp, py=H/2+(q.y-view.y)*cp;
@@ -574,8 +617,10 @@ function render(){
     ctx.fillStyle=q.color||'#ddd';
     ctx.fillRect((px-s/2)|0,(py-s/2)|0,s|0,s|0);
     ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=2; ctx.strokeRect((px-s/2)|0,(py-s/2)|0,s|0,s|0);
-    if(cp>1.2){ ctx.fillStyle='#fff'; ctx.font='10px IBM Plex Mono'; ctx.textAlign='center';
-      ctx.fillText('♛ '+(q.name||''),px,py-s/2-4); }
+    if(cp>1.2){ ctx.font='10px IBM Plex Mono'; ctx.textAlign='center';
+      const lbl='♛ '+(q.name||''); ctx.lineJoin='round'; ctx.lineWidth=3;
+      ctx.strokeStyle='rgba(0,0,0,.85)'; ctx.strokeText(lbl,px,py-s/2-4);
+      ctx.fillStyle='#fff'; ctx.fillText(lbl,px,py-s/2-4); }
   }
   // ants (interpolated, color by owner)
   const tickI=antDt||(1000/15), t=Math.min(1,(performance.now()-lastAntAt)/tickI);

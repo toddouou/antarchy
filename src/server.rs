@@ -148,6 +148,14 @@ async fn favicon_handler() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/png")], FAVICON)
 }
 
+/// `/ads.txt` (IAB authorized-sellers). Google AdSense throttles ad serving for domains without it;
+/// it must be reachable at the apex (`https://antarchy.fun/ads.txt`) and name our publisher id.
+static ADS_TXT: &str = "google.com, pub-8322666756328568, DIRECT, f08c47fec0942fa0\n";
+
+async fn ads_txt_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], ADS_TXT)
+}
+
 async fn health_handler(State(app): State<AppState>) -> impl IntoResponse {
     let w = app.world.read().await;
 
@@ -953,17 +961,17 @@ async fn world_info_handler(State(app): State<AppState>) -> impl IntoResponse {
     // held across the `.await` (it would make the handler future non-Send).
     let epoch = app.world.read().await.epoch;
     let c = cfg();
+    // NOTE: geo (capitolLat/capitolLon/tileMeters) is deliberately omitted from this PUBLIC endpoint
+    // so a queen's game coords can't be reverse-projected to a real-world location. The authed `/play`
+    // client never reads `/world-info` (it gets geo over the WS), and the landing page no longer draws
+    // a basemap, so nothing legitimate needs it here. World/spawn dims are game-space only (not geo).
     let body = serde_json::json!({
         "worldW":     c.world_w,
         "worldH":     c.world_h,
         "spawnX":     c.spawn_x,
         "spawnY":     c.spawn_y,
-        "capitolLat": c.capitol_lat,
-        "capitolLon": c.capitol_lon,
-        "tileMeters": c.tile_meters,
         "epoch":        epoch,
         "snapshotBase": crate::config::snapshot_public_base(),
-        "basemapUrl":   crate::config::basemap_url(),
         "snapTileCells": crate::config::snapshot_tile_chunks() * 256,
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)
@@ -1068,6 +1076,7 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/play",       get(play_handler))        // game client (GET) / authed game (WS)
         .route("/reset",      get(landing_page))        // password-reset lands here (?token=…)
         .route("/favicon.png", get(favicon_handler))
+        .route("/ads.txt",    get(ads_txt_handler))     // AdSense authorized-sellers (apex)
         .route("/health",     get(health_handler))
         .route("/world-info", get(world_info_handler))
         .route("/egress-stats", get(egress_stats_handler))
@@ -1075,6 +1084,7 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/api/register",        post(crate::api::register))
         .route("/api/verify-email",    post(crate::api::verify_email))
         .route("/api/verify-phone",    post(crate::api::verify_phone))
+        .route("/api/resend-code",     post(crate::api::resend_code))
         .route("/api/login",           post(crate::api::login))
         .route("/api/forgot-password", post(crate::api::forgot_password))
         .route("/api/reset-password",  post(crate::api::reset_password))

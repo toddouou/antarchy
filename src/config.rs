@@ -351,6 +351,34 @@ pub fn basemap_url() -> Option<String> {
     V.get_or_init(|| std::env::var("HIVE_BASEMAP_URL").ok().filter(|s| !s.trim().is_empty())).clone()
 }
 
+/// Default half-extent (in tiles) of the camera "home region" a player may pan within, centred on
+/// their queen. `HIVE_HOME_RADIUS`, default 7500 (≈ ±200 km at tile_meters≈26.72 → ~400 km box),
+/// clamped to [512, world]. The client clamps `view.x/y` to this box (Part 1) so the basemap tile
+/// universe — and thus R2 Class-A writes / storage — stays bounded: we're a game, not a map viewer.
+/// The effective radius grows with territory (see `build_player_info`), never shrinking below this.
+/// Read once.
+pub fn home_pan_radius() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("HIVE_HOME_RADIUS").ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(7500)
+            .clamp(512, 1_500_000)
+    })
+}
+
+/// Extra margin (tiles) added beyond a player's territory bounding-box when growing their pan radius,
+/// so the camera can see a little past the frontier. `HIVE_PAN_MARGIN`, default 1024. Read once.
+pub fn pan_margin() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("HIVE_PAN_MARGIN").ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(1024)
+            .clamp(0, 100_000)
+    })
+}
+
 /// R2 / S3-compatible credentials for the snapshot writer. `Some` only when all four vars are set.
 #[derive(Clone)]
 pub struct R2Config {

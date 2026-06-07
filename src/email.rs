@@ -15,7 +15,10 @@ pub async fn send_code(to: &str, code: &str) {
          <p>Your verification code is:</p>\
          <p style=\"font-size:34px;font-weight:800;letter-spacing:8px;color:#111\">{code}</p>\
          <p style=\"color:#888;font-size:13px\">It expires in 15 minutes. If you didn't request this, ignore this email.</p></div>");
-    send(to, subject, &html, &format!("verification code {code}")).await;
+    let text = format!(
+        "Your antarchy.fun verification code is: {code}\n\n\
+         It expires in 15 minutes. If you didn't request this, ignore this email.");
+    send(to, subject, &html, &text).await;
 }
 
 /// Send a password-reset link to `to`.
@@ -29,7 +32,10 @@ pub async fn send_reset(to: &str, token: &str) {
          <p>Reset your password with the link below:</p>\
          <p><a href=\"{link}\" style=\"color:#c0392b\">{link}</a></p>\
          <p style=\"color:#888;font-size:13px\">This link expires in 1 hour. If you didn't request it, ignore this email.</p></div>");
-    send(to, subject, &html, &format!("reset link {link}")).await;
+    let text = format!(
+        "Reset your antarchy.fun password using this link:\n{link}\n\n\
+         This link expires in 1 hour. If you didn't request it, ignore this email.");
+    send(to, subject, &html, &text).await;
 }
 
 /// Tell an existing account that someone tried to register again with their email. Sent on the
@@ -44,17 +50,24 @@ pub async fn send_register_exists_notice(to: &str) {
          <p>Someone just tried to create a new account with this email, but you already have one.</p>\
          <p>If it was you, just <a href=\"{base}/\" style=\"color:#c0392b\">log in</a> (or reset your \
          password). If not, you can safely ignore this email.</p></div>");
-    send(to, subject, &html, "register-exists notice").await;
+    let text = format!(
+        "Someone just tried to create a new antarchy.fun account with this email, but you already \
+         have one.\n\nIf it was you, just log in at {base}/ (or reset your password). If not, you \
+         can safely ignore this email.");
+    send(to, subject, &html, &text).await;
 }
 
-async fn send(to: &str, subject: &str, html: &str, dev_desc: &str) {
+async fn send(to: &str, subject: &str, html: &str, text: &str) {
     let (Some(key), Some(from)) = (resend_api_key(), email_from()) else {
-        println!("[email:DEV] to={to} · {subject} · {dev_desc}  \
+        // Dev fallback: collapse the plaintext body to one greppable line (carries the code/link).
+        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        println!("[email:DEV] to={to} · {subject} · {one_line}  \
                   (set HIVE_RESEND_API_KEY + HIVE_EMAIL_FROM to actually send)");
         let _ = std::io::Write::flush(&mut std::io::stdout()); // visible immediately when piped
         return;
     };
-    let body = serde_json::json!({ "from": from, "to": [to], "subject": subject, "html": html });
+    // Resend accepts both `html` and `text`; sending a plaintext part improves inbox placement.
+    let body = serde_json::json!({ "from": from, "to": [to], "subject": subject, "html": html, "text": text });
     match reqwest::Client::new()
         .post("https://api.resend.com/emails")
         .bearer_auth(key)

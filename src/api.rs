@@ -46,6 +46,7 @@ pub enum AuthOp {
     Login { ident: String, password: String },
     Forgot { email: String },
     Reset { token: String, password: String },
+    ResendCode { reg_id: String },
 }
 
 /// The sim thread's reply for an [`AuthOp`]. The HTTP handler turns it into JSON and does any sending.
@@ -67,6 +68,8 @@ pub enum AuthOutcome {
     /// the handler still returns a uniform 200 to the client (enumeration-safe).
     ForgotResult { send: Option<(String, String)> },
     ResetOk,
+    /// A resend-code request matched a live pending registration; the handler re-sends the email code.
+    ResendResult { email: String, email_code: String },
     Error { msg: String },
 }
 
@@ -83,6 +86,7 @@ pub fn apply(world: &mut World, op: AuthOp) -> AuthOutcome {
         AuthOp::Login { ident, password }    => do_login(world, &ident, &password),
         AuthOp::Forgot { email }             => forgot(world, &email),
         AuthOp::Reset { token, password }    => reset(world, &token, &password),
+        AuthOp::ResendCode { reg_id }        => resend(world, reg_id),
     }
 }
 
@@ -239,6 +243,21 @@ fn reset(world: &mut World, token: &str, password: &str) -> AuthOutcome {
     }
 }
 
+/// Re-issue the email verification code for a still-pending registration (the first one may have
+/// expired or been lost). Generates a fresh code and restarts the 15-min expiry window, but keeps
+/// the failed-attempt count so a resend can't be used to wipe the brute-force guard.
+fn resend(world: &mut World, reg_id: String) -> AuthOutcome {
+    match world.pending_regs.get_mut(&reg_id) {
+        None => deny("Registration expired — please sign up again"),
+        Some(pr) => {
+            let code = gen_code();
+            pr.email_code = code.clone();
+            pr.created_ms = current_ms();
+            AuthOutcome::ResendResult { email: pr.email.clone(), email_code: code }
+        }
+    }
+}
+
 /// GC expired pending registrations (>15 min) and reset tokens (>1 h). Called periodically by the
 /// sim loop so the transient maps can't grow unbounded.
 pub fn gc(world: &mut World) {
@@ -304,6 +323,9 @@ pub struct LoginBody { ident: String, password: String }
 pub struct ForgotBody { email: String }
 #[derive(Deserialize)]
 pub struct ResetBody { token: String, password: String }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResendBody { reg_id: String }
 
 // ---- HTTP handlers (tokio runtime; never touch the World write lock) ---------------------------
 
@@ -332,6 +354,21 @@ pub async fn register(State(app): State<AppState>, headers: HeaderMap, Json(b): 
             // Same response shape as RegPending; email the existing owner instead of a code.
             crate::email::send_register_exists_notice(&email).await;
             Json(json!({ "ok": true, "regId": reg_id, "phoneRequired": phone_required })).into_response()
+        }
+        AuthOutcome::Error { msg } => bad(&msg),
+        _ => bad("Unexpected response"),
+    }
+}
+
+/// Re-send the email verification code for a pending registration. Same guards as register/verify;
+/// the per-IP limiter plus the client-side cooldown bound abuse (a resend is a cost amplifier).
+pub async fn resend_code(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<ResendBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
+    if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }
+    match call_sim(&app, AuthOp::ResendCode { reg_id: b.reg_id }).await {
+        AuthOutcome::ResendResult { email, email_code } => {
+            crate::email::send_code(&email, &email_code).await;
+            Json(json!({ "ok": true })).into_response()
         }
         AuthOutcome::Error { msg } => bad(&msg),
         _ => bad("Unexpected response"),

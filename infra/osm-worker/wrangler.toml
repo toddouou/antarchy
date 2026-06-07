@@ -1,0 +1,30 @@
+# Cloudflare Worker: lazy-fill OSM raster tile cache backed by R2.
+# Deploy:  wrangler deploy   (from this directory)
+#
+# One-time setup:
+#   wrangler r2 bucket create antarchy-basemap
+#   (then add the custom domain / route below, or bind it in the dashboard)
+
+name = "antarchy-osm-cache"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# antarchy.fun is NOT a Cloudflare zone (snapshots use the managed r2.dev URL), so we serve this
+# Worker on the free *.workers.dev subdomain. If you ever move antarchy.fun onto Cloudflare, set
+# workers_dev = false and uncomment the [[routes]] custom_domain block at the bottom.
+# Live at: https://antarchy-osm-cache.toddlooong.workers.dev  (account subdomain: toddlooong)
+workers_dev = true
+preview_urls = false   # don't expose per-version preview URLs (silences the deploy warning)
+
+# R2 bucket that stores cached OSM tiles. Kept SEPARATE from the game's `antarchy-beta` snapshot
+# bucket so basemap cost/lifecycle is accounted independently.
+[[r2_buckets]]
+binding = "TILES"
+bucket_name = "antarchy-basemap"
+
+# OPTIONAL (only if antarchy.fun is moved onto Cloudflare): serve on a custom hostname instead of
+# workers.dev. Set workers_dev = false above, then uncomment:
+#
+# [[routes]]
+# pattern = "tiles.antarchy.fun"
+# custom_domain = true
