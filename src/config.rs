@@ -2,6 +2,11 @@ use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub const ADMIN_USERNAME: &str = "ADMIN";
 pub const ADMIN_PASSWORD: &str = "admin";
+// Built-in NON-admin test account, always recreated like the admin (fresh start / wipe / snapshot
+// that omits it). Lets the operator log straight into the normal-player experience (full fog-of-war,
+// no god-view) without going through the registration flow. Login: `admin_test` / `test`.
+pub const TEST_USERNAME: &str = "ADMIN_TEST";
+pub const TEST_PASSWORD: &str = "test";
 
 // 8 muted "starter" colors. Brighter/better colors will be purchasable later (not built yet).
 // Keep this in lockstep with the HUES array in public/client.html — same order, same count.
@@ -341,6 +346,26 @@ pub fn snapshot_public_base() -> Option<String> {
     V.get_or_init(|| std::env::var("R2_PUBLIC_BASE").ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())).clone()
+}
+
+/// Dev-only origin fallback for snapshot tiles. With `HIVE_SNAP_LOCAL=1/on/true/yes` the game server
+/// rasterizes territory super-tiles into an in-memory store and serves them itself at `/snap/...`
+/// (see `snapshot::MemorySink` + the `/snap/*` route), so the landing page shows painted territory
+/// **without** R2 wired. **Opt-in** so prod never accidentally serves tiles from the origin (the whole
+/// point of R2 is `$0` egress); prod sets `R2_PUBLIC_BASE` instead and ignores this. Read once.
+pub fn snapshot_local_serve() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| matches!(
+        std::env::var("HIVE_SNAP_LOCAL").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "yes"))
+}
+
+/// Base URL actually advertised to the client for snapshot tiles: the real R2 URL when set (prod),
+/// else an **empty string** (origin-relative `/snap/...`) when the dev origin fallback is on, else
+/// `None` (compositor dormant). An empty-but-`Some` base is still "enabled" — the client keys off
+/// presence, not truthiness.
+pub fn snapshot_client_base() -> Option<String> {
+    snapshot_public_base().or_else(|| snapshot_local_serve().then(String::new))
 }
 
 /// Optional licensed/self-hosted base-map tile URL template (Parallel-B). Sent to the client; when
@@ -700,6 +725,37 @@ pub fn queen_size_for_level(lvl: u16) -> u8 {
     else if lvl >= 10 { 3 }
     else { 2 }
 }
+
+// ---- Level-scaled fog-of-war radii (tiles, measured from nearest owned territory) ----
+// The clear radius (full detail) grows LINEARLY with level so higher-level players see farther.
+// Fog (solid grey) begins after a short feather past the clear edge; the void (client stops
+// fetching tiles/OSM/entities) begins past `void` buffer. See fog.rs + the client void gate.
+// Constants kept here (not Config/sliders yet) for a focused change — trivial to promote later.
+const FOG_CLEAR_BASE:  f32 = 30.0;   // clear radius at level 1
+const FOG_CLEAR_MAX:   f32 = 100.0;  // clear radius at the level cap
+// ONE continuous gradient: fog ramps linearly from `clearR` (full detail) out to `clearR ×
+// FOG_VIEW_MULT`, where it reaches SOLID grey — that outer radius is also the OSM/tile/viewport
+// boundary and the start of the no-fetch void. No short feather + flat band (which read as a muted
+// zone and a hard border); the whole fog zone is the gradient.
+const FOG_VIEW_MULT: f32 = 2.0;      // outer view radius = clearR × this (fog = 100 / solid grey here)
+
+/// Clear-zone radius (tiles) for a queen at `level` — full detail out to here. Linear from
+/// `FOG_CLEAR_BASE` (L1) to `FOG_CLEAR_MAX` at the level cap. `level` clamped to `[1, cap]`.
+pub fn fog_clear_r(level: u16, cfg: &Config) -> f32 {
+    let cap = cfg.xp_level_cap.max(2);
+    let lvl = level.clamp(1, cap);
+    let t = (lvl - 1) as f32 / (cap - 1) as f32;   // 0..=1 across [1, cap]
+    FOG_CLEAR_BASE + (FOG_CLEAR_MAX - FOG_CLEAR_BASE) * t
+}
+
+/// Outer view radius (tiles): fog reaches SOLID grey here — the end of the single clear→grey
+/// gradient. Also the OSM fetch/draw boundary, the server-tile viewport boundary, and the start of
+/// the void: everything stops at the same radius, so the basemap and tiles always share a range
+/// (no map-without-tiles band) and the gradient meets the void grey seamlessly.
+pub fn fog_grad_r(level: u16, cfg: &Config) -> f32 { fog_clear_r(level, cfg) * FOG_VIEW_MULT }
+
+/// Void threshold == the outer view radius (everything beyond is solid grey, fetched/drawn nothing).
+pub fn fog_void_r(level: u16, cfg: &Config) -> f32 { fog_grad_r(level, cfg) }
 
 /// Queen max-HP for a level. HP grows **exponentially** between two anchors: `hp_base` at level 1
 /// and `hp_max` at the level cap (`xp_level_cap`). With the defaults this is 50 HP at L1 →

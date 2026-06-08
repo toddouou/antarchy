@@ -477,7 +477,7 @@ if(location.pathname==='/reset' || new URLSearchParams(location.search).get('tok
 const CELL=5;
 const cv=$('stage'), ctx=cv.getContext('2d');
 let view={x:32768,y:32768,zoom:0.5}, panTarget=null, zoomTarget=0.5;
-let WORLD=null, palette={0:'#ffffff'}, SNAP_BASE='', SNAP_EPOCH=0, SNAP_CHUNK=1024, BASEMAP_URL='';
+let WORLD=null, palette={0:'#ffffff'}, SNAP_BASE='', SNAP_ON=false, SNAP_EPOCH=0, SNAP_CHUNK=1024, BASEMAP_URL='';
 let roster=[], ants=[], metros=[], prevAnt=new Map(), lastAntAt=performance.now(), antDt=0;
 const _td=new TextDecoder();
 const osmCache=new Map(), snapCache=new Map(); const OSM_RETRY=20000, SNAP_RETRY=15000;
@@ -526,7 +526,7 @@ function handle(m){
   switch(m.t){
     case 'logged-in':{ const me=m.me||{};
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY};
-      if(me.snapshotBase!=null) SNAP_BASE=me.snapshotBase;
+      if(me.snapshotBase!=null){ SNAP_BASE=me.snapshotBase; SNAP_ON=true; }  // ''=same-origin (dev /snap)
       if(me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells;
       if(me.epoch!=null){ SNAP_EPOCH=me.epoch; snapCache.clear(); }
       if(me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
@@ -588,7 +588,7 @@ function drawOsm(cp,W,H){ if(!WORLD||!WORLD.geo) return; const geo=WORLD.geo, cl
     const px=(W/2+(a.tx-view.x)*cp)|0, py=(H/2+(a.ty-view.y)*cp)|0;
     const pw=((W/2+(b.tx-view.x)*cp)|0)-px, ph=((H/2+(b.ty-view.y)*cp)|0)-py;
     if(pw>0&&ph>0) ctx.drawImage(e.img,px,py,pw,ph); } }
-function drawSnap(cp,W,H){ if(!SNAP_BASE||!WORLD) return;
+function drawSnap(cp,W,H){ if(!SNAP_ON||!WORLD) return;
   const gx0=view.x-W/(2*cp),gy0=view.y-H/(2*cp),gx1=view.x+W/(2*cp),gy1=view.y+H/(2*cp);
   const cx0=Math.floor(gx0/SNAP_CHUNK),cy0=Math.floor(gy0/SNAP_CHUNK),cx1=Math.floor(gx1/SNAP_CHUNK),cy1=Math.floor(gy1/SNAP_CHUNK);
   if((cx1-cx0+1)*(cy1-cy0+1)>400) return;

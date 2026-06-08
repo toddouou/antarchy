@@ -223,6 +223,35 @@ fn count_files_rec(dir: &std::path::Path) -> u32 {
     n
 }
 
+/// Process-global in-memory tile store backing `MemorySink` + the `/snap/*` origin route. Populated
+/// only when the dev origin fallback (`HIVE_SNAP_LOCAL`) is on; empty otherwise (zero cost in prod).
+pub fn mem_store() -> &'static parking_lot::RwLock<FxHashMap<String, Vec<u8>>> {
+    static MEM: std::sync::OnceLock<parking_lot::RwLock<FxHashMap<String, Vec<u8>>>> =
+        std::sync::OnceLock::new();
+    MEM.get_or_init(|| parking_lot::RwLock::new(FxHashMap::default()))
+}
+
+/// Dev origin sink: keeps rasterized tiles in `mem_store()` so the game server can serve them at
+/// `/snap/...` itself (no R2, no disk). Gated behind `HIVE_SNAP_LOCAL` via `make_sink`.
+pub struct MemorySink;
+impl SnapshotSink for MemorySink {
+    fn put(&self, key: &str, bytes: &[u8]) -> Result<(), String> {
+        mem_store().write().insert(key.to_string(), bytes.to_vec());
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        mem_store().write().remove(key);
+        Ok(())
+    }
+    fn delete_prefix(&self, prefix: &str) -> Result<u32, String> {
+        let mut m = mem_store().write();
+        let before = m.len();
+        m.retain(|k, _| !k.starts_with(prefix));
+        Ok((before - m.len()) as u32)
+    }
+    fn label(&self) -> &'static str { "memory" }
+}
+
 /// Cloudflare R2 sink (S3 API). Owns a current-thread tokio runtime so the sync `put` can block on
 /// the async upload from the writer's OS thread.
 pub struct R2Sink {
@@ -291,7 +320,9 @@ impl SnapshotSink for R2Sink {
 /// Is any sink configured? (Decides whether `main` spawns the snapshot-writer thread at all — so an
 /// unconfigured server pays zero cost.)
 pub fn sink_active() -> bool {
-    (config::snapshot_cdn_enabled() && config::r2_config().is_some()) || config::snapshot_dir().is_some()
+    (config::snapshot_cdn_enabled() && config::r2_config().is_some())
+        || config::snapshot_dir().is_some()
+        || config::snapshot_local_serve()
 }
 
 /// Build the active sink, preferring R2 (when `SNAPSHOT_CDN=on` + creds), else local-disk
@@ -306,6 +337,10 @@ pub fn make_sink() -> Box<dyn SnapshotSink> {
         } else {
             eprintln!("[snapshot] SNAPSHOT_CDN set but R2 creds incomplete; falling back");
         }
+    }
+    if config::snapshot_local_serve() {
+        println!("[snapshot] in-memory origin sink (HIVE_SNAP_LOCAL) — tiles served at /snap/*");
+        return Box::new(MemorySink);
     }
     if let Some(dir) = config::snapshot_dir() {
         println!("[snapshot] local-disk sink at {dir}");

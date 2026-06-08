@@ -118,7 +118,6 @@
   .wk-ant-bar { flex:1; height:6px; background:var(--bg); border:1px solid var(--line); }
   .wk-ant-fill { height:100%; background:var(--grn); }
   .wk-ant.brute .wk-ant-fill { background:var(--yel); }
-  .wk-ant-t { color:var(--dim); width:44px; text-align:right; }
 
   /* Leaderboard extras (region col, tabs, expand, my-rank pin) */
   .lb-reg { display:block; font-family:'Press Start 2P',monospace; font-size:5px; color:var(--blu); margin-top:2px; }
@@ -255,6 +254,17 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .ovr { position:absolute; pointer-events:none; font-family:'Press Start 2P',monospace; font-size:8px; }
   .coord { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--red); }
   .zooml { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:4px; }
+  /* Unit-laddered time + muted location lines: most-significant unit brightest, rest dimmer.
+     Opacity multiplies the inherited colour, so these reuse across header/sidebar/location. */
+  .t0 { opacity:1; } .t1 { opacity:.72; } .t2 { opacity:.5; } .tx { opacity:.45; }
+  /* Escalating big-number glow (grand score + tiles): brighter -> sparkle -> super-mario rainbow
+     as the value climbs toward a billion. currentColor keeps the glow on-theme per element. */
+  .bg1 { text-shadow:0 0 4px currentColor; filter:brightness(1.12); }
+  .bg2 { animation:bigSparkle 1.4s ease-in-out infinite; }
+  .bg3 { animation:bigSparkle .85s ease-in-out infinite; filter:brightness(1.25); }
+  .bg4 { animation:bigRainbow 2.2s linear infinite; text-shadow:0 0 8px currentColor,0 0 16px currentColor; }
+  @keyframes bigSparkle { 0%,100%{ text-shadow:0 0 3px currentColor; } 50%{ text-shadow:0 0 9px #fff,0 0 4px currentColor; } }
+  @keyframes bigRainbow { 0%{ filter:hue-rotate(0deg) saturate(1.5) brightness(1.2); } 100%{ filter:hue-rotate(360deg) saturate(1.5) brightness(1.2); } }
   .place-prompt { bottom:28px; left:50%; transform:translateX(-50%); background:var(--red);
     color:#fff; border:2px solid var(--ink); padding:12px 20px;
     font-family:'Press Start 2P',monospace; font-size:10px;
@@ -1376,6 +1386,14 @@ const tileCtx=tileCanvas.getContext('2d',{alpha:true});
 // LOD overview offscreen (1px-per-super-cell) for zoomed-out territory pyramid frames
 const lodCanvas=document.createElement('canvas');
 const lodCtx=lodCanvas.getContext('2d',{alpha:true});
+// Fog-of-war grey veil offscreens (1px/tile) — drawn OVER the basemap, UNDER territory, so the fog
+// zone reads as solid grey (no OSM). Built in lockstep with the tile/LOD caches from the fog field.
+const veilCanvas=document.createElement('canvas');
+const veilCtx=veilCanvas.getContext('2d',{alpha:true});
+let veilImg=null;
+const lodVeilCanvas=document.createElement('canvas');
+const lodVeilCtx=lodVeilCanvas.getContext('2d',{alpha:true});
+let lodVeilImg=null;
 let tileCachePlacing=false, tileCacheMapVis=true;
 let tileCacheDirty=false;
 // Built overlay region (world coords + size in tiles) backing the persistent 1:1 tile canvas.
@@ -1394,11 +1412,29 @@ let tileCache=null;  // Uint32Array(TILE_CACHE_W*TILE_CACHE_H) of player ids, al
 let fogCache=null;   // Uint8Array(...)
 let cacheOriX=0, cacheOriY=0; // world coord of cache[0,0]
 let mapVisible=true;
+// ===== Level-scaled fog-of-war (server-provided via `me`; see network.rs build_player_info) =====
+// All radii in world tiles, measured from the player's territory (ownerBounds, or the queen until
+// any tile is owned). clear = full detail; loadOsmR = basemap fetch boundary; voidR = beyond here we
+// fetch NOTHING (server tiles, OSM, snapshot) — just paint grey. Defaults match L1 until `me` lands.
+let loadClearR=30, loadOsmR=38, loadVoidR=62, ownerBounds=null;
+let inVoid=false, tabHidden=false, _viewSuspended=false; // view-suspend reconciliation (void + hidden tab)
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
 // Leaderboard
 let lbPrevTiles={};
-function fmtLbTiles(n){if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(0)+'K';return String(n);}
+// Big-number formatting: 1234567 -> "1.23 M". <1000 stays a plain integer. 2 decimals give the
+// headline coin-counter look (150.23 K, 1.25 B) and stop million-order numbers ticking illegibly.
+function fmtBig(n){ n=+n||0; if(n<1e3)return String(n|0);
+  const u=n>=1e9?['B',1e9]:n>=1e6?['M',1e6]:['K',1e3];
+  return (n/u[1]).toFixed(2)+' '+u[0]; }
+const fmtLbTiles=fmtBig;   // leaderboard tiles/score share the abbreviation (no glow there)
+// Glow tier 0..4 (0 plain .. 4 super-mario rainbow), keyed to how close a value is to a billion.
+function bigTier(n){ return n>=1e9?4 : n>=1e8?3 : n>=1e7?2 : n>=1e5?1 : 0; }
+// Set a headline number's text + escalating-glow class. Swaps the bgN class ONLY when the tier
+// changes, so the CSS animation isn't restarted on every ~1 Hz HUD refresh.
+function setBig(el,n,glow){ if(!el)return; el.textContent=fmtBig(n);
+  if(!glow)return; const t=bigTier(+n||0);
+  if(el._bt!==t){ el.className=(el.className.replace(/\bbg[0-4]\b/g,'').trim()+' bg'+t).trim(); el._bt=t; } }
 // OSM tile cache
 const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
 // Parallel-B: optional licensed base-map URL template (server-provided via `logged-in`). When set it
@@ -1411,7 +1447,7 @@ function osmTileUrl(z,x,y){
 // Phase-6: R2 snapshot-tile base layer. SNAP_BASE = public R2 URL (server-provided); SNAP_EPOCH =
 // generation tag (cache-bust on wipe). Empty SNAP_BASE → the whole compositor stays dormant (legacy
 // WS-keyframe path only). Tiles are keyed by GAME chunk (cx,cy)=(x>>8,y>>8): snap/{epoch}/0/{cx}/{cy}.png
-let SNAP_BASE='', SNAP_EPOCH=0;
+let SNAP_BASE='', SNAP_ON=false, SNAP_EPOCH=0;  // SNAP_ON: layer enabled (''=same-origin /snap dev path)
 const snapCache=new Map();
 // SNAP_CHUNK = super-tile span in game cells (server-provided via me.snapTileCells = S*256; lever B).
 // `let`, not `const`: the server can serve 1024px (S=4) tiles. Fallback 256 = back-compat / un-set.
@@ -1458,10 +1494,13 @@ function toRGB(hex) {
   if (h.length===3) h=h.split('').map(c=>c+c).join('');
   return rgbCache[hex]=[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
 }
-// Fog tints territory toward a neutral grey (not transparency alone) so fogged enemy land reads
-// as a grey haze instead of fading into the basemap. Tunable in one place.
-const FOG_GREY=[120,124,132];   // tiles blend toward this grey under fog
-const FOG_QUEEN=[88,92,100];    // queens blend toward this grey under fog
+// Fog-of-war palette. A cool, desaturated slate reads as atmospheric fog (not a flat grey
+// rectangle). Territory/units blend toward it under fog; the basemap veil + void fill share it so
+// the clear→fog→void transition is one seamless haze. Tunable in one place.
+const FOG_GREY=[84,91,107];     // tiles blend toward this fog tone under fog
+const FOG_QUEEN=[66,72,86];     // queens blend toward this (a touch darker) under fog
+const VOID_GREY=[84,91,107];    // solid fill for the fog/void zones (matches FOG_GREY → seamless)
+const VOID_GREY_CSS=`rgb(${VOID_GREY[0]},${VOID_GREY[1]},${VOID_GREY[2]})`;
 function fogBlend(hex, t) {
   const [r,g,b]=toRGB(hex);
   return `rgb(${(r*(1-t)+FOG_QUEEN[0]*t)|0},${(g*(1-t)+FOG_QUEEN[1]*t)|0},${(b*(1-t)+FOG_QUEEN[2]*t)|0})`;
@@ -1516,6 +1555,16 @@ function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap
   // was the main source of pan jank. fill(0) is a fast memset that clears the previous paint.
   if (!tileImg) tileImg = tileCtx.createImageData(camW, camH);
   const d = tileImg.data; d.fill(0);
+  // Grey veil (built in the SAME loop): VOID_GREY at alpha = fog/100, painted OVER the basemap and
+  // UNDER territory so the fog zone reads as solid grey (no OSM). Unseen cells default to fog 100 →
+  // opaque, which is exactly what we want for the void inside the cache window. Off while browsing
+  // the planet (placement/relocate) or with the basemap hidden — the canvas then stays transparent.
+  const veilOn = showMap && !worldBrowsable();
+  if (veilCanvas.width !== camW || veilCanvas.height !== camH) {
+    veilCanvas.width = camW; veilCanvas.height = camH; veilImg = null;
+  }
+  if (!veilImg) veilImg = veilCtx.createImageData(camW, camH);
+  const vd = veilImg.data; vd.fill(0);
   for (let row=0; row<camH; row++) {
     const wy = camY0 + row;
     if (wy < 0 || wy >= WORLD.h) continue;
@@ -1528,16 +1577,22 @@ function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap
       const dx = wx - cacheOriX;
       if (dx < 0 || dx >= TILE_CACHE_W) continue;
       const ci = cRow + dx;
+      const fog = fogCache[ci];
+      const o = (row*camW+col)*4;
+      if (veilOn) {   // constant fog RGB, alpha=fog (capped) → smooth fade + remembered terrain
+        vd[o]=VOID_GREY[0]; vd[o+1]=VOID_GREY[1]; vd[o+2]=VOID_GREY[2];
+        vd[o+3] = fog<=0 ? 0 : (((fog/100)*255)|0);   // full opacity at fog 100 → solid grey edge
+      }
       const t = tileCache[ci];
       if (t === 0) continue;
-      const fog = fogCache[ci];
       if (fog >= 100) continue;
       const isOwn = t === myId;
       const baseAlpha = placing ? (isOwn?230:102) : (isOwn?255:(showMap?102:255));
-      fogTile(d, (row*camW+col)*4, toRGB(palette[t]||'#9b3027'), baseAlpha, fog);
+      fogTile(d, o, toRGB(palette[t]||'#9b3027'), baseAlpha, fog);
     }
   }
   tileCtx.putImageData(tileImg, 0, 0);
+  veilCtx.putImageData(veilImg, 0, 0);
   tileCachePlacing = placing;
   tileCacheMapVis = showMap;
   tileCacheDirty = false;
@@ -1809,7 +1864,9 @@ document.addEventListener('visibilitychange', ()=>{
   if (!me) return; // not logged in yet → nothing to pause; sending pre-login would draw a "Not
                    // logged in" err. On mobile visibilitychange fires constantly during the signup
                    // keyboard/app-switch churn, and that stray err used to bounce users to login.
-  send({ t: document.hidden ? 'view-pause' : 'view-resume' });
+  // Reconcile with the void gate so leaving the void can't resume a hidden tab (and vice-versa).
+  tabHidden = document.hidden;
+  setViewSuspended();
 });
 
 /* ===================================================================
@@ -1977,13 +2034,14 @@ function handle(msg) {
     case 'event': toast(msg.msg); admPushLog(msg.msg); break;
     case 'logged-in':
       me=msg.me;
+      applyFowFromMe();   // level-scaled fog-of-war radii + territory AABB
       document.body.classList.add('booted');   // cookie auth resolved → drop the connecting splash
       sessionStorage.setItem('hive-active','1');
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
       // ∥B base-map + Phase-6 R2 snapshot config (static block; empty → features stay dormant).
       if (me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
-      if (me.snapshotBase!=null) SNAP_BASE=me.snapshotBase;
+      if (me.snapshotBase!=null) { SNAP_BASE=me.snapshotBase; SNAP_ON=true; }
       if (me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells; // lever B: super-tile span (S*256)
       if (me.epoch!=null && me.epoch!==SNAP_EPOCH) { SNAP_EPOCH=me.epoch; snapCache.clear(); }
       waterCache.clear();
@@ -2029,6 +2087,7 @@ function handle(msg) {
       break;
     case 'me':
       me={...me,...msg};
+      applyFowFromMe();   // FoW radii / territory AABB grow live as the player levels + paints
       // Phase-6: epoch flips on a world wipe → cache-bust the snapshot tiles (double-buffer).
       if (msg.epoch!=null && msg.epoch!==SNAP_EPOCH) { SNAP_EPOCH=msg.epoch; snapCache.clear(); }
       updateHUD();
@@ -2051,16 +2110,20 @@ function handle(msg) {
     case 'welcome-back': showWelcomeBack(msg); break;
     case 'queen-placed':
       _queenPlaceCooldown = false;
+      relocating=false;   // a fresh spawn confirmed — clear any stale relocate intent
       knownNames={};   // fresh life: discard any enemy identities carried over
       $('death-screen').classList.remove('vis');
       mode='idle'; cvs.classList.remove('placing');
       stopForbiddenPoll(); hideSpawnScreen();
       panLocked=false; view.x=msg.x+1; view.y=msg.y+1;
       view.zoom=zoomTarget=1.0;
+      clampView();   // pull to the level zoom-out cap so the loadable region fills the screen (not a
+                     // tiny clear blob lost in a sea of grey) — matches the reconnect path
       lastViewKey=null; pendingViewKey=null; pushView(true);
       break;
     case 'queen-dead':
       AudioEngine.queenShriek(0, 1);
+      relocating=false;   // queen gone → any in-flight relocate is moot; next placement is a respawn
       stopForbiddenPoll(); hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
       clearInspect();
       knownNames={};   // a new life starts blind — re-identify enemies by seeing their queens again
@@ -2077,6 +2140,7 @@ function handle(msg) {
       break;
     case 'world-wiped':
       toast('[ADMIN] WORLD WIPED');
+      relocating=false;
       me={...me, queen:null, stats:{tiles:0,secs:0,kills:0,score:0}, antsAvail:5};
       view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
       view.zoom=zoomTarget=1.0;
@@ -2096,6 +2160,18 @@ function handle(msg) {
       // Relocate teleports the queen server-side; update our cached position immediately so
       // CENTER QUEEN (and the keybind) fly to the new spot without waiting for the ~1 Hz `me`.
       if (msg.item==='relocate' && me?.queen && msg.x!=null) { me.queen.x=msg.x; me.queen.y=msg.y; }
+      // Finalize the relocate placement screen (mirrors 'queen-placed'): exit the placement flow,
+      // drop pan-lock, recenter on the new queen, and refresh the viewport immediately.
+      if (msg.item==='relocate' && relocating) {
+        relocating=false;
+        mode='idle'; cvs.classList.remove('placing');
+        stopForbiddenPoll(); hideSpawnScreen();
+        panLocked=false;
+        if (msg.x!=null) { view.x=msg.x+1; view.y=msg.y+1; }
+        view.zoom=zoomTarget=1.0;
+        ownerBounds=null;   // bounds will re-arrive on the next `me`; anchor on the queen meanwhile
+        lastViewKey=null; pendingViewKey=null; clampView(); pushView(true);
+      }
       break;
     case 'ant-placed':
       AudioEngine.plop(); break;
@@ -2200,7 +2276,7 @@ function lbFullRow(e, rank){
     <span class="lbw-sw" style="background:${safeColor(e.color)}"></span>
     <span class="lbw-name">${esc(e.name)}${pbadge}</span>
     <span class="lbw-reg">${esc(e.region||'—')}</span>
-    <span class="lbw-c">${(e.score||0).toLocaleString()}</span>
+    <span class="lbw-c">${fmtBig(e.score||0)}</span>
     <span class="lbw-c">LV${e.level}</span>
     <span class="lbw-c">${e.kills||0}</span>
     <span class="lbw-c">${kd.toFixed(1)}</span>
@@ -2219,7 +2295,7 @@ function renderLbWindow(){
   html+='</div>';
   if (lbRegionFilter){
     const hh=regionHolders.find(x=>x.name===lbRegionFilter);
-    if (hh) html+=`<div class="lb-sub">${hh.holder?('HELD BY <span style="color:'+safeColor(hh.color,'var(--ink)')+'">'+esc(hh.holder)+'</span> · '+(hh.tiles||0).toLocaleString()+' TILES'):'UNCLAIMED'}</div>`;
+    if (hh) html+=`<div class="lb-sub">${hh.holder?('HELD BY <span style="color:'+safeColor(hh.color,'var(--ink)')+'">'+esc(hh.holder)+'</span> · '+fmtBig(hh.tiles||0)+' TILES'):'UNCLAIMED'}</div>`;
   }
   html+='<div class="lbw-head"><span class="lbw-rank">#</span><span class="lbw-sw"></span><span class="lbw-name">NAME</span><span class="lbw-reg">REGION</span><span class="lbw-c">SCORE</span><span class="lbw-c">LV</span><span class="lbw-c">K</span><span class="lbw-c">KD</span></div>';
   html+='<div class="lbw-list">';
@@ -2285,15 +2361,15 @@ function renderDiscoveryWindow(){
     <div class="disc-col user"><h4>◆ USER (ACCOUNT)</h4>
       <div class="disc-stat"><span>QUEENS FIELDED</span><b>${me.queensFielded||0}</b></div>
       <div class="disc-stat"><span>LIFETIME KILLS</span><b>${me.lifetimeKills||0}</b></div>
-      <div class="disc-stat"><span>PEAK TILES EVER</span><b>${(me.lifetimePeakTiles||0).toLocaleString()}</b></div>
+      <div class="disc-stat"><span>PEAK TILES EVER</span><b>${fmtBig(me.lifetimePeakTiles||0)}</b></div>
       <div class="disc-stat"><span>PRESTIGE</span><b>P${me.prestige||0}</b></div>
     </div>
     <div class="disc-col queen"><h4>♛ THIS QUEEN</h4>
       <div class="disc-stat"><span>REGION</span><b>${me.region||'—'}</b></div>
-      <div class="disc-stat"><span>TILES</span><b>${(st.tiles||0).toLocaleString()}</b></div>
+      <div class="disc-stat"><span>TILES</span><b>${fmtBig(st.tiles||0)}</b></div>
       <div class="disc-stat"><span>KILLS</span><b>${st.kills||0}</b></div>
       <div class="disc-stat"><span>LEVEL</span><b>${q?q.level:'—'}</b></div>
-      <div class="disc-stat"><span>TIME ALIVE</span><b>${fmtTime(st.secs||0)}</b></div>
+      <div class="disc-stat"><span>TIME ALIVE</span><b>${fmtDur(st.secs||0)}</b></div>
     </div>
   </div>`;
   el.innerHTML=html;
@@ -2469,11 +2545,18 @@ function showWelcomeBack(m){
 function closeWelcome(){ AudioEngine.click(); $('welcome-screen').classList.remove('vis'); }
 $('wb-continue').onclick=closeWelcome;
 
-function fmtTime(s) { return `${(s/60)|0}:${String(s%60).padStart(2,'0')}`; }
-function fmtUptime(ms, withSecs) {
-  const u=(ms/1000)|0, h=(u/3600)|0, m=((u%3600)/60)|0, s=u%60;
-  return withSecs ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
-                  : `${h}h${String(m).padStart(2,'0')}`;
+// Duration -> unit-laddered HTML. Most-significant present unit is brightest; each smaller unit is
+// dimmer (.t0/.t1/.t2) so the eye reads the magnitude first. Ladder: 42s / 3m 04s / 2h 05m 12s /
+// 1d 04h 05m. maxUnits caps visible units (default 3) so seconds stop twitching past an hour and
+// tight slots (header) stay compact. Numeric-only output -> safe to assign via innerHTML.
+function fmtDur(secs, maxUnits=3) {
+  secs=Math.max(0,secs|0);
+  const all=[[(secs/86400)|0,'d'],[((secs%86400)/3600)|0,'h'],[((secs%3600)/60)|0,'m'],[secs%60,'s']];
+  let i=0; while(i<3 && all[i][0]===0) i++;            // drop leading zero units (keep at least 's')
+  return all.slice(i, i+maxUnits).map(([v,u],j)=>{
+    const val = j===0 ? String(v) : String(v).padStart(2,'0');
+    return `<span class="t${Math.min(j,2)}">${val}</span><span class="tx">${u}</span>`;
+  }).join(' ');
 }
 // Server-wide stats push (~1 Hz) → header bar + admin status cards.
 function applyServerStats(s) {
@@ -2482,13 +2565,13 @@ function applyServerStats(s) {
   $('hdr-queens').textContent=s.queens;
   $('hdr-tick').textContent=(s.tick||0).toLocaleString();
   $('hdr-tps').textContent=s.tps;
-  $('hdr-uptime').textContent=fmtUptime(s.uptimeMs||0,false);
+  $('hdr-uptime').innerHTML=fmtDur((s.uptimeMs||0)/1000);
   if ($('adm-online')) $('adm-online').textContent=s.online;
   if ($('adm-queens')) $('adm-queens').textContent=s.queens;
   if ($('adm-ants'))   $('adm-ants').textContent=(s.ants||0).toLocaleString();
   if ($('adm-tick'))   $('adm-tick').textContent=(s.tick||0).toLocaleString();
   if ($('adm-tps'))    $('adm-tps').textContent=s.tps;
-  if ($('adm-uptime')) $('adm-uptime').textContent=fmtUptime(s.uptimeMs||0,true);
+  if ($('adm-uptime')) $('adm-uptime').innerHTML=fmtDur((s.uptimeMs||0)/1000,4);
 }
 // CS1.6-style killfeed: prepend (newest on top), cap, fade out after a TTL.
 const KF_MAX=6, KF_TTL=6000;
@@ -2521,13 +2604,13 @@ function updateHUD() {
   const q=me.queen, st=me.stats||{};
   const tiles=st.tiles||0, secs=st.secs||0, kills=st.kills||0, score=st.score||0;
   // Header now shows SERVER stats (applyServerStats); personal score lives in the sidebar.
-  $('score-big').textContent=score.toLocaleString();
+  setBig($('score-big'), score, true);
   if ($('hdr-region-name')) $('hdr-region-name').textContent=me.region||'—';
-  $('sc-tiles').textContent=tiles.toLocaleString();
-  $('sc-time').textContent=fmtTime(secs);
+  setBig($('sc-tiles'), tiles, true);
+  $('sc-time').innerHTML=fmtDur(secs);
   $('sc-kills').textContent=kills;
-  $('s-life').textContent=fmtTime(secs);
-  $('s-tiles').textContent=tiles.toLocaleString();
+  $('s-life').innerHTML=fmtDur(secs);
+  setBig($('s-tiles'), tiles, true);
   $('s-army').textContent=me.army||0;
   $('s-kills').textContent=kills;
   $('s-prestige').textContent='P'+(me.prestige||0);
@@ -2561,8 +2644,7 @@ function updateHUD() {
   if ($('wk-list-count')) $('wk-list-count').textContent=army;
   updateDeployBtn();
   const total=me.nextRefillMs||0;
-  const rh=(total/3600000)|0, rm=((total%3600000)/60000)|0, rs=((total%60000)/1000)|0;
-  $('refill-timer').textContent=`${String(rh).padStart(2,'0')}:${String(rm).padStart(2,'0')}:${String(rs).padStart(2,'0')}`;
+  $('refill-timer').innerHTML=fmtDur(total/1000);
   // ---- Progressive unlock visibility (desktop header + mobile nav + sidebar; one gate config) ----
   const shopOn=isUnlocked('shop');
   if ($('hbtn-shop')) $('hbtn-shop').style.display = shopOn?'':'none';
@@ -2579,32 +2661,83 @@ const cvs=$('map');
 const ctx=cvs.getContext('2d',{alpha:false});
 const CELL=4;
 function resize() { const r=cvs.getBoundingClientRect(); cvs.width=r.width; cvs.height=r.height; }
-function clampView() {
-  // Min zoom: viewport must not exceed world bounds.
-  let minZoom = Math.max(cvs.width / (CELL * WORLD.w), cvs.height / (CELL * WORLD.h), 0.0001);
 
-  // HOME REGION (Part 1): once a queen is placed, restrict the camera to a box of half-extent
-  // `me.panRadius` (tiles, server-grown to enclose the player's territory) centred on the queen.
-  // This keeps players near their own region — and bounds the basemap tile universe so the self-
-  // hosted OSM cache stays inside R2's free tier. Skipped during spawn/placement (`panLocked`) so
-  // geolocation can still find the player's real area.
-  let bx0 = 0, by0 = 0, bx1 = WORLD.w, by1 = WORLD.h;
-  if (!panLocked && me && me.queen && !me.queen.dead && me.panRadius > 0) {
-    const R = me.panRadius;
-    bx0 = Math.max(0, me.queen.x - R); by0 = Math.max(0, me.queen.y - R);
-    bx1 = Math.min(WORLD.w, me.queen.x + R); by1 = Math.min(WORLD.h, me.queen.y + R);
-    // Can't zoom out past the region box.
-    minZoom = Math.max(minZoom, cvs.width / (CELL * (bx1 - bx0)), cvs.height / (CELL * (by1 - by0)));
+// ===== Fog-of-war helpers =====
+// While placing / relocating / queenless the whole planet is browsable (the one full-load moment):
+// no void gate, no veil, free zoom to the world. Otherwise the three-zone fog + load gating apply.
+function worldBrowsable(){ return mode==='place-queen' || panLocked || !me || !me.queen || me.queen.dead; }
+// Territory bounding box (tiles) inflated by `pad`, clamped to the world. Falls back to the queen
+// (then the camera) before any territory/bounds are known. Anchors all three fog zones + the gates.
+function territoryAABB(pad){
+  let x0,y0,x1,y1;
+  if (ownerBounds){ x0=ownerBounds[0]; y0=ownerBounds[1]; x1=ownerBounds[2]; y1=ownerBounds[3]; }
+  else if (me && me.queen && !me.queen.dead){ x0=x1=me.queen.x; y0=y1=me.queen.y; }
+  else { x0=x1=view.x; y0=y1=view.y; }
+  return { x0:Math.max(0,x0-pad), y0:Math.max(0,y0-pad),
+           x1:Math.min(WORLD.w,x1+pad), y1:Math.min(WORLD.h,y1+pad) };
+}
+// Suspend server viewport frames when either the tab is hidden OR the camera is fully in the void.
+// Reuses the existing view-pause/resume path (server `paused_views`); deduped so we send only on change.
+function setViewSuspended(){
+  const want = tabHidden || inVoid;
+  if (want===_viewSuspended) return;
+  _viewSuspended=want;
+  if (ws && ws.readyState===1) send({ t: want ? 'view-pause' : 'view-resume' });
+}
+// Pull the level-scaled FoW radii + territory AABB out of a fresh `me`/`logged-in` payload.
+function applyFowFromMe(){
+  if (!me) return;
+  if (me.clearR!=null)   loadClearR = me.clearR;
+  if (me.loadOsmR!=null) loadOsmR   = me.loadOsmR;
+  if (me.voidR!=null)    loadVoidR  = me.voidR;
+  if ('ownerBounds' in me) ownerBounds = me.ownerBounds; // [x0,y0,x1,y1] or null
+}
+
+function clampView() {
+  // Min zoom: the viewport may never exceed the world bounds.
+  const worldFit = Math.max(cvs.width / (CELL * WORLD.w), cvs.height / (CELL * WORLD.h), 0.0001);
+  let minZoom = worldFit;
+
+  // ZOOM-OUT CAP (FoW): cap how far you can zoom out. Two components, take the larger. Panning stays
+  // FREE (you scroll into fog with friction; see `panFriction`). Skipped while browsable
+  // (placement/relocate) so the player can frame the whole planet.
+  if (!worldBrowsable()) {
+    // LEVEL component — how far "into space" you may pull back, growing with queen level. Driven by
+    // the server-sent loadVoidR (linear in level: ~60 @L1 → ~200 @L100). Power curve (exp > 1) so the
+    // zoom-out ACCELERATES at high level — tuned to ~500 tiles @L1, ~3,000 @L100. Robust to fog-curve
+    // tweaks (it just re-scales with whatever loadVoidR the server sends).
+    const levelSpan = 1.13 * Math.pow(loadVoidR, 1.49);
+    // TERRITORY component — let a big empire pull back to frame all its land plus the fog halo, but
+    // cap it at 2× the level span so a sprawling empire never becomes an unusable speck (pan past that).
+    const terrSpan = ownerBounds
+      ? Math.max(ownerBounds[2] - ownerBounds[0], ownerBounds[3] - ownerBounds[1]) + 2 * loadVoidR
+      : 0;
+    const maxSpan = Math.max(levelSpan, Math.min(terrSpan, levelSpan * 2), 240);   // tiles visible at max zoom-out
+    minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
   }
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
 
-  // Clamp the camera centre so the viewport stays inside the box (centre on it if the box is
-  // smaller than the viewport on that axis).
+  // FREE PANNING: clamp the camera centre only to the world edges (centre on an axis the viewport
+  // overflows). Roaming far from territory just shows fog + fetches nothing (friction discourages it).
   const cp = CELL * view.zoom;
   const halfW = cvs.width / (2*cp), halfH = cvs.height / (2*cp);
-  view.x = (2*halfW >= bx1 - bx0) ? (bx0 + bx1) / 2 : clamp(view.x, bx0 + halfW, bx1 - halfW);
-  view.y = (2*halfH >= by1 - by0) ? (by0 + by1) / 2 : clamp(view.y, by0 + halfH, by1 - halfH);
+  view.x = (2*halfW >= WORLD.w) ? WORLD.w/2 : clamp(view.x, halfW, WORLD.w - halfW);
+  view.y = (2*halfH >= WORLD.h) ? WORLD.h/2 : clamp(view.y, halfH, WORLD.h - halfH);
+}
+
+// Pan resistance: full speed (1) while the clear/loaded region is under the camera, ramping down to a
+// heavy crawl deep in the fog — so you CAN scroll into the grey, but it drags, discouraging it
+// without a hard wall. Manual drag/keyboard only (deliberate fly-to via panTarget is never slowed).
+function panFriction() {
+  if (worldBrowsable()) return 1;
+  const b = territoryAABB(loadOsmR);
+  const dx = Math.max(b.x0 - view.x, 0, view.x - b.x1);
+  const dy = Math.max(b.y0 - view.y, 0, view.y - b.y1);
+  const dist = Math.hypot(dx, dy);                 // tiles the camera centre is past the loaded edge
+  if (dist <= 0) return 1;
+  const ramp = Math.max(loadVoidR, 60) * 3;         // distance over which resistance builds
+  return clamp(1 - dist / ramp, 0.12, 1);
 }
 window.addEventListener('resize', () => { resize(); clampView(); });
 resize();
@@ -2628,16 +2761,31 @@ function _computeViewBox() {
   const x0=Math.floor(view.x-fw/2), y0=Math.floor(view.y-fh/2);
   return {x0, y0, x1:x0+fw, y1:y0+fh};
 }
+// Apply the void load-gate to the requested box. When browsing the planet (placement/relocate),
+// pass it through untouched. Otherwise clamp it to the loadable region (territory + voidR): a box
+// fully outside means the camera is in the VOID → pause server frames (reuse view-pause) and request
+// nothing; a partial overlap is trimmed so the server never computes void cells. Also drives the
+// `inVoid` flag the renderer uses to switch to a solid-grey background.
+function _gatedViewBox() {
+  const b=_computeViewBox(); if (!b) return null;
+  if (worldBrowsable()) { inVoid=false; setViewSuspended(); return b; }
+  const a=territoryAABB(loadVoidR);
+  const x0=Math.max(b.x0, Math.floor(a.x0)), y0=Math.max(b.y0, Math.floor(a.y0));
+  const x1=Math.min(b.x1, Math.ceil(a.x1)),  y1=Math.min(b.y1, Math.ceil(a.y1));
+  if (x1<=x0 || y1<=y0) { inVoid=true; setViewSuspended(); return null; } // fully in the void
+  inVoid=false; setViewSuspended();
+  return {x0, y0, x1, y1};
+}
 function _flushView() {
   viewSendTimer=null; pendingViewKey=null;
-  const b=_computeViewBox(); if (!b) return;
+  const b=_gatedViewBox(); if (!b) return;
   const key=`${b.x0},${b.y0},${b.x1},${b.y1}`;
   if (key===lastViewKey) return;
   lastViewKey=key; send({t:'view-set', x0:b.x0, y0:b.y0, x1:b.x1, y1:b.y1});
 }
 // immediate=true bypasses debounce (use after teleport/queen-placed)
 function pushView(immediate=false) {
-  const b=_computeViewBox(); if (!b) return;
+  const b=_gatedViewBox(); if (!b) return;
   const key=`${b.x0},${b.y0},${b.x1},${b.y1}`;
   if (key===lastViewKey || key===pendingViewKey) return; // already sent or already queued
   if (viewSendTimer) clearTimeout(viewSendTimer);
@@ -2709,9 +2857,9 @@ function showInspectBox() {
 // ---- Death screen: queen-life summary + prestige + redeploy ----
 function showDeathScreen(m){
   m=m||{};
-  $('ds-tiles').textContent=(m.peakTiles||0).toLocaleString();
+  setBig($('ds-tiles'), m.peakTiles||0, true);
   $('ds-kills').textContent=m.kills||0;
-  $('ds-time').textContent=fmtTime(m.secsAlive||0);
+  $('ds-time').innerHTML=fmtDur(m.secsAlive||0);
   $('ds-level').textContent=m.level||1;
   $('ds-region').textContent=m.region||'—';
   $('ds-credits').textContent=(m.credits||0).toLocaleString();
@@ -2721,6 +2869,7 @@ function showDeathScreen(m){
 }
 function redeployQueen(){
   AudioEngine.click();
+  relocating=false;   // death redeploy is a fresh spawn, never a relocate
   $('death-screen').classList.remove('vis');
   view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
   view.zoom=zoomTarget=1.0;
@@ -2877,10 +3026,32 @@ function drawOsmTiles(cp, canvasW, canvasH) {
   const gx1=view.x+canvasW/(2*cp), gy1=view.y+canvasH/(2*cp);
   const tl=gameToOsmTile(gx0, gy0, n, geo, cosLat);
   const br=gameToOsmTile(gx1, gy1, n, geo, cosLat);
+  // FOG-OF-WAR GATES (real FoW): we FETCH new basemap tiles only inside the clear zone
+  // (`loadOsmR`), but we still DRAW already-cached tiles out to the void edge (`loadVoidR`) so the
+  // explored frontier renders as faintly-remembered terrain under the fog veil instead of flat grey.
+  // Beyond `loadVoidR` nothing is drawn (the fog/void background shows). Whole map while browsing.
+  const osmTileRange=(radius)=>{
+    const a=territoryAABB(radius);
+    const c0=gameToOsmTile(a.x0,a.y0,n,geo,cosLat), c1=gameToOsmTile(a.x1,a.y1,n,geo,cosLat);
+    return [Math.min(c0.x,c1.x)-1, Math.max(c0.x,c1.x)+1, Math.min(c0.y,c1.y)-1, Math.max(c0.y,c1.y)+1];
+  };
+  let fMinX=-Infinity,fMaxX=Infinity,fMinY=-Infinity,fMaxY=Infinity;   // fetch window (clear zone)
+  let dMinX=-Infinity,dMaxX=Infinity,dMinY=-Infinity,dMaxY=Infinity;   // draw window (memory frontier)
+  if (!worldBrowsable()) {
+    [fMinX,fMaxX,fMinY,fMaxY]=osmTileRange(loadOsmR);
+    [dMinX,dMaxX,dMinY,dMaxY]=osmTileRange(loadVoidR);
+  }
+  const inFetch=(ox,oy)=> ox>=fMinX&&ox<=fMaxX&&oy>=fMinY&&oy<=fMaxY;
+  const inDraw =(ox,oy)=> ox>=dMinX&&ox<=dMaxX&&oy>=dMinY&&oy<=dMaxY;
   for (let ox=tl.x-1; ox<=br.x+1; ox++) {
     for (let oy=tl.y-1; oy<=br.y+1; oy++) {
       if (ox<0||oy<0||ox>=n||oy>=n) continue;
-      const e=getOsmTile(osmZ, ox, oy);
+      if (!inDraw(ox,oy)) continue;                  // past the memory frontier → fog background
+      const cached=osmCache.get(`${osmZ}/${ox}/${oy}`);
+      let e;
+      if (cached && cached.loaded) e=cached;          // remembered terrain → draw, no fetch
+      else if (inFetch(ox,oy)) e=getOsmTile(osmZ,ox,oy); // clear zone → fetch
+      else continue;                                  // frontier, not yet cached → fog background
       if (!e.loaded) continue;
       const {tx:x0,ty:y0}=osmTileCorner(ox,   oy,   n, geo, cosLat);
       const {tx:x1,ty:y1}=osmTileCorner(ox+1, oy+1, n, geo, cosLat);
@@ -2890,12 +3061,13 @@ function drawOsmTiles(cp, canvasW, canvasH) {
       if (pw>0&&ph>0) ctx.drawImage(e.img, px, py, pw, ph);
     }
   }
-  // Prefetch one ring beyond the drawn tiles (Part 4) so a pan reveals already-loaded tiles. Warmed
-  // only — they paint once they enter view. Bounded panning keeps this set small.
+  // Prefetch one ring beyond the drawn tiles so a pan reveals already-loaded tiles. Warmed only —
+  // restricted to the fetch (clear) window so the void never triggers network/R2 reads.
   for (let ox=tl.x-2; ox<=br.x+2; ox++) {
     for (let oy=tl.y-2; oy<=br.y+2; oy++) {
       if (ox<0||oy<0||ox>=n||oy>=n) continue;
       if (ox>=tl.x-1 && ox<=br.x+1 && oy>=tl.y-1 && oy<=br.y+1) continue; // already touched above
+      if (!inFetch(ox,oy)) continue;
       getOsmTile(osmZ, ox, oy);
     }
   }
@@ -2922,7 +3094,7 @@ function getSnapTile(cx, cy) {
 // reconnect before the first WS keyframe), so a possibly-stale R2 tile never bleeds into the
 // authoritative live in-view canvas. Dormant unless the server provided SNAP_BASE.
 function drawSnapshotTiles(cp, canvasW, canvasH) {
-  if (!SNAP_BASE) return;
+  if (!SNAP_ON) return;
   const gx0=view.x-canvasW/(2*cp), gy0=view.y-canvasH/(2*cp);
   const gx1=view.x+canvasW/(2*cp), gy1=view.y+canvasH/(2*cp);
   const cx0=Math.floor(gx0/SNAP_CHUNK), cy0=Math.floor(gy0/SNAP_CHUNK);
@@ -2930,9 +3102,17 @@ function drawSnapshotTiles(cp, canvasW, canvasH) {
   // Bound the loop so an extreme zoom-out can't request a huge tile grid (R2 reads are free but the
   // browser shouldn't spawn thousands of Image objects). Far-zoom is served by the WS LOD path.
   if ((cx1-cx0+1)*(cy1-cy0+1) > 400) return;
+  // VOID GATE: skip snapshot chunks outside the loadable region (same boundary as the OSM gate).
+  let scMinX=-Infinity, scMaxX=Infinity, scMinY=-Infinity, scMaxY=Infinity;
+  if (!worldBrowsable()) {
+    const a=territoryAABB(loadOsmR);
+    scMinX=Math.floor(a.x0/SNAP_CHUNK); scMaxX=Math.floor(a.x1/SNAP_CHUNK);
+    scMinY=Math.floor(a.y0/SNAP_CHUNK); scMaxY=Math.floor(a.y1/SNAP_CHUNK);
+  }
   for (let cx=cx0; cx<=cx1; cx++) {
     for (let cy=cy0; cy<=cy1; cy++) {
       if (cx<0||cy<0) continue;
+      if (cx<scMinX||cx>scMaxX||cy<scMinY||cy>scMaxY) continue;
       const e=getSnapTile(cx, cy);
       if (!e.loaded) continue;
       const wx=cx*SNAP_CHUNK, wy=cy*SNAP_CHUNK;
@@ -2973,6 +3153,23 @@ function gameToLatLon(tx, ty) {
   const lat = (2 * Math.atan(Math.exp(mY)) - Math.PI / 2) * 180 / Math.PI;
   const lon = geo.capitolLon + (tx - WORLD.spawnX) * geo.tileMeters / (111111 * cosLat);
   return { lat, lon };
+}
+
+const COMPASS=['N','NE','E','SE','S','SW','W','NW'];
+// Camera grid pos -> a human location from the metro list the client already has (zero server work).
+// Inside a city's radius -> {l1:'NEAR TOKYO'}; otherwise nearest city + 8-point bearing + km
+// -> {l1:'120 KM NE', l2:'OF PARIS'} (l2 rendered dimmer). null until geo/metros arrive.
+function describeLocation(tx,ty){
+  if(!WORLD.geo || !regionMetros.length) return null;
+  let best=null,bd2=Infinity;
+  for(const m of regionMetros){ const d2=(tx-m.x)**2+(ty-m.y)**2; if(d2<bd2){ bd2=d2; best=m; } }
+  if(!best) return null;
+  const name=best.name.toUpperCase();
+  if(bd2<=best.r2) return {l1:'NEAR '+name};
+  const km=Math.sqrt(bd2)*WORLD.geo.tileMeters/1000;
+  const dir=COMPASS[(Math.round(Math.atan2(tx-best.x, best.y-ty)/(Math.PI/4))+8)%8]; // 0=N, +east
+  const kmTxt=km>=1000?Math.round(km).toLocaleString():km.toFixed(km<10?1:0);
+  return {l1:kmTxt+' KM '+dir, l2:'OF '+name};
 }
 
 function sampleTileWater(tx, ty) {
@@ -3051,28 +3248,45 @@ function updateOsmAttrib() {
 function drawLodTiles(v, cp, W, H) {
   const step=v.lod||1, gw=v.w, gh=v.h, tiles=v.tiles, fog=v.fog;
   if (!gw || !gh || !tiles) return;
+  const veilOn = mapVisible && !worldBrowsable();
   if (lodCanvas.width!==gw || lodCanvas.height!==gh) { lodCanvas.width=gw; lodCanvas.height=gh; lodImg=null; lodBuiltVw=null; }
-  // Only repaint the offscreen when the frame actually changed; panning/zooming between the
-  // ~10 Hz frames just re-blits the cached canvas (the positioning below runs every frame).
+  if (lodVeilCanvas.width!==gw || lodVeilCanvas.height!==gh) { lodVeilCanvas.width=gw; lodVeilCanvas.height=gh; lodVeilImg=null; }
+  // Only repaint the offscreens when the frame actually changed; panning/zooming between the
+  // ~10 Hz frames just re-blits the cached canvases (the positioning below runs every frame).
   if (v!==lodBuiltVw) {
     if (!lodImg) lodImg=lodCtx.createImageData(gw, gh);
+    if (!lodVeilImg) lodVeilImg=lodVeilCtx.createImageData(gw, gh);
     const d=lodImg.data; d.fill(0);
+    const vd=lodVeilImg.data; vd.fill(0);
     const myId=me?.id||0;
     for (let i=0; i<gw*gh; i++) {
+      const f=fog?fog[i]:0;
+      if (veilOn) {                                   // fog veil over the basemap (matches buildTileCache)
+        const o=i*4;
+        vd[o]=VOID_GREY[0]; vd[o+1]=VOID_GREY[1]; vd[o+2]=VOID_GREY[2];
+        vd[o+3] = f<=0 ? 0 : (((f/100)*255)|0);   // full opacity at fog 100 → solid grey edge
+      }
       const t=tiles[i];
       if (t===0) continue;
-      const f=fog?fog[i]:0;
       if (f>=100) continue;
       const baseA = (t===myId) ? 255 : (mapVisible ? 150 : 255);
       fogTile(d, i*4, toRGB(palette[t]||'#9b3027'), baseA, f);
     }
     lodCtx.putImageData(lodImg, 0, 0);
+    lodVeilCtx.putImageData(lodVeilImg, 0, 0);
     lodBuiltVw=v;
   }
   const sx = W/2 + (v.x0 - view.x)*cp;
   const sy = H/2 + (v.y0 - view.y)*cp;
   const dw = gw*step*cp, dh = gh*step*cp;
-  if (dw>0 && dh>0) { ctx.imageSmoothingEnabled=false; ctx.drawImage(lodCanvas, sx, sy, dw, dh); }
+  if (dw>0 && dh>0) {
+    if (veilOn) {                                   // soft fog gradient (smoothing on), then crisp territory
+      ctx.imageSmoothingEnabled=true;
+      ctx.drawImage(lodVeilCanvas, sx, sy, dw, dh);
+    }
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(lodCanvas, sx, sy, dw, dh);
+  }
 }
 
 function render() {
@@ -3093,12 +3307,14 @@ function render() {
   const offX = W/2 - (view.x - vx0)*cp;
   const offY = H/2 - (view.y - vy0)*cp;
 
-  // 1) Background + OSM map layer
+  // 1) Background + OSM map layer. Beyond the loadable region the background IS the fog/void grey
+  // (the OSM gate draws nothing there), so the void costs one fillRect and zero fetches.
+  const browsable = worldBrowsable();
   if (mapVisible) {
-    ctx.fillStyle='#c8d8e8'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = browsable ? '#c8d8e8' : VOID_GREY_CSS; ctx.fillRect(0,0,W,H);
     drawOsmTiles(cp, W, H);
   } else {
-    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = browsable ? '#ffffff' : VOID_GREY_CSS; ctx.fillRect(0,0,W,H);
   }
 
   // 1b) R2 snapshot base (Phase-6) — only before the first live frame (instant-load / reconnect),
@@ -3139,65 +3355,39 @@ function render() {
     const offX_tile = Math.round(W/2 - (view.x - builtCamX0)*cp);
     const offY_tile = Math.round(H/2 - (view.y - builtCamY0)*cp);
     const drawW = Math.round(builtCamW*cp), drawH = Math.round(builtCamH*cp);
-    if (drawW>0 && drawH>0) ctx.drawImage(tileCanvas, offX_tile, offY_tile, drawW, drawH);
+    if (drawW>0 && drawH>0) {
+      // Grey veil first (over OSM, under territory), then the territory overlay. Veil is transparent
+      // while browsing/map-off, so this is a no-op there. Smoothing ON for the veil → a soft fog
+      // gradient instead of blocky 1px/tile steps; OFF again for crisp pixelated territory.
+      if (!browsable && mapVisible) {
+        ctx.imageSmoothingEnabled=true;
+        ctx.drawImage(veilCanvas, offX_tile, offY_tile, drawW, drawH);
+        ctx.imageSmoothingEnabled=false;
+      }
+      ctx.drawImage(tileCanvas, offX_tile, offY_tile, drawW, drawH);
+    }
     if ($('d-tiles')) $('d-tiles').textContent = builtCamW * builtCamH;
   }
 
-  // Debug grid — levels of detail based on zoom
-  if (cp >= 0.5) {
-    const COARSE = 64;
+  // Tile grid — ONLY a faint 1-tile lattice when zoomed in close (cp ≥ 6), for ant-placement
+  // precision. The old coarse 64-tile grid + coordinate labels were removed: they painted a harsh
+  // spreadsheet over the whole map (incl. the fog), which read as broken rather than atmospheric.
+  if (cp >= 6) {
     ctx.save();
     ctx.lineWidth = 1;
-
-    // Coarse grid (every 64 tiles) — visible once tiles are at least half a pixel
-    const cx0 = Math.floor(v.x0 / COARSE) * COARSE;
-    const cy0 = Math.floor(v.y0 / COARSE) * COARSE;
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     ctx.beginPath();
-    for (let wx = cx0; wx <= v.x0 + v.w + COARSE; wx += COARSE) {
-      const sx = offX + (wx - v.x0) * cp;
+    for (let tx = 0; tx <= v.w; tx++) {
+      const sx = offX + tx * cp;
       if (sx < -1 || sx > W + 1) continue;
       ctx.moveTo(sx, 0); ctx.lineTo(sx, H);
     }
-    for (let wy = cy0; wy <= v.y0 + v.h + COARSE; wy += COARSE) {
-      const sy = offY + (wy - v.y0) * cp;
+    for (let ty = 0; ty <= v.h; ty++) {
+      const sy = offY + ty * cp;
       if (sy < -1 || sy > H + 1) continue;
       ctx.moveTo(0, sy); ctx.lineTo(W, sy);
     }
     ctx.stroke();
-
-    // Coarse grid labels — only when cells are big enough to read (≥1.5px/tile → 96px per label)
-    if (cp >= 1.5) {
-      ctx.fillStyle = 'rgba(255,255,255,0.35)';
-      ctx.font = '10px monospace';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      for (let wx = cx0; wx <= v.x0 + v.w + COARSE; wx += COARSE) {
-        for (let wy = cy0; wy <= v.y0 + v.h + COARSE; wy += COARSE) {
-          const sx = offX + (wx - v.x0) * cp + 3;
-          const sy = offY + (wy - v.y0) * cp + 2;
-          if (sx < 0 || sx > W || sy < 0 || sy > H) continue;
-          ctx.fillText(`${wx},${wy}`, sx, sy);
-        }
-      }
-    }
-
-    // Fine 1-tile grid — only when cell pixel size >= 6
-    if (cp >= 6) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-      ctx.beginPath();
-      for (let tx = 0; tx <= v.w; tx++) {
-        const sx = offX + tx * cp;
-        if (sx < -1 || sx > W + 1) continue;
-        ctx.moveTo(sx, 0); ctx.lineTo(sx, H);
-      }
-      for (let ty = 0; ty <= v.h; ty++) {
-        const sy = offY + ty * cp;
-        if (sy < -1 || sy > H + 1) continue;
-        ctx.moveTo(0, sy); ctx.lineTo(W, sy);
-      }
-      ctx.stroke();
-    }
-
     ctx.restore();
   }
 
@@ -3429,10 +3619,45 @@ function render() {
     ctx.restore();
   }
 
-  // 11) Coords (capitol-relative)
-  const disp = toDisplayXY(view.x, view.y);
-  const cdx = Math.round(disp.x), cdy = Math.round(disp.y);
-  $('ovr-coord').textContent = `(${cdx>=0?'+':''}${cdx}, ${cdy>=0?'+':''}${cdy})`;
+  // 10b) Off-screen QUEEN marker — a chevron pinned to the screen edge pointing home, so after
+  // roaming into the fog you can always find (and fly back to) your queen. Only when she's off-screen.
+  if (me?.queen && !me.queen.dead && !worldBrowsable()) {
+    const qcx = me.queen.x + (me.queen.size||2)/2, qcy = me.queen.y + (me.queen.size||2)/2;
+    const qsx = W/2 + (qcx - view.x)*cp, qsy = H/2 + (qcy - view.y)*cp;
+    const m = 46;                                                    // edge padding
+    if (qsx < m || qsx > W-m || qsy < m || qsy > H-m) {              // queen is off-screen
+      const ang = Math.atan2(qsy - H/2, qsx - W/2);
+      const c = Math.cos(ang), s = Math.sin(ang);
+      const hx = W/2 - m, hy = H/2 - m;
+      const tEdge = Math.min(hx/Math.max(Math.abs(c),1e-6), hy/Math.max(Math.abs(s),1e-6));
+      const ax = W/2 + c*tEdge, ay = H/2 + s*tEdge;
+      const col = safeColor(me.color || '#ffb800');
+      const pulse = 0.75 + 0.25*Math.sin(performance.now()/300);
+      const r = 14;
+      ctx.save();
+      ctx.translate(ax, ay); ctx.rotate(ang);
+      ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowBlur=6;
+      ctx.globalAlpha=pulse; ctx.fillStyle=col;
+      ctx.beginPath();
+      ctx.moveTo(r,0); ctx.lineTo(-r*0.7, r*0.85); ctx.lineTo(-r*0.25,0); ctx.lineTo(-r*0.7,-r*0.85);
+      ctx.closePath(); ctx.fill();
+      ctx.globalAlpha=1; ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.restore();
+      // distance (tiles) just inside the arrow, upright
+      const dist = Math.hypot(qcx - view.x, qcy - view.y);
+      const dtxt = dist>=1000 ? (dist/1000).toFixed(1)+'k' : Math.round(dist)+'';
+      ctx.save();
+      ctx.font='8px "Press Start 2P",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle='#fff'; ctx.shadowColor='rgba(0,0,0,0.85)'; ctx.shadowBlur=4;
+      ctx.fillText('♛'+dtxt, W/2 + c*(tEdge-28), H/2 + s*(tEdge-28));
+      ctx.restore();
+    }
+  }
+
+  // 11) Location — real-world phrase from the nearest city; raw coordinates are never shown.
+  const loc=describeLocation(view.x,view.y);
+  const lhtml = loc ? `<span class="t0">${esc(loc.l1)}</span>`+(loc.l2?`<br><span class="t1">${esc(loc.l2)}</span>`:'') : '—';
+  const co=$('ovr-coord'); if(co._h!==lhtml){ co.innerHTML=lhtml; co._h=lhtml; }
   $('ovr-zoom').textContent=view.zoom.toFixed(2)+'X';
   $('ovr-cell').textContent=cp.toFixed(0)+'PX';
   // Hover tile info (Q5)
@@ -3441,8 +3666,6 @@ function render() {
     const hIdx=(hover.y-vw.y0)*vw.w+(hover.x-vw.x0);
     if (hIdx>=0 && hIdx<vw.tiles.length) {
       const ht=vw.tiles[hIdx];
-      const hd=toDisplayXY(hover.x,hover.y);
-      const hx=Math.round(hd.x),hy=Math.round(hd.y);
       let owner='UNCLAIMED';
       if (ht) {
         if (ht===me?.id) { owner=`YOU · LV${me.queen?.level||1}`; }
@@ -3452,7 +3675,7 @@ function render() {
         }
       }
       ti.style.display='block';
-      ti.textContent=`(${hx>=0?'+':''}${hx},${hy>=0?'+':''}${hy}) ${owner}`;
+      ti.textContent=owner;
     } else { ti.style.display='none'; }
   } else { ti.style.display='none'; }
 }
@@ -3497,7 +3720,7 @@ function loop(t) {
 }
 
 /* INPUT — click & drag ant placement */
-let dragging=false, dragFrom=null, dragViewStart=null;
+let dragging=false, dragFrom=null, dragViewStart=null, dragLast=null;
 let forbiddenZones = []; // [{x, y, r}] - rendered as red gradients during placement
 function screenToTile(sx,sy) {
   const r=cvs.getBoundingClientRect();
@@ -3531,7 +3754,9 @@ cvs.addEventListener('mousedown', e => {
     if (hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); return; }
     _queenPlaceCooldown = true;
     setTimeout(() => { _queenPlaceCooldown = false; }, 600);
-    send({t:'place-queen', x:tile.x, y:tile.y});
+    // RELOCATE reuses the full placement flow (geolocate + forbidden zones) — same screen, but the
+    // confirm teleports the existing queen instead of spawning a new one.
+    send(relocating ? {t:'shop-buy',item:'relocate',x:tile.x,y:tile.y} : {t:'place-queen', x:tile.x, y:tile.y});
   } else if (mode==='admin-move') {
     if (adminMoveTargetId !== null)
       send({t:'admin-target', action:'move-queen', targetId:adminMoveTargetId, x:tile.x, y:tile.y});
@@ -3548,10 +3773,6 @@ cvs.addEventListener('mousedown', e => {
     toast(`ANT PLACED AT (${tile.x}, ${tile.y})`);
     // stay in mode — each click places another ant
     return;
-  } else if (mode==='shop-relocate') {
-    if (!tile) return;
-    send({t:'shop-buy',item:'relocate',x:tile.x,y:tile.y});
-    exitShopMode();
   } else if (mode==='shop-brute') {
     shopOrigin=tile; shopDir=[0,-1];
     mode='shop-brute-drag';
@@ -3602,15 +3823,17 @@ window.addEventListener('mousemove', e => {
     shopDir=snapDir(cx_-dragFrom.px, cy_-dragFrom.py);
     showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
   } else if (dragging && dragFrom) {
-    const cp=CELL*view.zoom;
-    let nx=dragViewStart.x-(e.clientX-dragFrom.px)/cp;
-    let ny=dragViewStart.y-(e.clientY-dragFrom.py)/cp;
-    view.x=nx; view.y=ny;
+    // Incremental + friction: the map can lag the cursor in the fog (heavy feel), never a hard wall.
+    const cp=CELL*view.zoom, f=panFriction();
+    view.x -= ((e.clientX-dragLast.x)/cp)*f;
+    view.y -= ((e.clientY-dragLast.y)/cp)*f;
+    dragLast={x:e.clientX, y:e.clientY};
     clampView();
   } else if (mouseDownAt) {
     if (Math.hypot(e.clientX-mouseDownAt.x, e.clientY-mouseDownAt.y) > 5) {
       dragging=true;
       dragFrom={px:mouseDownAt.x, py:mouseDownAt.y};
+      dragLast={x:mouseDownAt.x, y:mouseDownAt.y};
       mouseDownAt=null;
       cvs.classList.add('dragging');
     }
@@ -3682,7 +3905,7 @@ cvs.addEventListener('touchstart', e=>{
       mode='shop-brute-drag';
       dragFrom={px:t.clientX-r.left, py:t.clientY-r.top, raw:{x:t.clientX,y:t.clientY}};
     } else {
-      // Begin map pan (also covers tap-to-place modes: place-queen, shop-relocate, admin-*).
+      // Begin map pan (also covers tap-to-place modes: place-queen [incl. relocate], admin-*).
       _tpFrom={px:t.clientX,py:t.clientY};
       _tpViewStart={...view};
     }
@@ -3716,7 +3939,7 @@ cvs.addEventListener('touchmove', e=>{
     const t1=e.touches[0], t2=e.touches[1];
     const mid=_midpoint(t1,t2);
     const dist=Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY);
-    const newZoom=clamp(_pinch.zoom*(dist/_pinch.dist), 0.12, 8);
+    const newZoom=clamp(_pinch.zoom*(dist/_pinch.dist), 0.0001, 8);  // clampView() is the real min-zoom authority
     // Keep the world point under the initial pinch midpoint fixed
     const cp0=CELL*_pinch.zoom, cp1=CELL*newZoom;
     const anchorWX=_pinch.viewX+(_pinch.midX-W/2)/cp0;
@@ -3742,10 +3965,12 @@ cvs.addEventListener('touchmove', e=>{
       showDirArrow(dragFrom.px, dragFrom.py, cx_, cy_);
 
     } else if (_tpFrom) {
-      const cp=CELL*view.zoom;
-      let nx=_tpViewStart.x-(t.clientX-_tpFrom.px)/cp;
-      let ny=_tpViewStart.y-(t.clientY-_tpFrom.py)/cp;
-      view.x=nx; view.y=ny; clampView();
+      // Incremental + friction (anchor advances each move): the map drags in the fog, never walls.
+      const cp=CELL*view.zoom, f=panFriction();
+      view.x -= ((t.clientX-_tpFrom.px)/cp)*f;
+      view.y -= ((t.clientY-_tpFrom.py)/cp)*f;
+      _tpFrom={px:t.clientX, py:t.clientY};
+      clampView();
       // Invalidate tap if finger moved too far
       if (_tpTapStart && Math.hypot(t.clientX-_tpTapStart.x, t.clientY-_tpTapStart.y)>TOUCH_TAP_PX)
         _tpTapStart=null;
@@ -3777,9 +4002,7 @@ function _onTouchEnd(e){
       // Tap-to-place modes — mirror the mousedown branches so mobile reaches full parity.
       if (mode==='place-queen') {
         if (tile && hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); }
-        else if (tile) { send({t:'place-queen',x:tile.x,y:tile.y}); }
-      } else if (mode==='shop-relocate') {
-        if (tile) { send({t:'shop-buy',item:'relocate',x:tile.x,y:tile.y}); exitShopMode(); }
+        else if (tile) { send(relocating ? {t:'shop-buy',item:'relocate',x:tile.x,y:tile.y} : {t:'place-queen',x:tile.x,y:tile.y}); }
       } else if (mode==='admin-move') {
         if (tile && adminMoveTargetId!==null)
           send({t:'admin-target',action:'move-queen',targetId:adminMoveTargetId,x:tile.x,y:tile.y});
@@ -3838,6 +4061,21 @@ function exitPlaceMode() {
 
 // ---- Shop state ----
 let shopItem=null, shopOrigin=null, shopDir=[1,1];
+let relocating=false;   // true while RELOCATE drives the queen-placement screen (vs an initial spawn)
+
+// RELOCATE opens the SAME full-planet placement screen as the initial spawn (geolocate + forbidden
+// zones + whole-world browse), but the confirm teleports the live queen instead of spawning a new one.
+function enterRelocate() {
+  if (!me || !me.queen || me.queen.dead) return toast('Need a live queen');
+  AudioEngine.click();
+  relocating=true;
+  closeSidebar();                 // MOBILE: reveal the map
+  panLocked=true;                 // browsable: free pan + whole-world zoom + global basemap load
+  view.x=me.queen.x+1; view.y=me.queen.y+1; view.zoom=zoomTarget=1.0;
+  mode='place-queen'; cvs.classList.add('placing');
+  hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+  doGeolocate();
+}
 
 function shopBuy(item) {
   AudioEngine.click();
@@ -3847,14 +4085,15 @@ function shopBuy(item) {
   // Instant items
   if (item==='defender') { send({t:'shop-buy',item}); return; }
   if (item==='shield')   { send({t:'shop-buy',item}); return; }
-  // Placement items — enter a mode then wait for click
+  // Relocate → the placement screen (not an inline map click).
+  if (item==='relocate') { enterRelocate(); return; }
+  // Placement items — enter a mode then wait for click (brute only).
   shopItem=item;
   mode='shop-'+item;
   cvs.classList.add('placing');
-  closeSidebar();                 // MOBILE: reveal the map for placement (brute / relocate)
-  const labels={relocate:'Click new queen position', brute:'Click start tile, drag direction'};
+  closeSidebar();                 // MOBILE: reveal the map for placement (brute)
   $('prompt').style.display='';
-  $('prompt').textContent=labels[item]||'Click to place';
+  $('prompt').textContent='Click start tile, drag direction';
 }
 
 function exitShopMode() {
@@ -3953,15 +4192,10 @@ function toggleAntList() {
   $('wk-list-caret').textContent=antListOpen?'▾':'▸';
   renderAntList();
 }
-function fmtCountdown(secs) {
-  const h=(secs/3600)|0, m=((secs%3600)/60)|0, s=secs%60;
-  const pad=n=>String(n).padStart(2,'0');
-  return `${pad(h)}:${pad(m)}:${pad(s)}`;
-}
 function renderAntList() {
   if (!antListOpen) return;
   const el=$('wk-list'); if (!el) return;
-  const ants=me?.ants||[], life=me?.cfg?.LIFESPAN||1, tr=me?.tickRate||15;
+  const ants=me?.ants||[], life=me?.cfg?.LIFESPAN||1;
   if (!ants.length) {
     el.innerHTML='<div style="font-family:\'Press Start 2P\',monospace;font-size:6px;color:var(--dim);padding:8px 2px;text-align:center;">NO ACTIVE WORKERS</div>';
     return;
@@ -3971,12 +4205,10 @@ function renderAntList() {
   let html='';
   for (const a of shown) {
     const rem=a[1], kind=a[2];
-    const frac=Math.max(0,Math.min(1,1-rem/life));  // fills up as the worker ages toward its 24h return
-    const secs=Math.max(0,(rem/tr)|0);
+    const frac=Math.max(0,Math.min(1,rem/life));  // drains as the worker ages toward its return
     const ic=kind===1?'◼':'▴';
     html+=`<div class="wk-ant${kind===1?' brute':''}"><span class="wk-ant-ic">${ic}</span>`
-      +`<span class="wk-ant-bar"><span class="wk-ant-fill" style="width:${(frac*100).toFixed(1)}%"></span></span>`
-      +`<span class="wk-ant-t">${fmtCountdown(secs)}</span></div>`;
+      +`<span class="wk-ant-bar"><span class="wk-ant-fill" style="width:${(frac*100).toFixed(1)}%"></span></span></div>`;
   }
   const more=(me?.army||0)-shown.length;
   if (more>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);text-align:center;padding:4px;">+${more} MORE</div>`;
@@ -4394,7 +4626,7 @@ document.addEventListener('click', () => AudioEngine.init(), { once: true });
 document.addEventListener('keydown', e => {
   // Skip if user is typing in an input
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-  const panStep = () => (cvs.height / (CELL * view.zoom)) * 0.2;
+  const panStep = () => (cvs.height / (CELL * view.zoom)) * 0.2 * panFriction();  // slowed in fog
   switch (e.key) {
     case 'w': case 'W': case 'ArrowUp':    view.y -= panStep(); clampView(); panTarget=null; break;
     case 's': case 'S': case 'ArrowDown':  view.y += panStep(); clampView(); panTarget=null; break;

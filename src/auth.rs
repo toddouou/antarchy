@@ -8,7 +8,8 @@ use argon2::password_hash::SaltString;
 use rand::RngCore;
 use subtle::ConstantTimeEq;
 
-use crate::config::{cfg, argon2_lanes, argon2_mem_kib, argon2_time, ADMIN_USERNAME, ADMIN_PASSWORD};
+use crate::config::{cfg, argon2_lanes, argon2_mem_kib, argon2_time, ADMIN_USERNAME, ADMIN_PASSWORD,
+                    TEST_USERNAME, TEST_PASSWORD, HUES};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserRecord {
@@ -141,11 +142,30 @@ impl Auth {
         }
     }
 
-    /// Clear all accounts + bans down to just the admin. Used at fresh start and on admin WIPE.
+    /// Built-in NON-admin test account (`ADMIN_TEST` / `test`, id 2). Mirrors the admin's "always
+    /// present" guarantee but with `is_admin: false` + a pre-chosen colour, so the operator can log
+    /// straight into the normal-player experience (real fog-of-war, no god-view) without registering.
+    fn test_record() -> UserRecord {
+        UserRecord {
+            id:            2,
+            username:      TEST_USERNAME.to_string(),
+            password_hash: hash_pw_argon2(TEST_PASSWORD),
+            color:         HUES.get(3).copied().unwrap_or("#6f8f5a").to_string(),
+            hue_idx:       3,
+            is_admin:      false,
+            color_chosen:  true,   // skip the colour-pick step → drop into placement immediately
+            peak_level:    0,
+            ..Default::default()
+        }
+    }
+
+    /// Clear all accounts + bans down to the two built-ins (admin + non-admin test). Used at fresh
+    /// start and on admin WIPE — both built-ins are permanent fixtures of the beta.
     pub fn reset_to_admin_only(&mut self) {
         self.users.clear();
         self.banned.clear();
         self.users.insert(ADMIN_USERNAME.to_string(), Self::admin_record());
+        self.users.insert(TEST_USERNAME.to_string(), Self::test_record());
     }
 
     pub fn save(&self) {
@@ -170,6 +190,8 @@ impl Auth {
                 auth.banned = saved.banned;
                 auth.users.entry(ADMIN_USERNAME.to_string())
                     .or_insert_with(Self::admin_record);
+                auth.users.entry(TEST_USERNAME.to_string())
+                    .or_insert_with(Self::test_record);
                 return auth;
             }
         }

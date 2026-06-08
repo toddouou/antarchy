@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 
 use crate::config::{cfg, total_xp_for_level, calc_score, current_ms};
-use crate::fog::{compute_fog_field_slice, PAD};
+use crate::fog::{compute_fog_field_slice, MAX_PAD};
 use crate::world::World;
 
 const MAX_DIM: i32 = 800;
@@ -202,9 +202,10 @@ pub fn build_player_info(
 
     // Camera home-region half-extent (tiles): the default radius, grown to enclose the player's whole
     // territory (+margin) so they can always see it. Sent on every `me` so the box expands live.
+    let owner_bounds = world.tiles.owner_bounds(player_id);
     let pan_radius: u32 = {
         let def = crate::config::home_pan_radius();
-        match (q, world.tiles.owner_bounds(player_id)) {
+        match (q, owner_bounds) {
             (Some(q), Some(b)) => {
                 // Compute in i64 (queen coords are signed, bounds are u32) → widest half-extent from
                 // the queen to any territory edge, + margin, clamped back into u32 and floored at def.
@@ -216,6 +217,18 @@ pub fn build_player_info(
             }
             _ => def,
         }
+    };
+
+    // Level-scaled fog-of-war load radii (tiles) + territory AABB. These drive the client's
+    // three-zone fog (clear/fog/void), its free-pan zoom-out cap, and its void fetch-gate.
+    // `ownerBounds` is null until the player owns tiles (the client then falls back to the queen).
+    let fog_level   = q.map(|q| q.level).unwrap_or(1);
+    let clear_r     = crate::config::fog_clear_r(fog_level, &c).ceil() as u32;
+    let load_osm_r  = crate::config::fog_grad_r(fog_level, &c).ceil() as u32;
+    let void_r      = crate::config::fog_void_r(fog_level, &c).ceil() as u32;
+    let owner_bounds_json = match owner_bounds {
+        Some(b) => json!([b[0], b[1], b[2], b[3]]),
+        None    => Value::Null,
     };
 
     // Dynamic fields — sent on every periodic `me` (≥1 Hz).
@@ -251,6 +264,12 @@ pub fn build_player_info(
         // The client clamps `view.x/y` to this box (half-extent, tiles) around the queen — keeps
         // players near their region and bounds the basemap tile universe (R2 free-tier).
         "panRadius": pan_radius,
+        // Level-scaled fog-of-war: clear (full detail) / OSM-load / void (no-fetch) radii in tiles,
+        // plus the territory bounding box the client anchors all three zones on.
+        "clearR":      clear_r,
+        "loadOsmR":    load_osm_r,
+        "voidR":       void_r,
+        "ownerBounds": owner_bounds_json,
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
         "ants": my_ants,
@@ -287,7 +306,7 @@ pub fn build_player_info(
         });
         // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
-        if let Some(base) = crate::config::snapshot_public_base() { info["snapshotBase"] = json!(base); }
+        if let Some(base) = crate::config::snapshot_client_base() { info["snapshotBase"] = json!(base); }
         // Basemap only for authed players (guests render territory from R2 on a blank background).
         if !p.guest {
             if let Some(bm) = crate::config::basemap_url() { info["basemapUrl"] = json!(bm); }
@@ -321,6 +340,8 @@ pub struct RawView {
     /// Padded (pw×ph) ownership slice for tile blob + fog; empty on ants-only frames.
     pad: usize, pw: usize, ph: usize,
     owners: Vec<u32>,
+    /// Level-scaled clear / fully-fogged distances (in served-grid cells) for this viewer's fog.
+    clear_r: f32, grad_r: f32,
     /// In-rect ants (id,x,y,dx,dy,owner,kind); fog visibility applied in `finish_view`.
     ants: Vec<(u32, i32, i32, i8, i8, u32, u8)>,
     queens: Vec<QueenLite>,
@@ -386,6 +407,21 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
 
     let is_admin = world.auth.is_admin_id(player_id);
 
+    // Level-scaled fog radii, in served-grid cells (÷ step at LOD), from the viewer's own queen
+    // level (default L1 while placing). `pad` (off-screen ownership ring the distance transform
+    // needs) is sized to the feather end so panning toward off-screen territory clears smoothly.
+    // Admins get an all-zero fog field → skip the padded slice entirely (pad 0, radii unused).
+    let (clear_grid, grad_grid, fog_pad) = if include_tiles && !is_admin {
+        let c = cfg();
+        let lvl = world.queens.get(&player_id).map(|q| q.level).unwrap_or(1);
+        let cr = crate::config::fog_clear_r(lvl, &c) / step as f32;
+        let gr = crate::config::fog_grad_r(lvl, &c)  / step as f32;
+        let pad = (gr.ceil() as i32).clamp(1, MAX_PAD) as usize;
+        (cr, gr, pad)
+    } else {
+        (0.0, 0.0, 0usize)
+    };
+
     // In-rect ants (fog filtering deferred to finish_view). None while zoomed out (LOD).
     let ants: Vec<(u32, i32, i32, i8, i8, u32, u8)> = if lod {
         Vec::new()
@@ -403,7 +439,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     // Tiles + fog ownership slice + queens only matter on tile frames. At LOD, each grid cell
     // samples the tile `step` apart (nearest-sample territory pyramid); fog runs on the grid.
     let (pad, pw, ph, owners, queens) = if include_tiles {
-        let pad = PAD as usize;
+        let pad = fog_pad;
         let pw = w + 2 * pad;
         let ph = h + 2 * pad;
         let mut owners = vec![0u32; pw * ph];
@@ -444,7 +480,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
 
     Some(RawView {
         x0, y0, w, h, tick: world.tick, include_tiles, player_id, is_admin,
-        pad, pw, ph, owners, ants, queens, lod_step: step,
+        pad, pw, ph, owners, clear_r: clear_grid, grad_r: grad_grid, ants, queens, lod_step: step,
     })
 }
 
@@ -636,7 +672,8 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
     let fog: Vec<u8> = if raw.is_admin {
         vec![0u8; raw.w * raw.h]
     } else {
-        compute_fog_field_slice(&raw.owners, raw.pw, raw.ph, raw.pad, raw.w, raw.h, raw.player_id)
+        compute_fog_field_slice(&raw.owners, raw.pw, raw.ph, raw.pad, raw.w, raw.h, raw.player_id,
+                                raw.clear_r, raw.grad_r)
     };
 
     // Visible ants (own always; others only where fog is not full).
@@ -763,7 +800,8 @@ mod tests {
     fn raw2x2(owners: Vec<u32>, tick: u64) -> RawView {
         RawView {
             x0: 0, y0: 0, w: 2, h: 2, tick, include_tiles: true, player_id: 999, is_admin: true,
-            pad: 0, pw: 2, ph: 2, owners, ants: Vec::new(), queens: Vec::new(), lod_step: 1,
+            pad: 0, pw: 2, ph: 2, owners, clear_r: 0.0, grad_r: 0.0,
+            ants: Vec::new(), queens: Vec::new(), lod_step: 1,
         }
     }
 
@@ -906,7 +944,7 @@ mod tests {
     fn packed_ants_round_trip() {
         let raw = RawView {
             x0: 10, y0: 20, w: 4, h: 4, tick: 7, include_tiles: false, player_id: 1, is_admin: false,
-            pad: 0, pw: 0, ph: 0, owners: Vec::new(),
+            pad: 0, pw: 0, ph: 0, owners: Vec::new(), clear_r: 0.0, grad_r: 0.0,
             ants: vec![(42, 13, 25, 1, 0, 9, 1), (43, 11, 22, 0, -1, 9, 0)],
             queens: Vec::new(), lod_step: 1,
         };

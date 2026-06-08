@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use axum::{
-    extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{Path, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -835,8 +835,14 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
 // a PNG and upload to the sink (R2 / local disk). Game-space key: snap/{epoch}/0/{cx}/{cy}.png.
 pub fn snapshot_writer_loop(world: WorldState) {
     let sink = crate::snapshot::make_sink();
-    let secs = crate::config::snapshot_interval_secs();
     let s = crate::config::snapshot_tile_chunks();
+    // Dev origin fallback wants tiles visible within seconds of boot, not after the 300 s default
+    // cadence — clamp to 5 s when serving locally (no R2 Class-A cost to worry about in-memory).
+    let secs = if crate::config::snapshot_local_serve() {
+        crate::config::snapshot_interval_secs().min(5)
+    } else {
+        crate::config::snapshot_interval_secs()
+    };
     let interval = Duration::from_secs(secs);
     println!("[snapshot] writer started (sink: {}, interval {secs}s, super-tile S={s} → {}px)",
              sink.label(), s * 256);
@@ -971,10 +977,29 @@ async fn world_info_handler(State(app): State<AppState>) -> impl IntoResponse {
         "spawnX":     c.spawn_x,
         "spawnY":     c.spawn_y,
         "epoch":        epoch,
-        "snapshotBase": crate::config::snapshot_public_base(),
+        "snapshotBase": crate::config::snapshot_client_base(),
         "snapTileCells": crate::config::snapshot_tile_chunks() * 256,
     }).to_string();
     (StatusCode::OK, [("Content-Type", "application/json")], body)
+}
+
+/// Dev origin fallback (`HIVE_SNAP_LOCAL`): serve a rasterized territory super-tile straight from the
+/// in-memory store the snapshot writer fills. Lets the landing page render painted tiles without R2.
+/// 404 → the client renders it as unpainted/ocean. Returns 404 unconditionally when the flag is off,
+/// so a prod box (R2 path) never serves tiles from the origin.
+async fn snap_handler(Path(rest): Path<String>) -> Response {
+    if !crate::config::snapshot_local_serve() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let key = format!("snap/{rest}");
+    match crate::snapshot::mem_store().read().get(&key).cloned() {
+        Some(bytes) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=60")],
+            bytes,
+        ).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Per-kind egress accounting + the CPU/memory walls — the data behind the budget ledger
@@ -1051,9 +1076,9 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
 const CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; \
 img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; \
 style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
-script-src 'self' 'unsafe-inline' https://pagead2.googlesyndication.com https://*.googlesyndication.com https://*.google.com https://*.googleadservices.com https://*.doubleclick.net; \
+script-src 'self' 'unsafe-inline' https://pagead2.googlesyndication.com https://*.googlesyndication.com https://*.google.com https://*.googleadservices.com https://*.doubleclick.net https://*.adtrafficquality.google; \
 connect-src 'self' ws: wss: https:; \
-frame-src https://*.googlesyndication.com https://*.doubleclick.net https://*.google.com";
+frame-src https://*.googlesyndication.com https://*.doubleclick.net https://*.google.com https://*.adtrafficquality.google";
 
 /// Attach the static security headers (OWASP A02/A05) to every response. HSTS is a no-op over plain
 /// http (browsers ignore it), so it's safe to always send and active once behind Caddy's TLS.
@@ -1078,6 +1103,7 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/favicon.png", get(favicon_handler))
         .route("/ads.txt",    get(ads_txt_handler))     // AdSense authorized-sellers (apex)
         .route("/health",     get(health_handler))
+        .route("/snap/*rest", get(snap_handler))         // dev origin tile fallback (HIVE_SNAP_LOCAL)
         .route("/world-info", get(world_info_handler))
         .route("/egress-stats", get(egress_stats_handler))
         // ---- beta-v2 REST auth (landing page calls these) ----
