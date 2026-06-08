@@ -1,4 +1,5 @@
 use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ADMIN_USERNAME: &str = "ADMIN";
 pub const ADMIN_PASSWORD: &str = "admin";
@@ -140,23 +141,23 @@ impl Default for Config {
             tick_rate:         15,
             lifespan:   1_296_000,
             bubble_r:          30.0,
-            bubble_r_level_mult: 4.0,
+            bubble_r_level_mult: 2.5,
             hp_base:            50,
             hp_max:          2_428,
             convert_pct:       0.65,
-            daily_ants:        5,
+            daily_ants:        3,
             save_file: "world.snapshot".to_string(),
             capitol_lat: 0.0,
             capitol_lon: 0.0,
             tile_meters: 26.72,
-            xp_base:         100.0,
-            xp_exp:           1.07,
+            xp_base:         300.0,
+            xp_exp:           1.10,
             xp_level_cap:    100,
-            xp_tile_award:   250.0,
+            xp_tile_award:   150.0,
             xp_kill:        5000.0,
             xp_convert:        5.0,
             xp_heal:           1.0,
-            xp_highway_tick:   1.0,
+            xp_highway_tick:   0.5,
             levelup_ant_grant: 1,
             ant_damage:        1.0,
             ant_hz:            15,
@@ -214,6 +215,7 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("xp_kill",           0.0, 1_000_000.0),
     ("xp_convert",        0.0,    10_000.0),
     ("xp_tile_award",     0.0,    10_000.0),
+    ("xp_highway_tick",   0.0,       100.0),
     ("levelup_ant_grant", 0.0,       100.0),
     ("spawn_pan",        10.0,    10_000.0),
     ("ant_damage",        0.1,        50.0),
@@ -245,6 +247,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "xp_kill"           => c.xp_kill            = v,
         "xp_convert"        => c.xp_convert         = v,
         "xp_tile_award"     => c.xp_tile_award      = v,
+        "xp_highway_tick"   => c.xp_highway_tick    = v,
         "levelup_ant_grant" => c.levelup_ant_grant  = v as i32,
         "spawn_pan"         => c.spawn_pan          = v,
         "ant_damage"        => c.ant_damage         = v,
@@ -255,8 +258,16 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "season_secs"       => c.season_secs        = v as u64,
         _ => return None,
     }
+    // A tunable changed → flag for the next off-lock persist (server.rs autosave / shutdown), so
+    // admin tuning survives a restart instead of reverting to the compiled defaults.
+    CONFIG_DIRTY.store(true, Ordering::Relaxed);
     Some(v)
 }
+
+/// Set by `apply_admin_param` / `reset_to_defaults` whenever a tunable changes; the sim loop's
+/// off-lock autosave (and the shutdown handler) consults it and writes `config.json`. An
+/// `AtomicBool` so the WS/sim path never blocks on disk I/O.
+pub static CONFIG_DIRTY: AtomicBool = AtomicBool::new(false);
 
 /// Master switch for the Phase-3 binary/compressed wire protocol. The per-connection `bin`
 /// capability (client-advertised `{"bin":1}` at auth) is AND-ed with this, so setting
@@ -651,55 +662,94 @@ pub fn allowed_origins() -> &'static [String] {
     })
 }
 
+/// All admin-tunable params as `(key, value)` for a given `Config` — the single source of truth for
+/// the slider set, the persisted `config.json`, and the reset echo. Env/launch-derived fields
+/// (`port`, `save_file`, world geometry, geo projection) are deliberately excluded: they come from
+/// the environment, not the admin panel, and must not be clobbered by a persisted file.
+fn params_of(c: &Config) -> Vec<(&'static str, f64)> {
+    vec![
+        ("tick_rate",         c.tick_rate as f64),
+        ("lifespan",          c.lifespan as f64),
+        ("bubble_r",          c.bubble_r),
+        ("bubble_r_level_mult", c.bubble_r_level_mult),
+        ("hp_base",           c.hp_base as f64),
+        ("hp_max",            c.hp_max as f64),
+        ("convert_pct",       c.convert_pct),
+        ("daily_ants",        c.daily_ants as f64),
+        ("xp_base",           c.xp_base),
+        ("xp_exp",            c.xp_exp),
+        ("xp_kill",           c.xp_kill),
+        ("xp_convert",        c.xp_convert),
+        ("xp_tile_award",     c.xp_tile_award),
+        ("xp_highway_tick",   c.xp_highway_tick),
+        ("levelup_ant_grant", c.levelup_ant_grant as f64),
+        ("spawn_pan",         c.spawn_pan),
+        ("ant_damage",        c.ant_damage),
+        ("ant_hz",            c.ant_hz as f64),
+        ("ant_view_cap",      c.ant_view_cap as f64),
+        ("hp_regen",          c.hp_regen),
+        ("army_cap",          c.army_cap as f64),
+        ("season_secs",       c.season_secs as f64),
+    ]
+}
+
+/// Current value of every admin-tunable param — drives `save_config` and the full-config push the
+/// client uses to hydrate its sliders (`build_player_info`'s `me.cfg`).
+pub fn tunable_params() -> Vec<(&'static str, f64)> { params_of(&cfg()) }
+
 pub fn reset_to_defaults() -> Vec<(&'static str, f64)> {
     let d = Config::default();
-    let vals: &[(&'static str, f64)] = &[
-        ("tick_rate",         d.tick_rate as f64),
-        ("lifespan",          d.lifespan as f64),
-        ("bubble_r",          d.bubble_r),
-        ("bubble_r_level_mult", d.bubble_r_level_mult),
-        ("hp_base",           d.hp_base as f64),
-        ("hp_max",            d.hp_max as f64),
-        ("convert_pct",       d.convert_pct),
-        ("daily_ants",        d.daily_ants as f64),
-        ("xp_base",           d.xp_base),
-        ("xp_exp",            d.xp_exp),
-        ("xp_kill",           d.xp_kill),
-        ("xp_convert",        d.xp_convert),
-        ("xp_tile_award",     d.xp_tile_award),
-        ("levelup_ant_grant", d.levelup_ant_grant as f64),
-        ("spawn_pan",         d.spawn_pan),
-        ("ant_damage",        d.ant_damage),
-        ("ant_hz",            d.ant_hz as f64),
-        ("ant_view_cap",      d.ant_view_cap as f64),
-        ("hp_regen",          d.hp_regen),
-        ("army_cap",          d.army_cap as f64),
-        ("season_secs",       d.season_secs as f64),
-    ];
-    let mut out = Vec::with_capacity(vals.len());
-    let mut c = cfg_write();
-    c.tick_rate          = d.tick_rate;
-    c.lifespan           = d.lifespan;
-    c.bubble_r           = d.bubble_r;
-    c.bubble_r_level_mult = d.bubble_r_level_mult;
-    c.hp_base            = d.hp_base;
-    c.hp_max             = d.hp_max;
-    c.convert_pct        = d.convert_pct;
-    c.daily_ants         = d.daily_ants;
-    c.xp_base            = d.xp_base;
-    c.xp_exp             = d.xp_exp;
-    c.xp_kill            = d.xp_kill;
-    c.xp_convert         = d.xp_convert;
-    c.xp_tile_award      = d.xp_tile_award;
-    c.levelup_ant_grant  = d.levelup_ant_grant;
-    c.spawn_pan          = d.spawn_pan;
-    c.ant_damage         = d.ant_damage;
-    c.hp_regen           = d.hp_regen;
-    c.army_cap           = d.army_cap;
-    c.season_secs        = d.season_secs;
-    drop(c);
-    for &(k, v) in vals { out.push((k, v)); }
-    out
+    // Apply each default through the clamping setter so `params_of` stays the ONLY enumeration of
+    // the tunable set — no parallel assignment block to drift (the previous one silently omitted
+    // `ant_hz`/`ant_view_cap`, so a reset left them untouched). `apply_admin_param` also flags
+    // `CONFIG_DIRTY`, so the reset itself persists.
+    for &(k, v) in &params_of(&d) { apply_admin_param(k, v); }
+    params_of(&d)
+}
+
+/// Path for the persisted tunable config — beside `users.json` / `world.snapshot` (under HIVE_DATA_DIR).
+fn config_path() -> String { cfg().save_file.replace("world.snapshot", "config.json") }
+
+/// Persist the current tunable params to `config.json` (atomic temp + rename). Tiny (~20 floats), so
+/// it is safe to call off the world lock — from the sim loop's off-lock autosave when `CONFIG_DIRTY`
+/// is set, from the shutdown handler, and after a reset — so admin tuning survives a restart instead
+/// of reverting to the compiled defaults.
+pub fn save_config() { save_config_to(&config_path()); }
+
+/// `save_config` with an explicit path (test seam — the public version targets `config_path()`).
+fn save_config_to(path: &str) {
+    let map: serde_json::Map<String, serde_json::Value> = tunable_params().into_iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    let body = match serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[config] serialize failed: {e}"); return; }
+    };
+    let tmp = format!("{path}.tmp");
+    if let Err(e) = std::fs::write(&tmp, body) { eprintln!("[config] write {tmp} failed: {e}"); return; }
+    if let Err(e) = std::fs::rename(&tmp, path) { eprintln!("[config] rename → {path} failed: {e}"); }
+}
+
+/// Load persisted tunable params from `config.json` on boot, applying each through the clamping
+/// setter. Missing/corrupt file → keep the compiled defaults (no error). Unknown keys are ignored
+/// and absent keys keep their default, so the file stays forward/backward compatible across versions.
+pub fn load_config() {
+    let path = config_path();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => { println!("[config] no config.json at {path} — using defaults"); return; }
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&data) else {
+        eprintln!("[config] {path} is not a JSON object — ignoring"); return;
+    };
+    let mut applied = 0u32;
+    for (k, v) in map {
+        if let Some(n) = v.as_f64() { if apply_admin_param(&k, n).is_some() { applied += 1; } }
+    }
+    // Loading is not a user edit — clear the dirty flag the applies above just set, so boot doesn't
+    // immediately rewrite an identical file.
+    CONFIG_DIRTY.store(false, Ordering::Relaxed);
+    println!("[config] loaded {applied} tunables from {path}");
 }
 
 /// Placement-bubble radius for a queen at level `lvl`. Grows **linearly** from the base `bubble_r`
@@ -838,5 +888,41 @@ mod tests {
         let (x0, y0, x1, y1) = clamp_view_span(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
         assert!(x1 - x0 <= max_view_span());
         assert!(y1 - y0 <= max_view_span());
+    }
+
+    /// `params_of` (drives save/load/reset + the client cfg push) and `ADMIN_CLAMP` (the slider clamp
+    /// + `apply_admin_param` arms) must enumerate the SAME tunable set. When they drift, a param
+    /// becomes unpersistable / unresettable / un-editable — exactly the bug class this guards
+    /// (`reset_to_defaults` previously omitted `ant_hz`/`ant_view_cap`).
+    #[test]
+    fn params_of_and_admin_clamp_enumerate_the_same_tunables() {
+        use std::collections::BTreeSet;
+        let d = Config::default();
+        let params: BTreeSet<&str> = params_of(&d).into_iter().map(|(k, _)| k).collect();
+        let clamp:  BTreeSet<&str> = ADMIN_CLAMP.iter().map(|(k, _, _)| *k).collect();
+        assert_eq!(params, clamp, "params_of vs ADMIN_CLAMP drift");
+        // Every tunable must round-trip through the clamping setter (no typo'd/unhandled key).
+        for &(k, v) in &params_of(&d) {
+            assert!(apply_admin_param(k, v).is_some(), "apply_admin_param missing arm for {k}");
+        }
+    }
+
+    /// `save_config` writes a JSON object carrying every tunable (incl. the new `xp_highway_tick`),
+    /// readable back as an object — the persistence half of the "settings don't survive a restart"
+    /// fix. Reads global cfg only (no mutation), so it can't race other tests.
+    #[test]
+    fn save_config_writes_every_tunable_as_json() {
+        let dir = std::env::temp_dir().join(format!("antarchy-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let ps = path.to_str().unwrap();
+        save_config_to(ps);
+        let body = std::fs::read_to_string(ps).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).expect("config.json is valid JSON");
+        for (k, _) in params_of(&Config::default()) {
+            assert!(v.get(k).and_then(|x| x.as_f64()).is_some(), "saved config missing tunable {k}");
+        }
+        assert!(v.get("xp_highway_tick").is_some(), "new paint-XP knob must persist");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

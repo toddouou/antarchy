@@ -36,6 +36,10 @@ async fn main() {
     // first queen placement never pays the geojson parse under the world lock.
     regions::init();
 
+    // Restore admin-tuned config (config.json beside the snapshot) BEFORE the world, so any level
+    // recompute on restore uses the persisted XP curve. Missing/corrupt → compiled defaults.
+    config::load_config();
+
     // Restore persisted state (accounts + world) so a restart / Railway redeploy resumes where it
     // left off. Both files live under HIVE_DATA_DIR (see config). Missing/corrupt → fresh start.
     let mut w = World::new();
@@ -121,6 +125,9 @@ async fn main() {
                 Err(e)  => eprintln!("[persist] shutdown save failed: {e}"),
             }
         }
+        // Flush admin-tuned config too, so a graceful restart (systemctl/SIGTERM) keeps the latest
+        // slider values even if they changed within the last autosave window.
+        config::save_config();
         std::process::exit(0);
     });
 

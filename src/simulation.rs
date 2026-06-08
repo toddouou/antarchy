@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use serde_json::json;
 
 use crate::config::{
-    cfg, level_for_xp, current_ms, ENEMY_HUES,
+    cfg, level_for_xp, total_xp_for_level, current_ms, ENEMY_HUES,
     BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE, TILE_MILESTONES,
     GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE,
 };
@@ -33,11 +33,19 @@ pub fn award_xp(world: &mut World, player_id: u32, amount: f64, reason: &'static
 pub fn flush_xp(world: &mut World) {
     let grants: Vec<XpGrant> = std::mem::take(&mut world.xp_queue);
     let c = cfg().clone();
+    // XP ceiling = the cumulative total to REACH the level cap. Once a queen is maxed it earns no
+    // more XP this season — the bar fills exactly and stops growing (the old code accumulated `q.xp`
+    // forever, so the bar grew without bound past L100). Enforced by the `at_cap` skip + the clamp.
+    let xp_cap_total = total_xp_for_level(c.xp_level_cap, &c);
     for g in grants {
         let is_npc = world.players.get(&g.player_id).map(|p| p.npc).unwrap_or(true);
         if is_npc { continue; }
         let queen_alive = world.queens.get(&g.player_id).map(|q| !q.dead).unwrap_or(false);
         if !queen_alive { continue; }
+        // Already at the cap → drop the grant entirely: no accumulation, and no misleading "+XP"
+        // floater for XP that does nothing.
+        let at_cap = world.queens.get(&g.player_id).map(|q| q.level >= c.xp_level_cap).unwrap_or(false);
+        if at_cap { continue; }
 
         if g.amount >= 3.0 {
             let tx = world.players.get(&g.player_id).and_then(|p| p.tx.clone());
@@ -50,7 +58,7 @@ pub fn flush_xp(world: &mut World) {
 
         let level_up_result = {
             let Some(q) = world.queens.get_mut(&g.player_id) else { continue };
-            q.xp = (q.xp + g.amount).max(0.0);
+            q.xp = (q.xp + g.amount).clamp(0.0, xp_cap_total);
             let old_lvl = q.level;
             let new_lvl = level_for_xp(q.xp, &c);
             if new_lvl > old_lvl {
@@ -76,6 +84,11 @@ pub fn flush_xp(world: &mut World) {
                     "t":"event","msg":format!("▲ LEVEL UP → LV{new_lvl} · +{ants_gained} ANTS")
                 }).to_string());
                 let _ = tx.send(json!({"t":"level-up","level":new_lvl}).to_string());
+                // First crossing into the level cap → one-time congratulations popup (client modal).
+                // Fires exactly once: at cap the `at_cap` skip above prevents any further level-up.
+                if old_lvl < c.xp_level_cap && new_lvl >= c.xp_level_cap {
+                    let _ = tx.send(json!({"t":"max-level","level":new_lvl}).to_string());
+                }
             }
             // Progressive unlocks + one-time starter credit. Shared with the admin level/xp tools so
             // gates + popups behave identically however a player reaches a tier.
@@ -1226,6 +1239,32 @@ mod tests {
         // No new ground gained → the threshold must not pay out a second time.
         tick_world(&mut w);
         assert_eq!(w.queens.get(&pid).unwrap().xp, xp, "milestone is one-time per queen");
+    }
+
+    /// At the level cap a queen's XP is frozen: a huge grant lands it at exactly `total(cap)` (never
+    /// above — so the client XP bar can't overflow past full the way it used to), and any further
+    /// grant is dropped entirely. This is the "no more XP needed this season" guarantee.
+    #[test]
+    fn xp_is_capped_at_the_level_cap() {
+        let c = crate::config::cfg().clone();
+        let cap = c.xp_level_cap;
+        let cap_total = total_xp_for_level(cap, &c);
+        let mut w = World::new();
+        let pid = 7u32;
+        w.players.insert(pid, mk_player(pid));
+        w.queens.insert(pid, mk_queen(2000, 2000, 1, 100));
+
+        // A grant dwarfing the whole curve must clamp to exactly total(cap) and reach the cap level.
+        award_xp(&mut w, pid, cap_total * 10.0 + 1_000_000.0, "test", 0, 0);
+        flush_xp(&mut w);
+        let q = w.queens.get(&pid).unwrap();
+        assert_eq!(q.level, cap, "a huge grant reaches the level cap");
+        assert_eq!(q.xp, cap_total, "xp clamped to exactly total(cap) — never above");
+
+        // Already maxed → further XP is ignored (the bar stays full, nothing accrues).
+        award_xp(&mut w, pid, 5_000_000.0, "test", 0, 0);
+        flush_xp(&mut w);
+        assert_eq!(w.queens.get(&pid).unwrap().xp, cap_total, "no XP accrues past the cap");
     }
 
     #[test]

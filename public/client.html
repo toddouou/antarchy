@@ -1148,25 +1148,25 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="slider-g">
       <div class="slider-l">
         <span>DAILY ANTS <span class="sinfo" data-tip="Ants each player receives per 24-hour refill. More ants = more expansion potential per day.">?</span></span>
-        <span class="v"><span id="v-da">5</span></span>
+        <span class="v"><span id="v-da">3</span></span>
       </div>
-      <input type="range" id="s-da" min="0" max="20" step="1" value="5">
+      <input type="range" id="s-da" min="0" max="20" step="1" value="3">
     </div>
 
     <div class="adm-subsec">XP CURVE</div>
     <div class="slider-g">
       <div class="slider-l">
         <span>XP BASE <span class="sinfo" data-tip="Base XP cost for the level curve — the cost of level 1→2. Higher = slower overall progression.">?</span></span>
-        <span class="v"><span id="v-xpb">100</span></span>
+        <span class="v"><span id="v-xpb">300</span></span>
       </div>
-      <input type="range" id="s-xpb" min="100" max="2000" step="50" value="100">
+      <input type="range" id="s-xpb" min="100" max="2000" step="50" value="300">
     </div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>XP GROWTH /LVL <span class="sinfo" data-tip="Per-level XP growth rate. 1.07 = each level costs 7% more than the last. Higher = steeper late-game grind.">?</span></span>
-        <span class="v"><span id="v-xpe">1.07</span></span>
+        <span>XP GROWTH /LVL <span class="sinfo" data-tip="Per-level XP growth rate. 1.10 = each level costs 10% more than the last. Higher = steeper late-game grind.">?</span></span>
+        <span class="v"><span id="v-xpe">1.10</span></span>
       </div>
-      <input type="range" id="s-xpe" min="1.02" max="1.20" step="0.01" value="1.07">
+      <input type="range" id="s-xpe" min="1.02" max="1.20" step="0.01" value="1.10">
     </div>
 
     <div class="adm-subsec">REWARDS</div>
@@ -1186,6 +1186,13 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     </div>
     <div class="slider-g">
       <div class="slider-l">
+        <span>PAINT XP <span class="sinfo" data-tip="XP for painting unclaimed land — granted per 3 new tiles a worker paints. The main early-game faucet; lower = slower leveling from raw expansion. Default 0.5.">?</span></span>
+        <span class="v"><span id="v-xph">0.5</span></span>
+      </div>
+      <input type="range" id="s-xph" min="0" max="5" step="0.1" value="0.5">
+    </div>
+    <div class="slider-g">
+      <div class="slider-l">
         <span>LEVELUP ANTS <span class="sinfo" data-tip="Bonus ants granted each time a player levels up. Rewards progression with extra placement capacity.">?</span></span>
         <span class="v"><span id="v-ag">1</span></span>
       </div>
@@ -1196,9 +1203,9 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="slider-g">
       <div class="slider-l">
         <span>MILESTONE XP <span class="sinfo" data-tip="Base XP for the first tile milestone (10k tiles). Each later milestone — 25k, 50k, 100k, 250k, … — is one-time per queen and grants proportionally more. 0 disables milestone rewards.">?</span></span>
-        <span class="v"><span id="v-xptm">250</span></span>
+        <span class="v"><span id="v-xptm">150</span></span>
       </div>
-      <input type="range" id="s-xptm" min="0" max="1000" step="50" value="250">
+      <input type="range" id="s-xptm" min="0" max="1000" step="50" value="150">
     </div>
   </div>
 </aside>
@@ -1338,6 +1345,7 @@ const CFG_SLIDER_MAP = {
   XP_KILL:           { sid:'s-xpk',  vid:'v-xpk'  },
   XP_CONVERT:        { sid:'s-xpc',  vid:'v-xpc'  },
   XP_TILE_AWARD:     { sid:'s-xptm', vid:'v-xptm' },
+  XP_HIGHWAY_TICK:   { sid:'s-xph',  vid:'v-xph'  },
   LEVELUP_ANT_GRANT: { sid:'s-ag',   vid:'v-ag'   },
   CONVERT_PCT:       { sid:'s-cp',   vid:'v-cp',  scale:100 }, // server 0-1 → slider 0-100
   DAILY_ANTS:        { sid:'s-da',   vid:'v-da'   },
@@ -1347,6 +1355,9 @@ const CFG_SLIDER_MAP = {
 function applyCfgSlider(key, val) {
   const m = CFG_SLIDER_MAP[key]; if (!m) return;
   const s=$(m.sid), v=$(m.vid); if (!s||!v) return;
+  // Don't yank a slider the admin is actively dragging back to the (slightly stale) ~1 Hz server
+  // echo — the drag already streams authoritative values to the server on each input event.
+  if (s === document.activeElement) return;
   const display = m.scale ? +(val * m.scale).toFixed(2) : val;
   s.value = display;
   v.textContent = m.fmt ? m.fmt(display) : display;
@@ -2185,6 +2196,8 @@ function handle(msg) {
     }
     case 'level-up':
       AudioEngine.levelUp(); break;
+    case 'max-level':
+      showMaxLevel(msg.level); break;
     case 'unlock':
       queueUnlock(msg.tier); break;
     case 'xp-gain': {
@@ -2434,6 +2447,19 @@ function queueUnlock(tier){
   else showUnlockPopup(tier);
 }
 
+// Level-cap congratulations — fired once by the server (`max-level`) the moment a queen hits the cap.
+// `_maxLevelShown` guards against a double-show within a session (the server only sends it once).
+let _maxLevelShown=false;
+function showMaxLevel(level){
+  if (_maxLevelShown) return; _maxLevelShown=true;
+  showPopup({
+    art:'👑',
+    title:'LEVEL <em>'+(level||100)+'</em>',
+    sub:'MAXIMUM LEVEL REACHED',
+    body:"You've reached the season's level cap — the apex of the hive.<br>Your XP is maxed: <b>no more XP needed this season.</b><br>Now defend your crown and hunt every rival queen.",
+  });
+}
+
 // `gate` = peak level required for the item to appear (KEEP IN LOCKSTEP with GATE_* in src/config.rs).
 // Ordered by gate so the shop reveals progressively as the player levels up.
 const SHOP_ITEMS=[
@@ -2624,10 +2650,18 @@ function updateHUD() {
     $('shield-fill').style.width=(q.maxHp?Math.min(100,_sh/q.maxHp*100):0)+'%';
     $('hp-shield').textContent=_sh>0?(' +'+_sh):'';
     $('lvl').textContent=q.level;
-    const into = q.xpIntoLevel||0, span = q.xpLevelSpan||1;
-    const pct = (into / span * 100);
-    $('xp-fill').style.width=pct+'%';
-    $('xp-val').textContent=into.toLocaleString()+'/'+span.toLocaleString();
+    const lvlCap = (me.cfg && me.cfg.LEVEL_CAP) || 100;
+    if (q.level >= lvlCap) {
+      // Maxed for the season: bar stays full, no more XP needed (the server caps accumulation, so
+      // xpIntoLevel can never overflow the bar past 100% the way it used to).
+      $('xp-fill').style.width='100%';
+      $('xp-val').textContent='MAX';
+    } else {
+      const into = q.xpIntoLevel||0, span = q.xpLevelSpan||1;
+      const pct = Math.max(0, Math.min(100, into / span * 100));
+      $('xp-fill').style.width=pct+'%';
+      $('xp-val').textContent=into.toLocaleString()+'/'+span.toLocaleString();
+    }
     // If we ran out of ants while in sticky place mode, exit it
     if (!me.unlimitedAnts && me.antsAvail<=0 && (mode==='place-ant-down' || mode==='place-ant-drag')) {
       exitPlaceMode();
@@ -4549,6 +4583,7 @@ bindSlider('s-xpe','XP_EXP','v-xpe');
 bindSlider('s-xpk','XP_KILL','v-xpk');
 bindSlider('s-xpc','XP_CONVERT','v-xpc');
 bindSlider('s-xptm','XP_TILE_AWARD','v-xptm');
+bindSlider('s-xph','XP_HIGHWAY_TICK','v-xph');
 bindSlider('s-ag','LEVELUP_ANT_GRANT','v-ag');
 bindSlider('s-da','DAILY_ANTS','v-da');
 $('s-cp').addEventListener('input',()=>{
@@ -4558,8 +4593,8 @@ $('s-cp').addEventListener('input',()=>{
 });
 
 function updateXpPreview() {
-  const base=parseFloat($('s-xpb')?.value||100);
-  const rate=parseFloat($('s-xpe')?.value||1.07);
+  const base=parseFloat($('s-xpb')?.value||300);
+  const rate=parseFloat($('s-xpe')?.value||1.10);
   // Cumulative XP to reach L100 = sum of per-level costs base·rate^k (k=0..98) — the geometric sum,
   // matching the server's total_xp_for_level. (rate≈1 degenerates to linear.)
   const l100=Math.floor(Math.abs(rate-1)<1e-9 ? base*99 : base*(Math.pow(rate,99)-1)/(rate-1));
@@ -4569,7 +4604,7 @@ function updateXpPreview() {
 updateXpPreview();
 
 /* Presets (localStorage) */
-const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','HP_REGEN','SPAWN_PAN','ANT_DAMAGE','ANT_HZ','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_AWARD','LEVELUP_ANT_GRANT'];
+const ADM_PRESET_KEYS=['TICK_RATE','LIFESPAN','BUBBLE_R','HP_BASE','HP_REGEN','SPAWN_PAN','ANT_DAMAGE','ANT_HZ','CONVERT_PCT','DAILY_ANTS','XP_BASE','XP_EXP','XP_KILL','XP_CONVERT','XP_TILE_AWARD','XP_HIGHWAY_TICK','LEVELUP_ANT_GRANT'];
 function admSavePreset(slot) {
   const p={};
   for (const k of ADM_PRESET_KEYS) {

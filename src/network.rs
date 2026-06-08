@@ -297,12 +297,30 @@ pub fn build_player_info(
                 "tileMeters":  c.tile_meters,
             });
         }
+        // Full tunable config so EVERY admin slider hydrates from the live server value — not just
+        // the 5 fields the client used to receive (the rest sat at their HTML defaults and could
+        // stomp the real config on the next preset-load/drag). Keys match the client's
+        // CFG_SLIDER_MAP (uppercase); CONVERT_PCT stays 0–1 (the client scales ×100 for display).
+        // Non-admin clients simply ignore the keys they don't render.
         info["cfg"] = json!({
-            "BUBBLE_R":   c.bubble_r,
-            "DAILY_ANTS": c.daily_ants,
-            "LEVEL_CAP":  c.xp_level_cap,
-            "LIFESPAN":   c.lifespan,
-            "ARMY_CAP":   c.army_cap,
+            "TICK_RATE":         c.tick_rate,
+            "LIFESPAN":          c.lifespan,
+            "BUBBLE_R":          c.bubble_r,
+            "HP_BASE":           c.hp_base,
+            "HP_REGEN":          c.hp_regen,
+            "SPAWN_PAN":         c.spawn_pan,
+            "ANT_DAMAGE":        c.ant_damage,
+            "CONVERT_PCT":       c.convert_pct,
+            "DAILY_ANTS":        c.daily_ants,
+            "XP_BASE":           c.xp_base,
+            "XP_EXP":            c.xp_exp,
+            "XP_KILL":           c.xp_kill,
+            "XP_CONVERT":        c.xp_convert,
+            "XP_TILE_AWARD":     c.xp_tile_award,
+            "XP_HIGHWAY_TICK":   c.xp_highway_tick,
+            "LEVELUP_ANT_GRANT": c.levelup_ant_grant,
+            "LEVEL_CAP":         c.xp_level_cap,
+            "ARMY_CAP":          c.army_cap,
         });
         // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).

@@ -542,6 +542,12 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
         // ∥A: the lock is now released — write the snapshot to disk on a detached thread so neither
         // the tick nor the viewport thread waits on gzip + fsync.
         if let Some((raw, path)) = pending_save {
+            // Flush admin-tuned config alongside the world autosave (off-lock, ~60 s cadence) when a
+            // slider changed since the last save — so tuning persists across a restart. Cheap tiny
+            // file; detached so the sim thread never waits on the filesystem.
+            if crate::config::CONFIG_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                std::thread::spawn(crate::config::save_config);
+            }
             std::thread::spawn(move || {
                 if let Err(e) = crate::persist::write_snapshot_bytes(&raw, &path) {
                     eprintln!("[persist] autosave write failed: {e}");
