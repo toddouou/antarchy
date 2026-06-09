@@ -45,9 +45,26 @@ async fn main() {
     let mut w = World::new();
     let save_file = cfg().save_file.clone();
     w.auth = auth::Auth::load(&save_file);
-    match persist::load(&save_file) {
-        Some(snap) => persist::restore(&mut w, snap),
-        None       => println!("[persist] no snapshot at {save_file} — fresh start"),
+    let restored = match persist::load(&save_file) {
+        Some(snap) => { persist::restore(&mut w, snap); true }
+        None       => { println!("[persist] no snapshot at {save_file} — fresh start"); false }
+    };
+    // R2 tile-generation epoch: re-use the PERSISTED generation across restarts so a redeploy keeps
+    // serving `snap/{epoch}/…` instead of minting a fresh generation each boot (which orphaned the
+    // previous one on R2 forever — an unbounded storage leak; see `persist::save_epoch`). Only when
+    // we actually restored a world: a fresh/failed load keeps its own new epoch and must NOT adopt a
+    // stale persisted one (and must not let the boot-GC touch R2 — gated on `restored` below).
+    if restored {
+        match persist::load_epoch(&save_file) {
+            Some(e) => { w.epoch = e; println!("[persist] reusing snapshot epoch {e}"); }
+            None    => { persist::save_epoch(&w, &save_file);
+                         println!("[persist] no epoch sidecar — pinned epoch {}", w.epoch); }
+        }
+    } else {
+        // Fresh start: pin THIS generation so the first restart re-uses it instead of orphaning it.
+        // (We do NOT adopt a pre-existing sidecar here — a failed/empty load must not inherit a stale
+        // epoch, and must not let the boot-GC run, which is gated on `restored`.)
+        persist::save_epoch(&w, &save_file);
     }
     // ∥A: when the write-ahead log is enabled, replay any journal recorded since the base snapshot.
     if config::wal_enabled() {
@@ -106,7 +123,7 @@ async fn main() {
     // HIVE_SNAP_DIR). Dormant by default, so the live server pays nothing until R2 is wired up.
     if snapshot::sink_active() {
         let world_snap = world.clone();
-        std::thread::spawn(move || server::snapshot_writer_loop(world_snap));
+        std::thread::spawn(move || server::snapshot_writer_loop(world_snap, restored));
     } else {
         println!("[snapshot] disabled (set SNAPSHOT_CDN + R2 creds, or HIVE_SNAP_DIR, to enable)");
     }

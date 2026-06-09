@@ -1029,6 +1029,9 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <button class="btn-sm" id="adm-pause-btn" onclick="admTogglePause()">⏸ PAUSE</button>
       <button class="btn-sm" onclick="admSandboxRecenter()">⊛ RECENTER</button>
     </div>
+    <div class="btn-row" style="margin-bottom:6px;">
+      <button class="btn-sm" id="adm-fog-btn" style="width:100%;" onclick="admToggleFog()">🌫 FOG: OFF (GOD VIEW)</button>
+    </div>
     <div class="adm-subsec">SPEED</div>
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:3px;margin-bottom:8px;">
       <button class="btn-sm adm-speed" data-hz="25" onclick="admSetSpeed(25)">0.5×</button>
@@ -1159,14 +1162,14 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <span>XP BASE <span class="sinfo" data-tip="Base XP cost for the level curve — the cost of level 1→2. Higher = slower overall progression.">?</span></span>
         <span class="v"><span id="v-xpb">300</span></span>
       </div>
-      <input type="range" id="s-xpb" min="100" max="2000" step="50" value="300">
+      <input type="range" id="s-xpb" min="100" max="2000" step="50" value="400">
     </div>
     <div class="slider-g">
       <div class="slider-l">
         <span>XP GROWTH /LVL <span class="sinfo" data-tip="Per-level XP growth rate. 1.10 = each level costs 10% more than the last. Higher = steeper late-game grind.">?</span></span>
         <span class="v"><span id="v-xpe">1.10</span></span>
       </div>
-      <input type="range" id="s-xpe" min="1.02" max="1.20" step="0.01" value="1.10">
+      <input type="range" id="s-xpe" min="1.02" max="1.20" step="0.01" value="1.14">
     </div>
 
     <div class="adm-subsec">REWARDS</div>
@@ -1391,27 +1394,36 @@ let toastTmr=null, frameCount=0, fpsT=performance.now();
 const floatingTexts=[];
 // Ant interpolation
 let prevAntPos=new Map(), lastVwAt=0, antFrameDt=0; // antFrameDt: smoothed ms between ant frames
-// Tile layer pixel cache (1px-per-tile offscreen canvas)
-const tileCanvas=document.createElement('canvas');
-const tileCtx=tileCanvas.getContext('2d',{alpha:true});
+// ===== Persistent world-anchored map textures (the smooth pan/zoom core) =========================
+// Territory + fog are rasterized ONCE per data change into full-cache (TILE_CACHE_W×H, 1px/tile)
+// offscreen canvases that mirror tileCache/fogCache and share their world anchor (cacheOriX/Y). The
+// camera then only blits a scaled sub-rect each frame — so panning and zooming are pure GPU
+// drawImage transforms that NEVER re-rasterize. Re-raster happens on (a) a data merge, which patches
+// just the changed region (applyViewFrame → rasterizeCache), or (b) a render-mode change
+// (placing / mapVisible / browsable / palette), which re-rasters the whole cache (rare).
+const territoryCanvas=document.createElement('canvas');
+const territoryCtx=territoryCanvas.getContext('2d',{alpha:true});
+let territoryImg=null;             // full-cache ImageData backing (TILE_CACHE_W×H), edited in place
+// Fog-of-war — the whole canvas is fogged by default; each tick we ERASE a REVEAL MASK for what the
+// player can see (so a leak is structurally impossible). `fogCanvas`/`fogImg` is the per-frame reveal
+// MASK (served grid v.w×v.h, 1px/cell, alpha = how much to erase = (100-fog)/100); rebuilt only when
+// the frame changes. `fogScreen` is the canvas-sized (half-res) offscreen the drifting-mist shroud is
+// composited into before blitting. `mistTile` is a seamless value-noise cloud tile (built once).
+const fogCanvas=document.createElement('canvas');
+const fogCtx=fogCanvas.getContext('2d',{alpha:true});
+let fogImg=null, fogBuiltVw=null;  // reveal-mask ImageData + last-built vw (rebuild only on frame change)
+const fogScreen=document.createElement('canvas');
+const fogScreenCtx=fogScreen.getContext('2d',{alpha:true});
+const FOG_SCREEN_SCALE=0.5;        // shroud composited at half-res (mist is soft → no visible loss)
+// Seamless value-noise cloud tiles (built once): `mistTile` = opaque blue clouds (LO..HI) for the
+// shroud layers; `hazeTile` = translucent blue wisps for the faint mist drifting over revealed land.
+let mistTile=null, hazeTile=null, mistPattern=null, hazePattern=null;
+// Bit-packed (placing|mapVisible|browsable) the textures were last FULLY rasterized for. -1 forces a
+// full re-raster on the next render (login / wipe / palette change / admin fog toggle).
+let cacheRenderMode=-1;
 // LOD overview offscreen (1px-per-super-cell) for zoomed-out territory pyramid frames
 const lodCanvas=document.createElement('canvas');
 const lodCtx=lodCanvas.getContext('2d',{alpha:true});
-// Fog-of-war grey veil offscreens (1px/tile) — drawn OVER the basemap, UNDER territory, so the fog
-// zone reads as solid grey (no OSM). Built in lockstep with the tile/LOD caches from the fog field.
-const veilCanvas=document.createElement('canvas');
-const veilCtx=veilCanvas.getContext('2d',{alpha:true});
-let veilImg=null;
-const lodVeilCanvas=document.createElement('canvas');
-const lodVeilCtx=lodVeilCanvas.getContext('2d',{alpha:true});
-let lodVeilImg=null;
-let tileCachePlacing=false, tileCacheMapVis=true;
-let tileCacheDirty=false;
-// Built overlay region (world coords + size in tiles) backing the persistent 1:1 tile canvas.
-// Panning within this region is a free re-blit; we only rebuild on data/mode change or when the
-// visible window leaves the region. builtCamW=-1 forces a rebuild.
-let builtCamX0=0, builtCamY0=0, builtCamW=-1, builtCamH=-1;
-let tileImg=null;                  // persistent ImageData for the 1:1 overlay (reused each rebuild)
 let lodImg=null, lodBuiltVw=null;  // persistent ImageData + last-drawn vw for the LOD overlay
 // Binary view protocol: server sends deflate-compressed keyframe/delta tile frames. clientGrid is
 // the authoritative served grid (global ids) we patch deltas into; reset on (re)connect/wipe.
@@ -1427,7 +1439,7 @@ let mapVisible=true;
 // All radii in world tiles, measured from the player's territory (ownerBounds, or the queen until
 // any tile is owned). clear = full detail; loadOsmR = basemap fetch boundary; voidR = beyond here we
 // fetch NOTHING (server tiles, OSM, snapshot) — just paint grey. Defaults match L1 until `me` lands.
-let loadClearR=30, loadOsmR=38, loadVoidR=62, ownerBounds=null;
+let loadClearR=45, loadOsmR=65, loadVoidR=65, ownerBounds=null;
 let inVoid=false, tabHidden=false, _viewSuspended=false; // view-suspend reconciliation (void + hidden tab)
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
@@ -1505,27 +1517,18 @@ function toRGB(hex) {
   if (h.length===3) h=h.split('').map(c=>c+c).join('');
   return rgbCache[hex]=[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
 }
-// Fog-of-war palette. A cool, desaturated slate reads as atmospheric fog (not a flat grey
-// rectangle). Territory/units blend toward it under fog; the basemap veil + void fill share it so
-// the clear→fog→void transition is one seamless haze. Tunable in one place.
-const FOG_GREY=[84,91,107];     // tiles blend toward this fog tone under fog
-const FOG_QUEEN=[66,72,86];     // queens blend toward this (a touch darker) under fog
-const VOID_GREY=[84,91,107];    // solid fill for the fog/void zones (matches FOG_GREY → seamless)
+// Fog-of-war: a soft LIGHT BLUE — the unexplored world is drifting light-blue mist (clouds parting to
+// reveal your land). `drawFog` paints it full-canvas and the per-tick reveal mask erases it; the
+// `!browsable` background fill shares the tone so any uncovered pixel matches. Tunable in one place.
+// FOG_MIST_LO/HI bound the noise shading variance (deeper vs lighter mist patches).
+const FOG_SLATE=[150,190,230];  // base fog tone (kept name) — light blue
+const FOG_MIST_LO=[120,162,212];// darker mist patches (shading variance)
+const FOG_MIST_HI=[196,222,246];// lighter mist patches
+const VOID_GREY=FOG_SLATE;      // background fill behind everything (kept name; used by render())
 const VOID_GREY_CSS=`rgb(${VOID_GREY[0]},${VOID_GREY[1]},${VOID_GREY[2]})`;
-function fogBlend(hex, t) {
-  const [r,g,b]=toRGB(hex);
-  return `rgb(${(r*(1-t)+FOG_QUEEN[0]*t)|0},${(g*(1-t)+FOG_QUEEN[1]*t)|0},${(b*(1-t)+FOG_QUEEN[2]*t)|0})`;
-}
-// Write a fog-greyed RGBA tile pixel into ImageData `d` at byte offset `o`. rgb=[r,g,b] owner
-// colour, baseAlpha=0..255 pre-fog alpha, fog=0..99 (fog>=100 is culled by the callers).
-function fogTile(d, o, rgb, baseAlpha, fog) {
-  if (fog<=0) { d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2]; d[o+3]=baseAlpha; return; }
-  const t=fog/100, it=1-t;
-  d[o]  =(rgb[0]*it+FOG_GREY[0]*t)|0;
-  d[o+1]=(rgb[1]*it+FOG_GREY[1]*t)|0;
-  d[o+2]=(rgb[2]*it+FOG_GREY[2]*t)|0;
-  d[o+3]=Math.round(baseAlpha*(1-0.5*t));
-}
+const FOG_BASE_CSS=VOID_GREY_CSS;
+const FOG_MIST_LO_CSS=`rgb(${FOG_MIST_LO[0]},${FOG_MIST_LO[1]},${FOG_MIST_LO[2]})`;
+const FOG_MIST_HI_CSS=`rgb(${FOG_MIST_HI[0]},${FOG_MIST_HI[1]},${FOG_MIST_HI[2]})`;
 
 
 /* ===================================================================
@@ -1558,55 +1561,47 @@ function getNearColored(v) {
   return nc;
 }
 
-function buildTileCache(camX0, camY0, camW, camH, myId=0, placing=false, showMap=true) {
-  if (tileCanvas.width !== camW || tileCanvas.height !== camH) {
-    tileCanvas.width = camW; tileCanvas.height = camH; tileImg = null;
-  }
-  // Reuse the ImageData buffer across rebuilds — allocating a fresh multi-MB buffer every frame
-  // was the main source of pan jank. fill(0) is a fast memset that clears the previous paint.
-  if (!tileImg) tileImg = tileCtx.createImageData(camW, camH);
-  const d = tileImg.data; d.fill(0);
-  // Grey veil (built in the SAME loop): VOID_GREY at alpha = fog/100, painted OVER the basemap and
-  // UNDER territory so the fog zone reads as solid grey (no OSM). Unseen cells default to fog 100 →
-  // opaque, which is exactly what we want for the void inside the cache window. Off while browsing
-  // the planet (placement/relocate) or with the basemap hidden — the canvas then stays transparent.
-  const veilOn = showMap && !worldBrowsable();
-  if (veilCanvas.width !== camW || veilCanvas.height !== camH) {
-    veilCanvas.width = camW; veilCanvas.height = camH; veilImg = null;
-  }
-  if (!veilImg) veilImg = veilCtx.createImageData(camW, camH);
-  const vd = veilImg.data; vd.fill(0);
-  for (let row=0; row<camH; row++) {
-    const wy = camY0 + row;
-    if (wy < 0 || wy >= WORLD.h) continue;
-    const dy = wy - cacheOriY;
-    if (dy < 0 || dy >= TILE_CACHE_H) continue;
-    const cRow = dy * TILE_CACHE_W;
-    for (let col=0; col<camW; col++) {
-      const wx = camX0 + col;
-      if (wx < 0 || wx >= WORLD.w) continue;
-      const dx = wx - cacheOriX;
-      if (dx < 0 || dx >= TILE_CACHE_W) continue;
-      const ci = cRow + dx;
-      const fog = fogCache[ci];
-      const o = (row*camW+col)*4;
-      if (veilOn) {   // constant fog RGB, alpha=fog (capped) → smooth fade + remembered terrain
-        vd[o]=VOID_GREY[0]; vd[o+1]=VOID_GREY[1]; vd[o+2]=VOID_GREY[2];
-        vd[o+3] = fog<=0 ? 0 : (((fog/100)*255)|0);   // full opacity at fog 100 → solid grey edge
-      }
-      const t = tileCache[ci];
-      if (t === 0) continue;
-      if (fog >= 100) continue;
-      const isOwn = t === myId;
-      const baseAlpha = placing ? (isOwn?230:102) : (isOwn?255:(showMap?102:255));
-      fogTile(d, o, toRGB(palette[t]||'#9b3027'), baseAlpha, fog);
+// Allocate the world-anchored TERRITORY texture (once at login, sized to the tile cache). It holds
+// pure owner colours; the per-frame fog (drawFog) shrouds it. Empty until frames merge.
+function allocCacheTextures(){
+  territoryCanvas.width=TILE_CACHE_W; territoryCanvas.height=TILE_CACHE_H;
+  territoryImg=territoryCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
+  cacheRenderMode=-1;
+}
+// Wipe the territory texture (on cache re-anchor / world wipe). Re-fills as frames arrive.
+function clearCacheTextures(){
+  if (!territoryImg) return;
+  territoryImg.data.fill(0);
+  territoryCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H);
+}
+// Rasterize a cache-LOCAL pixel region [lx,ly,lw,lh] of tileCache into the persistent TERRITORY
+// texture, uploading ONLY that dirty sub-rect. Pure owner colours — the fog (drawFog) shrouds them at
+// draw time. A cell is transparent when: unclaimed, fully fogged (fogCache≥100, a cheap
+// belt-and-suspenders cull so a fast pan can't flash distant land), or we're browsing the planet
+// (queen-select shows the whole-world map with NO territory). Called per data merge + on mode change.
+function rasterizeCache(lx, ly, lw, lh){
+  if (!territoryImg) return;
+  lx|=0; ly|=0; lw|=0; lh|=0;
+  if (lx<0){ lw+=lx; lx=0; } if (ly<0){ lh+=ly; ly=0; }
+  lw=Math.min(TILE_CACHE_W-lx, lw); lh=Math.min(TILE_CACHE_H-ly, lh);
+  if (lw<=0 || lh<=0) return;
+  const myId=me?.id||0;
+  const browsable = worldBrowsable();
+  const showMap = mapVisible;
+  const td=territoryImg.data;
+  for (let ry=0; ry<lh; ry++){
+    const rowC=(ly+ry)*TILE_CACHE_W + lx;
+    for (let rx=0; rx<lw; rx++){
+      const ci=rowC+rx, o=ci*4;
+      const t=tileCache[ci];
+      if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; continue; }
+      const rgb=toRGB(palette[t]||'#9b3027');
+      td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
+      // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
+      td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
     }
   }
-  tileCtx.putImageData(tileImg, 0, 0);
-  veilCtx.putImageData(veilImg, 0, 0);
-  tileCachePlacing = placing;
-  tileCacheMapVis = showMap;
-  tileCacheDirty = false;
+  territoryCtx.putImageData(territoryImg, 0,0, lx, ly, lw, lh);
 }
 
 /* ===================================================================
@@ -1972,14 +1967,14 @@ function applyViewFrame(f){
   if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
   { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
   vw=f;
-  tileCacheDirty=true;
-  // Only 1:1 frames feed the sliding fine cache; LOD (downsampled) frames are drawn directly from vw.
+  // Only 1:1 frames feed the persistent fine cache; LOD (downsampled) frames are drawn directly from vw.
   if (tileCache && (f.lod||1) === 1) {
     const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=f;
     if (_vx < cacheOriX || _vx+_vw > cacheOriX+TILE_CACHE_W || _vy < cacheOriY || _vy+_vh > cacheOriY+TILE_CACHE_H) {
       cacheOriX = Math.max(0, _vx - ((TILE_CACHE_W-_vw)>>1));
       cacheOriY = Math.max(0, _vy - ((TILE_CACHE_H-_vh)>>1));
       tileCache.fill(0); fogCache.fill(100);
+      clearCacheTextures();   // textures share the world anchor → discard stale pixels on re-anchor
     }
     for (let r=0;r<_vh;r++) {
       const dy=(_vy+r)-cacheOriY; if (dy<0||dy>=TILE_CACHE_H) continue;
@@ -1987,6 +1982,9 @@ function applyViewFrame(f){
       tileCache.set(_vt.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
       fogCache.set(_vf.subarray(r*_vw,(r+1)*_vw), dy*TILE_CACHE_W+dx);
     }
+    // Patch ONLY the merged region into the persistent textures (camera-independent → no per-frame
+    // raster). Panning/zooming afterward is a pure GPU blit of these textures.
+    rasterizeCache(_vx-cacheOriX, _vy-cacheOriY, _vw, _vh);
   }
   if (me?.color) palette[me.id]=me.color;
   // Remember every queen we've ever seen this life so their tiles/ants stay identified even after
@@ -2060,7 +2058,7 @@ function handle(msg) {
       fogCache=new Uint8Array(TILE_CACHE_W*TILE_CACHE_H).fill(100);
       cacheOriX=Math.max(0,(WORLD.spawnX||0)-(TILE_CACHE_W>>1));
       cacheOriY=Math.max(0,(WORLD.spawnY||0)-(TILE_CACHE_H>>1));
-      builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
+      allocCacheTextures(); lodBuiltVw=null; clientGrid=null;
       if (me.colorChosen === false) { $('auth-modal').style.display='grid'; showStep('admin-color'); return; }
       $('auth-modal').style.display='none';
       updateOsmAttrib();   // basemap is now active → show the OSM attribution
@@ -2163,7 +2161,7 @@ function handle(msg) {
       doGeolocate();
       vw=null;
       if (tileCache){tileCache.fill(0);fogCache.fill(100);}
-      builtCamW=builtCamH=-1; lodBuiltVw=null; clientGrid=null;
+      clearCacheTextures(); cacheRenderMode=-1; lodBuiltVw=null; clientGrid=null;
       break;
     case 'shop-ok':
       AudioEngine.plop();
@@ -2732,47 +2730,41 @@ function clampView() {
   const worldFit = Math.max(cvs.width / (CELL * WORLD.w), cvs.height / (CELL * WORLD.h), 0.0001);
   let minZoom = worldFit;
 
-  // ZOOM-OUT CAP (FoW): cap how far you can zoom out. Two components, take the larger. Panning stays
-  // FREE (you scroll into fog with friction; see `panFriction`). Skipped while browsable
-  // (placement/relocate) so the player can frame the whole planet.
-  if (!worldBrowsable()) {
-    // LEVEL component — how far "into space" you may pull back, growing with queen level. Driven by
-    // the server-sent loadVoidR (linear in level: ~60 @L1 → ~200 @L100). Power curve (exp > 1) so the
-    // zoom-out ACCELERATES at high level — tuned to ~500 tiles @L1, ~3,000 @L100. Robust to fog-curve
-    // tweaks (it just re-scales with whatever loadVoidR the server sends).
-    const levelSpan = 1.13 * Math.pow(loadVoidR, 1.49);
-    // TERRITORY component — let a big empire pull back to frame all its land plus the fog halo, but
-    // cap it at 2× the level span so a sprawling empire never becomes an unusable speck (pan past that).
-    const terrSpan = ownerBounds
-      ? Math.max(ownerBounds[2] - ownerBounds[0], ownerBounds[3] - ownerBounds[1]) + 2 * loadVoidR
-      : 0;
-    const maxSpan = Math.max(levelSpan, Math.min(terrSpan, levelSpan * 2), 240);   // tiles visible at max zoom-out
+  // FoW LEASH: during play the camera is bounded to your revealed area — the bounding box of ALL
+  // your tiles (`ownerBounds`) inflated by the reveal radius (`loadVoidR`). Both halves of a
+  // split empire sit inside this box, so you can always pan across the fog to your far island.
+  // Skipped while browsable (placement/relocate) so the player can frame the whole planet.
+  const leashed = !worldBrowsable();
+  const leash = leashed ? territoryAABB(loadVoidR) : null;   // PAN box (full reveal, split-empire safe)
+  if (leashed) {
+    // ZOOM-OUT CAP: frame your land + its CLEAR zone (not the full void ring), so at max zoom-out the
+    // territory FILLS the screen with just a thin fog edge — not a tiny queen in a sea of fog. Floor at
+    // 2·clearR so a brand-new queen frames its clear zone. (Pan box is wider, so you can still nudge
+    // into the fog ring; the full-canvas shroud keeps it leak-proof.)
+    const zb = territoryAABB(loadClearR);
+    const maxSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadClearR);
     minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
   }
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
 
-  // FREE PANNING: clamp the camera centre only to the world edges (centre on an axis the viewport
-  // overflows). Roaming far from territory just shows fog + fetches nothing (friction discourages it).
   const cp = CELL * view.zoom;
   const halfW = cvs.width / (2*cp), halfH = cvs.height / (2*cp);
-  view.x = (2*halfW >= WORLD.w) ? WORLD.w/2 : clamp(view.x, halfW, WORLD.w - halfW);
-  view.y = (2*halfH >= WORLD.h) ? WORLD.h/2 : clamp(view.y, halfH, WORLD.h - halfH);
+  if (leashed) {
+    // Hard clamp: keep the viewport inside the leash box; centre on an axis the box is narrower
+    // than the viewport. No scrolling into the unseen — the fog is never something you can wander.
+    view.x = (2*halfW >= leash.x1 - leash.x0) ? (leash.x0 + leash.x1) / 2 : clamp(view.x, leash.x0 + halfW, leash.x1 - halfW);
+    view.y = (2*halfH >= leash.y1 - leash.y0) ? (leash.y0 + leash.y1) / 2 : clamp(view.y, leash.y0 + halfH, leash.y1 - halfH);
+  } else {
+    // Browsable (placement): clamp the camera centre only to the world edges.
+    view.x = (2*halfW >= WORLD.w) ? WORLD.w/2 : clamp(view.x, halfW, WORLD.w - halfW);
+    view.y = (2*halfH >= WORLD.h) ? WORLD.h/2 : clamp(view.y, halfH, WORLD.h - halfH);
+  }
 }
 
-// Pan resistance: full speed (1) while the clear/loaded region is under the camera, ramping down to a
-// heavy crawl deep in the fog — so you CAN scroll into the grey, but it drags, discouraging it
-// without a hard wall. Manual drag/keyboard only (deliberate fly-to via panTarget is never slowed).
-function panFriction() {
-  if (worldBrowsable()) return 1;
-  const b = territoryAABB(loadOsmR);
-  const dx = Math.max(b.x0 - view.x, 0, view.x - b.x1);
-  const dy = Math.max(b.y0 - view.y, 0, view.y - b.y1);
-  const dist = Math.hypot(dx, dy);                 // tiles the camera centre is past the loaded edge
-  if (dist <= 0) return 1;
-  const ramp = Math.max(loadVoidR, 60) * 3;         // distance over which resistance builds
-  return clamp(1 - dist / ramp, 0.12, 1);
-}
+// Pan resistance is retired — the hard leash in `clampView` replaces the old friction crawl, so
+// manual drag/keyboard pan always runs at full speed (you simply can't cross the leash box).
+function panFriction() { return 1; }
 window.addEventListener('resize', () => { resize(); clampView(); });
 resize();
 
@@ -3060,32 +3052,25 @@ function drawOsmTiles(cp, canvasW, canvasH) {
   const gx1=view.x+canvasW/(2*cp), gy1=view.y+canvasH/(2*cp);
   const tl=gameToOsmTile(gx0, gy0, n, geo, cosLat);
   const br=gameToOsmTile(gx1, gy1, n, geo, cosLat);
-  // FOG-OF-WAR GATES (real FoW): we FETCH new basemap tiles only inside the clear zone
-  // (`loadOsmR`), but we still DRAW already-cached tiles out to the void edge (`loadVoidR`) so the
-  // explored frontier renders as faintly-remembered terrain under the fog veil instead of flat grey.
-  // Beyond `loadVoidR` nothing is drawn (the fog/void background shows). Whole map while browsing.
+  // FOG-OF-WAR GATE (real FoW): ONE window = the reveal ring around your tiles (`loadOsmR`, which the
+  // server sets to clearR + feather). We fetch AND draw basemap tiles only inside it; the opaque fog
+  // overlay masks the feather edge and the dark-slate background shows beyond. No "remembered terrain"
+  // far from your tiles — the map is only ever visible near your territory. Whole map while browsing.
   const osmTileRange=(radius)=>{
     const a=territoryAABB(radius);
     const c0=gameToOsmTile(a.x0,a.y0,n,geo,cosLat), c1=gameToOsmTile(a.x1,a.y1,n,geo,cosLat);
     return [Math.min(c0.x,c1.x)-1, Math.max(c0.x,c1.x)+1, Math.min(c0.y,c1.y)-1, Math.max(c0.y,c1.y)+1];
   };
-  let fMinX=-Infinity,fMaxX=Infinity,fMinY=-Infinity,fMaxY=Infinity;   // fetch window (clear zone)
-  let dMinX=-Infinity,dMaxX=Infinity,dMinY=-Infinity,dMaxY=Infinity;   // draw window (memory frontier)
+  let fMinX=-Infinity,fMaxX=Infinity,fMinY=-Infinity,fMaxY=Infinity;   // reveal window (fetch + draw)
   if (!worldBrowsable()) {
     [fMinX,fMaxX,fMinY,fMaxY]=osmTileRange(loadOsmR);
-    [dMinX,dMaxX,dMinY,dMaxY]=osmTileRange(loadVoidR);
   }
   const inFetch=(ox,oy)=> ox>=fMinX&&ox<=fMaxX&&oy>=fMinY&&oy<=fMaxY;
-  const inDraw =(ox,oy)=> ox>=dMinX&&ox<=dMaxX&&oy>=dMinY&&oy<=dMaxY;
   for (let ox=tl.x-1; ox<=br.x+1; ox++) {
     for (let oy=tl.y-1; oy<=br.y+1; oy++) {
       if (ox<0||oy<0||ox>=n||oy>=n) continue;
-      if (!inDraw(ox,oy)) continue;                  // past the memory frontier → fog background
-      const cached=osmCache.get(`${osmZ}/${ox}/${oy}`);
-      let e;
-      if (cached && cached.loaded) e=cached;          // remembered terrain → draw, no fetch
-      else if (inFetch(ox,oy)) e=getOsmTile(osmZ,ox,oy); // clear zone → fetch
-      else continue;                                  // frontier, not yet cached → fog background
+      if (!inFetch(ox,oy)) continue;                 // outside the reveal ring → fog background
+      const e=getOsmTile(osmZ,ox,oy);
       if (!e.loaded) continue;
       const {tx:x0,ty:y0}=osmTileCorner(ox,   oy,   n, geo, cosLat);
       const {tx:x1,ty:y1}=osmTileCorner(ox+1, oy+1, n, geo, cosLat);
@@ -3266,7 +3251,7 @@ function doGeolocate() {
 
 function toggleMap() {
   mapVisible = !mapVisible;
-  tileCacheDirty = true;
+  // mapVisible is part of the texture render-mode key, so the next render re-rasters automatically.
   updateOsmAttrib();
 }
 
@@ -3282,45 +3267,143 @@ function updateOsmAttrib() {
 function drawLodTiles(v, cp, W, H) {
   const step=v.lod||1, gw=v.w, gh=v.h, tiles=v.tiles, fog=v.fog;
   if (!gw || !gh || !tiles) return;
-  const veilOn = mapVisible && !worldBrowsable();
+  if (worldBrowsable()) return;   // queen-select: whole-world map only, no territory
   if (lodCanvas.width!==gw || lodCanvas.height!==gh) { lodCanvas.width=gw; lodCanvas.height=gh; lodImg=null; lodBuiltVw=null; }
-  if (lodVeilCanvas.width!==gw || lodVeilCanvas.height!==gh) { lodVeilCanvas.width=gw; lodVeilCanvas.height=gh; lodVeilImg=null; }
-  // Only repaint the offscreens when the frame actually changed; panning/zooming between the
-  // ~10 Hz frames just re-blits the cached canvases (the positioning below runs every frame).
+  // Only repaint the offscreen when the frame actually changed; panning/zooming between the
+  // ~10 Hz frames just re-blits the cached canvas (the positioning below runs every frame).
   if (v!==lodBuiltVw) {
     if (!lodImg) lodImg=lodCtx.createImageData(gw, gh);
-    if (!lodVeilImg) lodVeilImg=lodVeilCtx.createImageData(gw, gh);
     const d=lodImg.data; d.fill(0);
-    const vd=lodVeilImg.data; vd.fill(0);
     const myId=me?.id||0;
     for (let i=0; i<gw*gh; i++) {
       const f=fog?fog[i]:0;
-      if (veilOn) {                                   // fog veil over the basemap (matches buildTileCache)
-        const o=i*4;
-        vd[o]=VOID_GREY[0]; vd[o+1]=VOID_GREY[1]; vd[o+2]=VOID_GREY[2];
-        vd[o+3] = f<=0 ? 0 : (((f/100)*255)|0);   // full opacity at fog 100 → solid grey edge
-      }
       const t=tiles[i];
-      if (t===0) continue;
-      if (f>=100) continue;
-      const baseA = (t===myId) ? 255 : (mapVisible ? 150 : 255);
-      fogTile(d, i*4, toRGB(palette[t]||'#9b3027'), baseA, f);
+      if (t===0 || f>=100) continue;                // unclaimed / fully fogged → transparent (overlay masks)
+      const o=i*4, rgb=toRGB(palette[t]||'#9b3027');
+      d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2];
+      d[o+3]=(t===myId) ? 255 : (mapVisible ? 150 : 255);
     }
     lodCtx.putImageData(lodImg, 0, 0);
-    lodVeilCtx.putImageData(lodVeilImg, 0, 0);
     lodBuiltVw=v;
   }
   const sx = W/2 + (v.x0 - view.x)*cp;
   const sy = H/2 + (v.y0 - view.y)*cp;
   const dw = gw*step*cp, dh = gh*step*cp;
-  if (dw>0 && dh>0) {
-    if (veilOn) {                                   // soft fog gradient (smoothing on), then crisp territory
-      ctx.imageSmoothingEnabled=true;
-      ctx.drawImage(lodVeilCanvas, sx, sy, dw, dh);
+  if (dw>0 && dh>0) { ctx.imageSmoothingEnabled=false; ctx.drawImage(lodCanvas, sx, sy, dw, dh); }
+}
+
+// Build the seamless value-noise cloud tiles ONCE. A small random grid sampled with wrap-around
+// (row/col G == 0) → a tile that repeats with no seam, smoothstep-bilinear-upscaled into 256². Two
+// outputs from the same field: `mistTile` = opaque clouds coloured between FOG_MIST_LO and HI (shroud
+// layers); `hazeTile` = the lighter tone with alpha = noise (translucent wisps for the over-map haze).
+function buildMistTile(){
+  const G=8, T=256;
+  const grid=new Float32Array((G+1)*(G+1));
+  for (let y=0;y<G;y++) for (let x=0;x<G;x++) grid[y*(G+1)+x]=Math.random();
+  for (let y=0;y<=G;y++) grid[y*(G+1)+G]=grid[y*(G+1)];            // wrap right = left
+  for (let x=0;x<=G;x++) grid[G*(G+1)+x]=grid[x];                  // wrap bottom = top
+  const mk=()=>{ const c=document.createElement('canvas'); c.width=T; c.height=T; return c; };
+  mistTile=mk(); hazeTile=mk();
+  const mctx=mistTile.getContext('2d'), hctx=hazeTile.getContext('2d');
+  const mi=mctx.createImageData(T,T), hi=hctx.createImageData(T,T), md=mi.data, hd=hi.data;
+  const sc=G/T, HAZE_A=110;
+  for (let py=0;py<T;py++){
+    const gy=py*sc, y0=gy|0, fy=gy-y0, sY=fy*fy*(3-2*fy);
+    for (let px=0;px<T;px++){
+      const gx=px*sc, x0=gx|0, fx=gx-x0, sX=fx*fx*(3-2*fx);
+      const a=grid[y0*(G+1)+x0], b=grid[y0*(G+1)+x0+1], c2=grid[(y0+1)*(G+1)+x0], e=grid[(y0+1)*(G+1)+x0+1];
+      const v=(a*(1-sX)+b*sX)*(1-sY)+(c2*(1-sX)+e*sX)*sY;          // 0..1
+      const o=(py*T+px)*4;
+      md[o]  =(FOG_MIST_LO[0]+(FOG_MIST_HI[0]-FOG_MIST_LO[0])*v)|0;
+      md[o+1]=(FOG_MIST_LO[1]+(FOG_MIST_HI[1]-FOG_MIST_LO[1])*v)|0;
+      md[o+2]=(FOG_MIST_LO[2]+(FOG_MIST_HI[2]-FOG_MIST_LO[2])*v)|0;
+      md[o+3]=255;
+      hd[o]=FOG_MIST_HI[0]; hd[o+1]=FOG_MIST_HI[1]; hd[o+2]=FOG_MIST_HI[2]; hd[o+3]=(v*HAZE_A)|0;
     }
-    ctx.imageSmoothingEnabled=false;
-    ctx.drawImage(lodCanvas, sx, sy, dw, dh);
   }
+  mctx.putImageData(mi,0,0); hctx.putImageData(hi,0,0);
+  mistPattern=fogScreenCtx.createPattern(mistTile,'repeat');
+  hazePattern=ctx.createPattern(hazeTile,'repeat');
+}
+// Fill the current context with a repeating mist pattern shifted by (ox,oy) — the seamless tile makes
+// the drift gap-free at any offset. Used for both the shroud layers and the over-map haze.
+// WORLD-ANCHORED mist fill: maps the seamless noise tile to fixed WORLD positions via a canvas
+// transform, so the clouds sit on the terrain and pan/zoom WITH it (not pasted to the screen). `ppw` =
+// on-context px per world tile (`cp` for the full-res ctx, `cp*FOG_SCREEN_SCALE` for the half-res
+// shroud). `jcx/jcy` shift the anchor by a few WORLD cells → the in-place "dance" (bounded jiggle).
+const FOG_NOISE_WORLD_PER_PX = 1.5;   // world tiles per noise-tile pixel → cloud grain/scale
+const FOG_JIGGLE_CELLS = 2;           // ± world cells the fog dances in place
+function fillMistWorld(c, cw, ch, pat, ppw, jcx, jcy, alpha){
+  const s  = ppw * FOG_NOISE_WORLD_PER_PX;            // px per noise-pixel (zoom-scaled)
+  const tx = cw/2 - (view.x - jcx) * ppw;             // world (0,0) → context px, + jiggle (cells)
+  const ty = ch/2 - (view.y - jcy) * ppw;
+  if (s <= 0) return;
+  c.save();
+  c.globalAlpha=alpha; c.imageSmoothingEnabled=true; c.fillStyle=pat;
+  c.setTransform(s, 0, 0, s, tx, ty);                 // pattern space (noise px) → context px
+  c.fillRect((0-tx)/s, (0-ty)/s, cw/s, ch/s);         // visible rect mapped to pattern space
+  c.restore();                                        // restores transform + alpha + smoothing
+}
+
+// THE FOG. The whole canvas is fogged drifting light-blue mist; each tick we ERASE a reveal mask for
+// what the player sees (so the map can never leak — we reveal INTO fog, we don't cover map WITH fog).
+// Pass 1 (shroud, half-res offscreen): opaque light-blue base + two mist layers drifting different
+// ways (churn + shading variance), then `destination-out` the reveal mask over the served-grid rect —
+// everything outside that rect is never erased → stays fully fogged. Pass 2 (haze): a faint mist
+// drifting the other way over the WHOLE canvas, so even revealed land has subtle atmosphere.
+// Caller gates on fogActive (skip while browsing / admin god-view). Handles lod>1 via `step`.
+function drawFog(v, cp, W, H) {
+  if (!mistTile) buildMistTile();
+  const now=performance.now();
+  const step=(v&&v.lod)||1, gw=v&&v.w, gh=v&&v.h, fog=v&&v.fog;
+  // Bounded in-place "dance": each layer wobbles ±FOG_JIGGLE_CELLS world cells on its own phase/freq,
+  // so they churn against each other. NOT drift — the base position is world-anchored (fillMistWorld).
+  const J=FOG_JIGGLE_CELLS;
+  const jAx=Math.sin(now*0.00050)*J,      jAy=Math.cos(now*0.00041)*J;
+  const jBx=Math.cos(now*0.00043+1.7)*J,  jBy=Math.sin(now*0.00055+0.6)*J;
+  const jHx=Math.sin(now*0.00037+2.3)*J,  jHy=Math.cos(now*0.00047+0.9)*J;
+
+  // Reveal mask (rebuild only when the frame changes): alpha = erase amount = (100-fog)/100.
+  if (gw && gh && fog) {
+    if (fogCanvas.width!==gw || fogCanvas.height!==gh) { fogCanvas.width=gw; fogCanvas.height=gh; fogImg=null; fogBuiltVw=null; }
+    if (v!==fogBuiltVw) {
+      if (!fogImg) fogImg=fogCtx.createImageData(gw, gh);
+      const d=fogImg.data;
+      for (let i=0; i<gw*gh; i++) {
+        const o=i*4, f=fog[i];
+        d[o]=255; d[o+1]=255; d[o+2]=255;
+        d[o+3]= f>=100 ? 0 : (f<=0 ? 255 : (((100-f)/100)*255)|0);
+      }
+      fogCtx.putImageData(fogImg, 0, 0);
+      fogBuiltVw=v;
+    }
+  }
+
+  // Pass 1 — shroud at half-res.
+  const sw=Math.max(1,(W*FOG_SCREEN_SCALE)|0), sh=Math.max(1,(H*FOG_SCREEN_SCALE)|0);
+  if (fogScreen.width!==sw || fogScreen.height!==sh) { fogScreen.width=sw; fogScreen.height=sh; }
+  const fctx=fogScreenCtx;
+  fctx.setTransform(1,0,0,1,0,0); fctx.globalCompositeOperation='source-over'; fctx.globalAlpha=1;
+  fctx.fillStyle=FOG_BASE_CSS; fctx.fillRect(0,0,sw,sh);                         // opaque light-blue base
+  fctx.imageSmoothingEnabled=true;
+  const ppwS=cp*FOG_SCREEN_SCALE;                                               // half-res px per world tile
+  fillMistWorld(fctx, sw, sh, mistPattern, ppwS, jAx, jAy, 0.55);               // layer A (world-anchored)
+  fillMistWorld(fctx, sw, sh, mistPattern, ppwS, jBx, jBy, 0.35);               // layer B (different dance)
+  // Erase the reveal (served-grid rect, scaled to half-res). Outside it the shroud stays fully opaque.
+  if (gw && gh && fog) {
+    const dsx=(W/2+(v.x0-view.x)*cp)*FOG_SCREEN_SCALE, dsy=(H/2+(v.y0-view.y)*cp)*FOG_SCREEN_SCALE;
+    const ddw=gw*step*cp*FOG_SCREEN_SCALE, ddh=gh*step*cp*FOG_SCREEN_SCALE;
+    if (ddw>0 && ddh>0) {
+      fctx.globalCompositeOperation='destination-out';
+      fctx.drawImage(fogCanvas, dsx, dsy, ddw, ddh);
+      fctx.globalCompositeOperation='source-over';
+    }
+  }
+  ctx.imageSmoothingEnabled=true;
+  ctx.drawImage(fogScreen, 0, 0, W, H);                                          // blit shroud up over the map
+  // Pass 2 — faint over-map haze (whole canvas, full-res), world-anchored, dancing on its own phase.
+  fillMistWorld(ctx, W, H, hazePattern, cp, jHx, jHy, 1.0);
+  ctx.imageSmoothingEnabled=false;
 }
 
 function render() {
@@ -3362,46 +3445,38 @@ function render() {
   const placingMode = mode==='place-queen';
   const myId = me?.id || 0;
 
-  // 2) Tile layer.
-  // LOD overview when zoomed out (server sent a downsampled `lod` frame); else the 1:1
-  // sliding-cache path. The two are mutually exclusive — lod>1 only occurs below cp 0.5.
+  // 2) Tile layer + fog. Territory is hidden entirely while browsing (queen-select). For play, blit
+  // the territory texture; `drawFog` (below) then shrouds the whole canvas in drifting mist and erases
+  // the reveal mask, so the map is only visible in the ring around your tiles.
+  // LOD overview when zoomed out (server sent a downsampled `lod` frame); else the 1:1 cache path.
   if (vw && (vw.lod||1) > 1) {
-    drawLodTiles(vw, cp, W, H);
-  } else if (tileCache) {
-    // 1:1 overlay (lod==1 frame). Build a persistent canvas covering the window plus a margin;
-    // while panning within that built region we only re-blit (no per-pixel rebuild). Rebuild on
-    // data/mode change or when the visible window leaves the built region.
-    const MARGIN = 96;
-    const visW = Math.ceil(W/cp), visH = Math.ceil(H/cp);
-    const camW = Math.min(TILE_CACHE_W, visW + 2*MARGIN);
-    const camH = Math.min(TILE_CACHE_H, visH + 2*MARGIN);
-    const visX0 = view.x - W/(2*cp), visX1 = view.x + W/(2*cp);
-    const visY0 = view.y - H/(2*cp), visY1 = view.y + H/(2*cp);
-    const left = tileCacheDirty || tileCachePlacing!==placingMode || tileCacheMapVis!==mapVisible
-      || builtCamW!==camW || builtCamH!==camH
-      || visX0<builtCamX0 || visX1>builtCamX0+camW || visY0<builtCamY0 || visY1>builtCamY0+camH;
-    if (left) {
-      builtCamX0 = Math.round(view.x - camW/2);
-      builtCamY0 = Math.round(view.y - camH/2);
-      builtCamW = camW; builtCamH = camH;
-      buildTileCache(builtCamX0, builtCamY0, camW, camH, myId, placingMode, mapVisible);
+    drawLodTiles(vw, cp, W, H);          // no-op while browsing
+  } else if (tileCache && territoryImg) {
+    // Persistent world-anchored territory texture (pure colours; rasterizeCache makes it fully
+    // transparent while browsing, so this blit shows nothing during queen-select). Re-raster ONLY
+    // when the render mode changed (mapVisible / browsable) — the browsable bit guarantees the
+    // texture re-rasters on both ENTER and EXIT of placement. Data merges patch it in applyViewFrame;
+    // the camera then just blits the visible sub-rect, GPU-scaled by cp, so pan/zoom never re-raster.
+    const modeKey = (placingMode?1:0) | (mapVisible?2:0) | (browsable?4:0);
+    if (modeKey!==cacheRenderMode) { rasterizeCache(0,0,TILE_CACHE_W,TILE_CACHE_H); cacheRenderMode=modeKey; }
+    // Intersect the visible world rect with the cache's world bounds, then blit that overlap. Area
+    // outside the loaded cache shows the background fill (fog slate).
+    const wx0=view.x-W/(2*cp), wy0=view.y-H/(2*cp), wx1=view.x+W/(2*cp), wy1=view.y+H/(2*cp);
+    const ix0=Math.max(wx0, cacheOriX),              iy0=Math.max(wy0, cacheOriY);
+    const ix1=Math.min(wx1, cacheOriX+TILE_CACHE_W), iy1=Math.min(wy1, cacheOriY+TILE_CACHE_H);
+    if (ix1>ix0 && iy1>iy0) {
+      const sx=ix0-cacheOriX, sy=iy0-cacheOriY, sw=ix1-ix0, sh=iy1-iy0;             // src px (cache-local)
+      const dx=W/2+(ix0-view.x)*cp, dy=H/2+(iy0-view.y)*cp, dw=sw*cp, dh=sh*cp;     // dst px (screen)
+      ctx.drawImage(territoryCanvas, sx, sy, sw, sh, dx, dy, dw, dh);   // crisp pixelated territory
     }
-    const offX_tile = Math.round(W/2 - (view.x - builtCamX0)*cp);
-    const offY_tile = Math.round(H/2 - (view.y - builtCamY0)*cp);
-    const drawW = Math.round(builtCamW*cp), drawH = Math.round(builtCamH*cp);
-    if (drawW>0 && drawH>0) {
-      // Grey veil first (over OSM, under territory), then the territory overlay. Veil is transparent
-      // while browsing/map-off, so this is a no-op there. Smoothing ON for the veil → a soft fog
-      // gradient instead of blocky 1px/tile steps; OFF again for crisp pixelated territory.
-      if (!browsable && mapVisible) {
-        ctx.imageSmoothingEnabled=true;
-        ctx.drawImage(veilCanvas, offX_tile, offY_tile, drawW, drawH);
-        ctx.imageSmoothingEnabled=false;
-      }
-      ctx.drawImage(tileCanvas, offX_tile, offY_tile, drawW, drawH);
-    }
-    if ($('d-tiles')) $('d-tiles').textContent = builtCamW * builtCamH;
+    if ($('d-tiles')) $('d-tiles').textContent = (Math.max(0,ix1-ix0)*Math.max(0,iy1-iy0))|0;
   }
+  // THE FOG — full-canvas drifting mist with a per-tick reveal mask, on top of basemap + territory,
+  // under the entities (which the server already fog-culls). Active only in play and not for an admin
+  // in god-view: non-admins always; admin only with the FOG preview on (server sends a real field).
+  // Skipped while browsing (queen-select shows the whole-world map) and for admin god-view (full map).
+  const fogActive = !browsable && !(me?.isAdmin && !admFogOn);
+  if (fogActive) drawFog(vw, cp, W, H);
 
   // Tile grid — ONLY a faint 1-tile lattice when zoomed in close (cp ≥ 6), for ant-placement
   // precision. The old coarse 64-tile grid + coordinate labels were removed: they painted a harsh
@@ -3494,12 +3569,10 @@ function render() {
     ctx.restore();
   }
 
-  // 5) Queens
+  // 5) Queens. Drawn crisp on top of the fog overlay; the server only sends enemy queens that are
+  // within your reveal (fog < 100), so no per-entity fog tint is needed.
   for (const q of v.queens) {
     const px=offX+(q.x-v.x0)*cp, py=offY+(q.y-v.y0)*cp;
-    const qi=Math.max(0,(q.y-v.y0))*v.w+Math.max(0,(q.x-v.x0));
-    const f=(qi<v.fog.length)?v.fog[qi]:0;
-    const tint=(q.id===me?.id)?0:f/100;
     const qw=cp*q.size;
     // Shield glow
     if (q.shield > 0) {
@@ -3510,7 +3583,7 @@ function render() {
       ctx.strokeRect(px-2,py-2,qw+4,qw+4);
       ctx.restore();
     }
-    ctx.fillStyle=fogBlend(q.color, tint);
+    ctx.fillStyle=q.color;
     ctx.fillRect(px,py,qw,qw);
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
     ctx.strokeRect(px,py,qw,qw);
@@ -4284,7 +4357,7 @@ function doSetAdminColor() {
 /* ===================================================================
    ADMIN PANEL v2 — 5-tab system
    =================================================================== */
-let admCurrentTab='status', admPaused=false, admPlayerListInterval=null;
+let admCurrentTab='status', admPaused=false, admFogOn=false, admPlayerListInterval=null;
 let admTargetId=null, admPlayers=[];
 
 function admTab(btn, tab) {
@@ -4495,6 +4568,19 @@ function admSetCredits() {
 }
 
 /* Sandbox */
+// Admin fog-of-war preview. FOG=OFF (default) = god view; FOG=ON = see exactly what players see.
+// Server-authoritative: the server only honours `fog-view` for admin connections and recomputes the
+// REAL fog field for us when ON — a non-admin can never reach the cleared-fog path, so this can't
+// leak hidden tiles. cacheRenderMode=-1 re-rasters so the veil appears/clears on the next frame.
+function admToggleFog() {
+  admFogOn=!admFogOn; AudioEngine.click();
+  send({t:'fog-view', on:admFogOn});
+  cacheRenderMode=-1;
+  const b=$('adm-fog-btn');
+  if (b){ b.textContent=admFogOn?'🌫 FOG: ON (PLAYER VIEW)':'🌫 FOG: OFF (GOD VIEW)';
+          b.style.background=admFogOn?'var(--yel)':''; b.style.color=admFogOn?'var(--ink)':''; }
+  toast(admFogOn?'FOG PREVIEW ON':'FOG OFF · GOD VIEW');
+}
 function admTogglePause() {
   admPaused=!admPaused; AudioEngine.click();
   send({t:'admin-pause',paused:admPaused});
@@ -4593,8 +4679,8 @@ $('s-cp').addEventListener('input',()=>{
 });
 
 function updateXpPreview() {
-  const base=parseFloat($('s-xpb')?.value||300);
-  const rate=parseFloat($('s-xpe')?.value||1.10);
+  const base=parseFloat($('s-xpb')?.value||400);
+  const rate=parseFloat($('s-xpe')?.value||1.14);
   // Cumulative XP to reach L100 = sum of per-level costs base·rate^k (k=0..98) — the geometric sum,
   // matching the server's total_xp_for_level. (rate≈1 degenerates to linear.)
   const l100=Math.floor(Math.abs(rate-1)<1e-9 ? base*99 : base*(Math.pow(rate,99)-1)/(rate-1));

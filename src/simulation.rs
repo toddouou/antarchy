@@ -536,7 +536,7 @@ pub fn tick_world(world: &mut World) {
                                     if queen_id != ant.owner && !hit_queens.contains(&queen_id) {
                                         hit_queens.push(queen_id);
                                         hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false, dmg_mult: BRUTE_DMG_MULT });
-                                        xp.push(XpGrant { player_id: ant.owner, amount: 0.5, reason: "hit", x: ant.x, y: ant.y });
+                                        xp.push(XpGrant { player_id: ant.owner, amount: 0.0, reason: "hit", x: ant.x, y: ant.y });
                                     }
                                     brute_hit = true;
                                 }
@@ -551,7 +551,7 @@ pub fn tick_world(world: &mut World) {
                         if let Some(&queen_id) = queen_map.get(&dest_key) {
                             if queen_id != ant.owner {
                                 hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false, dmg_mult: 1.0 });
-                                xp.push(XpGrant { player_id: ant.owner, amount: 0.5, reason: "hit", x: ant.x, y: ant.y });
+                                xp.push(XpGrant { player_id: ant.owner, amount: 0.0, reason: "hit", x: ant.x, y: ant.y });
                             } else {
                                 hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: true, dmg_mult: 1.0 });
                             }

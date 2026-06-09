@@ -150,13 +150,13 @@ impl Default for Config {
             capitol_lat: 0.0,
             capitol_lon: 0.0,
             tile_meters: 26.72,
-            xp_base:         300.0,
-            xp_exp:           1.10,
+            xp_base:         400.0,
+            xp_exp:           1.14,
             xp_level_cap:    100,
             xp_tile_award:   150.0,
             xp_kill:        5000.0,
             xp_convert:        5.0,
-            xp_heal:           1.0,
+            xp_heal:           0.0,
             xp_highway_tick:   0.5,
             levelup_ant_grant: 1,
             ant_damage:        1.0,
@@ -781,13 +781,15 @@ pub fn queen_size_for_level(lvl: u16) -> u8 {
 // Fog (solid grey) begins after a short feather past the clear edge; the void (client stops
 // fetching tiles/OSM/entities) begins past `void` buffer. See fog.rs + the client void gate.
 // Constants kept here (not Config/sliders yet) for a focused change — trivial to promote later.
-const FOG_CLEAR_BASE:  f32 = 30.0;   // clear radius at level 1
-const FOG_CLEAR_MAX:   f32 = 100.0;  // clear radius at the level cap
-// ONE continuous gradient: fog ramps linearly from `clearR` (full detail) out to `clearR ×
-// FOG_VIEW_MULT`, where it reaches SOLID grey — that outer radius is also the OSM/tile/viewport
-// boundary and the start of the no-fetch void. No short feather + flat band (which read as a muted
-// zone and a hard border); the whole fog zone is the gradient.
-const FOG_VIEW_MULT: f32 = 2.0;      // outer view radius = clearR × this (fog = 100 / solid grey here)
+const FOG_CLEAR_BASE:  f32 = 45.0;   // clear radius at level 1 (~+50% — more to look at)
+const FOG_CLEAR_MAX:   f32 = 150.0;  // clear radius at the level cap
+// TIGHT reveal: full detail out to `clearR`, then a feather where fog ramps to fully opaque. The
+// feather end is also the OSM/tile/viewport boundary and the camera leash — everything stops at the
+// same radius, so the map is only ever visible in a ring around your tiles (no wide gradient band,
+// no map bleeding into the distance). Kept additive (clearR + feather), not a multiple of clearR, so
+// the ring stays a constant width at every level. Feather is a touch wider so the drifting-mist
+// "clouds part" edge is a soft gradient rather than a hard line.
+const FOG_FEATHER: f32 = 20.0;       // feather width (tiles): clearR → clearR+this = fully opaque
 
 /// Clear-zone radius (tiles) for a queen at `level` — full detail out to here. Linear from
 /// `FOG_CLEAR_BASE` (L1) to `FOG_CLEAR_MAX` at the level cap. `level` clamped to `[1, cap]`.
@@ -798,13 +800,13 @@ pub fn fog_clear_r(level: u16, cfg: &Config) -> f32 {
     FOG_CLEAR_BASE + (FOG_CLEAR_MAX - FOG_CLEAR_BASE) * t
 }
 
-/// Outer view radius (tiles): fog reaches SOLID grey here — the end of the single clear→grey
-/// gradient. Also the OSM fetch/draw boundary, the server-tile viewport boundary, and the start of
-/// the void: everything stops at the same radius, so the basemap and tiles always share a range
-/// (no map-without-tiles band) and the gradient meets the void grey seamlessly.
-pub fn fog_grad_r(level: u16, cfg: &Config) -> f32 { fog_clear_r(level, cfg) * FOG_VIEW_MULT }
+/// Outer reveal radius (tiles): fog reaches FULLY OPAQUE here — the end of the short feather past
+/// `clearR`. Also the OSM fetch/draw boundary, the server-tile viewport boundary, and the camera
+/// leash: everything stops at the same radius, so the map is only visible in the tight ring around
+/// your tiles and the feather meets the dark-slate fog seamlessly.
+pub fn fog_grad_r(level: u16, cfg: &Config) -> f32 { fog_clear_r(level, cfg) + FOG_FEATHER }
 
-/// Void threshold == the outer view radius (everything beyond is solid grey, fetched/drawn nothing).
+/// Void threshold == the outer reveal radius (everything beyond is solid fog, fetched/drawn nothing).
 pub fn fog_void_r(level: u16, cfg: &Config) -> f32 { fog_grad_r(level, cfg) }
 
 /// Queen max-HP for a level. HP grows **exponentially** between two anchors: `hp_base` at level 1
@@ -824,7 +826,8 @@ pub fn max_hp_for_level(lvl: u16, cfg: &Config) -> i32 {
 /// Cumulative XP required to *reach* level `n` (a running total; queen.xp stores this directly).
 /// `xp_exp` is the **per-level growth rate** (1.07 = +7%/level), so the cost of the single level
 /// `L→L+1` is `total(L+1) − total(L) = xp_base · rate^(L-1)`, and this closed-form geometric sum is
-/// its running total. With the defaults: L2 = 100, L100 ≈ 1,158,070 (~1.16M). `n ≤ 1 → 0`.
+/// its running total. With the defaults: L2 = 400, L100 ≈ 1.23 billion (very back-loaded so
+/// mid/late levels are a long grind). `n ≤ 1 → 0`.
 pub fn total_xp_for_level(n: u16, cfg: &Config) -> f64 {
     if n <= 1 { return 0.0; }
     let rate  = cfg.xp_exp;          // per-level XP growth multiplier (1.07 = +7%/level)
@@ -924,5 +927,20 @@ mod tests {
         }
         assert!(v.get("xp_highway_tick").is_some(), "new paint-XP knob must persist");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Locks the "very hard" difficulty intent so a future edit can't silently soften it:
+    /// the first level still costs exactly `xp_base`, the curve is steeply back-loaded into the
+    /// billions at the cap, and the passive self-heal XP is OFF (a queen can't level by sitting
+    /// still). See the level-curve hardening pass.
+    #[test]
+    fn default_curve_is_steep_and_idle_heal_is_off() {
+        let d = Config::default();
+        assert_eq!(total_xp_for_level(2, &d), d.xp_base,
+            "cost of L1→L2 must equal xp_base");
+        assert!(total_xp_for_level(d.xp_level_cap, &d) > 1.0e9,
+            "L{} must cost > 1 billion XP (very back-loaded curve), got {}",
+            d.xp_level_cap, total_xp_for_level(d.xp_level_cap, &d));
+        assert_eq!(d.xp_heal, 0.0, "idle self-heal XP must be off");
     }
 }

@@ -354,7 +354,9 @@ pub struct RawView {
     tick: u64,
     include_tiles: bool,
     player_id: u32,
-    is_admin: bool,
+    /// When true, `finish_view` emits an all-zero fog field (god view): set for admins UNLESS they
+    /// enabled the fog preview. Non-admins are never skip_fog, so the cleared path can't leak to them.
+    skip_fog: bool,
     /// Padded (pw×ph) ownership slice for tile blob + fog; empty on ants-only frames.
     pad: usize, pw: usize, ph: usize,
     owners: Vec<u32>,
@@ -428,8 +430,10 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     // Level-scaled fog radii, in served-grid cells (÷ step at LOD), from the viewer's own queen
     // level (default L1 while placing). `pad` (off-screen ownership ring the distance transform
     // needs) is sized to the feather end so panning toward off-screen territory clears smoothly.
-    // Admins get an all-zero fog field → skip the padded slice entirely (pad 0, radii unused).
-    let (clear_grid, grad_grid, fog_pad) = if include_tiles && !is_admin {
+    // Admins get an all-zero fog field (god view) → skip the padded slice entirely (pad 0, radii
+    // unused) UNLESS they enabled the fog preview, in which case they're treated like a player.
+    let skip_fog = is_admin && !world.admin_fog_preview.contains(&player_id);
+    let (clear_grid, grad_grid, fog_pad) = if include_tiles && !skip_fog {
         let c = cfg();
         let lvl = world.queens.get(&player_id).map(|q| q.level).unwrap_or(1);
         let cr = crate::config::fog_clear_r(lvl, &c) / step as f32;
@@ -497,7 +501,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     };
 
     Some(RawView {
-        x0, y0, w, h, tick: world.tick, include_tiles, player_id, is_admin,
+        x0, y0, w, h, tick: world.tick, include_tiles, player_id, skip_fog,
         pad, pw, ph, owners, clear_r: clear_grid, grad_r: grad_grid, ants, queens, lod_step: step,
     })
 }
@@ -686,8 +690,8 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
         return (frame, prev);
     }
 
-    // Fog (admins see everything).
-    let fog: Vec<u8> = if raw.is_admin {
+    // Fog (skip_fog ⇒ all-zero god view; admins without the preview, never non-admins).
+    let fog: Vec<u8> = if raw.skip_fog {
         vec![0u8; raw.w * raw.h]
     } else {
         compute_fog_field_slice(&raw.owners, raw.pw, raw.ph, raw.pad, raw.w, raw.h, raw.player_id,
@@ -817,7 +821,7 @@ mod tests {
 
     fn raw2x2(owners: Vec<u32>, tick: u64) -> RawView {
         RawView {
-            x0: 0, y0: 0, w: 2, h: 2, tick, include_tiles: true, player_id: 999, is_admin: true,
+            x0: 0, y0: 0, w: 2, h: 2, tick, include_tiles: true, player_id: 999, skip_fog: true,
             pad: 0, pw: 2, ph: 2, owners, clear_r: 0.0, grad_r: 0.0,
             ants: Vec::new(), queens: Vec::new(), lod_step: 1,
         }
@@ -961,7 +965,7 @@ mod tests {
     #[test]
     fn packed_ants_round_trip() {
         let raw = RawView {
-            x0: 10, y0: 20, w: 4, h: 4, tick: 7, include_tiles: false, player_id: 1, is_admin: false,
+            x0: 10, y0: 20, w: 4, h: 4, tick: 7, include_tiles: false, player_id: 1, skip_fog: false,
             pad: 0, pw: 0, ph: 0, owners: Vec::new(), clear_r: 0.0, grad_r: 0.0,
             ants: vec![(42, 13, 25, 1, 0, 9, 1), (43, 11, 22, 0, -1, 9, 0)],
             queens: Vec::new(), lod_step: 1,

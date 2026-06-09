@@ -839,7 +839,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
 // owner→color map (all cheap); then under a READ lock snapshot those chunks to owner-id form
 // (shared with the viewport thread, so it doesn't block the tick); then OFF-LOCK rasterize each to
 // a PNG and upload to the sink (R2 / local disk). Game-space key: snap/{epoch}/0/{cx}/{cy}.png.
-pub fn snapshot_writer_loop(world: WorldState) {
+pub fn snapshot_writer_loop(world: WorldState, restored: bool) {
     let sink = crate::snapshot::make_sink();
     let s = crate::config::snapshot_tile_chunks();
     // Dev origin fallback wants tiles visible within seconds of boot, not after the 300 s default
@@ -860,12 +860,13 @@ pub fn snapshot_writer_loop(world: WorldState) {
     // same (sx,sy) — a brand-new R2 object under the new epoch path — is never wrongly skipped.
     let mut last_hash: FxHashMap<(u32, u32), u64> = FxHashMap::default();
     let mut last_epoch: u64 = 0;
+    let mut boot_gc_done = false;
     loop {
         std::thread::sleep(interval);
 
         // Phase A1 (write lock, brief): drain the dirty keys + the wipe retire-queue, snapshot
         // epoch + colors.
-        let (epoch, keys, retire, colors): (u64, Vec<u64>, Vec<u64>, FxHashMap<u32, [u8; 3]>) = {
+        let (epoch, keys, mut retire, colors): (u64, Vec<u64>, Vec<u64>, FxHashMap<u32, [u8; 3]>) = {
             let mut w = world.blocking_write();
             let keys = w.tiles.drain_dirty_chunks();
             let retire = std::mem::take(&mut w.snapshot_retire);
@@ -879,6 +880,36 @@ pub fn snapshot_writer_loop(world: WorldState) {
         // Epoch rolled (wipe/season) → the dedup cache keyed by (sx,sy) refers to the OLD epoch's
         // objects; drop it so the new epoch's tiles all upload at least once.
         if epoch != last_epoch { last_hash.clear(); last_epoch = epoch; }
+
+        // One-time boot GC: reclaim orphaned epoch generations left by PAST restarts. Before the
+        // epoch was persisted (see `persist::save_epoch`), each boot minted a fresh epoch and
+        // re-uploaded the canvas without ever deleting the prior generation, so R2 storage grew
+        // unbounded across redeploys. Here we list what's actually on the sink and retire every
+        // generation strictly OLDER than the current (live) epoch.
+        //   Safety: gated on a successful world restore — a fresh/failed load must never delete the
+        //   live canvas; and `e < epoch` can never select the generation clients are fetching now,
+        //   so the upload of the current epoch (below) is untouched. With the epoch now persisted,
+        //   the steady state has a single generation, so after this one cleanup pass the list is a
+        //   cheap no-op on subsequent boots.
+        //   NOTE: assumes a single instance per R2 bucket — a sibling running an older epoch would be
+        //   seen as orphaned. (Local playtests run without R2 creds, so they never reach here.)
+        if !boot_gc_done {
+            boot_gc_done = true;
+            if restored {
+                match sink.list_epochs() {
+                    Ok(found) => {
+                        let mut orphans: Vec<u64> =
+                            found.into_iter().filter(|&e| e < epoch).collect();
+                        if !orphans.is_empty() {
+                            println!("[snapshot] boot GC: reclaiming {} orphaned epoch generation(s) \
+                                      older than current {epoch}", orphans.len());
+                            retire.append(&mut orphans);
+                        }
+                    }
+                    Err(e) => eprintln!("[snapshot] boot GC list_epochs failed: {e}"),
+                }
+            }
+        }
 
         // Wipe cleanup: a rolled epoch orphaned its whole tile generation on R2 — delete the prefix.
         // Run off-lock, and before the empty-keys early-out so a wipe that left no dirty chunks still

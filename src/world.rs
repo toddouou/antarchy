@@ -308,6 +308,11 @@ pub struct World {
     /// Phase-7: connections whose tab is hidden/backgrounded (client sent `view-pause`). The
     /// viewport loop skips frame delivery for these → ~0 egress for hidden tabs. Runtime-only.
     pub paused_views:    FxHashSet<u32>,
+    /// Admins who toggled the fog-of-war PREVIEW on (server-authoritative; gated on `is_admin` in
+    /// handlers). Members get the REAL fog field instead of the admin all-zero god-view, so the
+    /// operator can see exactly what players see. Runtime-only, never persisted; a non-admin id can
+    /// never appear here, so flipping it can't leak hidden tiles to non-admins.
+    pub admin_fog_preview: FxHashSet<u32>,
     /// Tracks the last tick on which tiles changed; used to skip viewport delivery when idle.
     pub dirty_tick:      u64,
     /// Metro king-of-the-hill holders, recomputed on a throttle (simulation.rs::recompute_holders).
@@ -319,9 +324,12 @@ pub struct World {
     /// write cursor once the ring fills.
     pub tick_ms_ring: Vec<f32>,
     pub tick_ms_pos:  usize,
-    /// Phase-6 snapshot generation tag. Forms the R2 key prefix `snap/{epoch}/…` so a wipe / restart
-    /// serves a fresh tile set instead of a stale cached one. Bumped on wipe + restore; not persisted
-    /// (the canvas is re-uploaded under a fresh epoch each boot). Seconds-resolution time seed.
+    /// Phase-6 snapshot generation tag. Forms the R2 key prefix `snap/{epoch}/…` so a WIPE serves a
+    /// fresh tile set instead of a stale cached one. Bumped only on wipe (`rotate_epoch_retiring_old`,
+    /// which also queues the old generation for deletion). **Persisted across restarts** via a sidecar
+    /// file (`persist::save_epoch`/`load_epoch`) and re-adopted on restore in `main`, so a redeploy
+    /// re-uses the existing generation rather than minting a new one and orphaning the old canvas on
+    /// R2 forever. Freshly minted (seconds-resolution time seed) only on a genuine fresh start.
     pub epoch: u64,
     /// Phase-6 R2 cleanup queue: epochs whose tile generation is now orphaned (set on wipe, when the
     /// epoch rolls). The snapshot writer thread drains this and deletes `snap/{epoch}/` off-lock, so
@@ -379,6 +387,7 @@ impl World {
             ant_counts:      FxHashMap::default(),
             paused:          false,
             paused_views:    FxHashSet::default(),
+            admin_fog_preview: FxHashSet::default(),
             dirty_tick:      0,
             metro_holders:   Vec::new(),
             visit_sample_cursor: 0,
@@ -406,16 +415,17 @@ impl World {
         self.players.values().filter(|p| p.guest).count()
     }
 
-    /// Roll the Phase-6 snapshot epoch to a fresh value (seconds since the Unix epoch). Called on
-    /// wipe and on persist-restore so clients never composite a stale season's R2 tiles.
+    /// Roll the Phase-6 snapshot epoch to a fresh value (seconds since the Unix epoch) so clients
+    /// never composite a stale season's R2 tiles. Used only via `rotate_epoch_retiring_old` (wipe);
+    /// the restart/restore path instead re-adopts the *persisted* epoch (see `Self::epoch`).
     pub fn fresh_epoch(&mut self) {
         self.epoch = crate::config::current_ms() / 1000;
     }
 
     /// Roll to a fresh epoch **and** queue the outgoing one for R2 deletion. Used by the wipe paths:
-    /// once the epoch rolls, every `snap/{old}/…` tile is orphaned, so the snapshot writer should
-    /// reclaim it. (Plain `fresh_epoch` is kept for the restart/restore path, which intentionally
-    /// leaves the prior tiles in place as a reconnect fallback until the new epoch re-uploads.)
+    /// once the epoch rolls, every `snap/{old}/…` tile is orphaned, so the snapshot writer reclaims
+    /// it. (Restart/restore does NOT roll the epoch — it re-uses the persisted generation — so a
+    /// redeploy can't leak a fresh canvas copy onto R2.)
     pub fn rotate_epoch_retiring_old(&mut self) {
         let old = self.epoch;
         self.fresh_epoch();

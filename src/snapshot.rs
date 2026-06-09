@@ -167,6 +167,11 @@ pub trait SnapshotSink: Send + Sync {
     /// Delete every object under `prefix` (e.g. `"snap/123/"`). Returns the count removed. Used on a
     /// world wipe to drop the whole outgoing epoch's tile generation off R2.
     fn delete_prefix(&self, prefix: &str) -> Result<u32, String>;
+    /// List the snapshot **epoch generations** present in the sink (the `{e}` in `snap/{e}/…`). Used
+    /// by the boot-time GC to find generations orphaned by past restarts so they can be reclaimed.
+    /// Best-effort: an `Err`/empty result just skips the GC (storage is left untouched, never wrongly
+    /// deleted).
+    fn list_epochs(&self) -> Result<Vec<u64>, String>;
     fn label(&self) -> &'static str;
 }
 
@@ -176,6 +181,7 @@ impl SnapshotSink for NullSink {
     fn put(&self, _key: &str, _bytes: &[u8]) -> Result<(), String> { Ok(()) }
     fn delete(&self, _key: &str) -> Result<(), String> { Ok(()) }
     fn delete_prefix(&self, _prefix: &str) -> Result<u32, String> { Ok(0) }
+    fn list_epochs(&self) -> Result<Vec<u64>, String> { Ok(Vec::new()) }
     fn label(&self) -> &'static str { "null" }
 }
 
@@ -207,6 +213,23 @@ impl SnapshotSink for LocalDiskSink {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
             Err(e) => Err(e.to_string()),
         }
+    }
+    fn list_epochs(&self) -> Result<Vec<u64>, String> {
+        let dir = self.root.join("snap");
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut out = Vec::new();
+        for ent in rd.flatten() {
+            if ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if let Some(e) = ent.file_name().to_str().and_then(|s| s.parse::<u64>().ok()) {
+                    out.push(e);
+                }
+            }
+        }
+        Ok(out)
     }
     fn label(&self) -> &'static str { "local-disk" }
 }
@@ -248,6 +271,16 @@ impl SnapshotSink for MemorySink {
         let before = m.len();
         m.retain(|k, _| !k.starts_with(prefix));
         Ok((before - m.len()) as u32)
+    }
+    fn list_epochs(&self) -> Result<Vec<u64>, String> {
+        let mut set: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        for k in mem_store().read().keys() {
+            if let Some(e) = k.strip_prefix("snap/")
+                .and_then(|rest| rest.split('/').next())
+                .and_then(|s| s.parse::<u64>().ok())
+            { set.insert(e); }
+        }
+        Ok(set.into_iter().collect())
     }
     fn label(&self) -> &'static str { "memory" }
 }
@@ -312,6 +345,28 @@ impl SnapshotSink for R2Sink {
                 .fold(0u32, |acc, ok| async move { acc + ok as u32 })
                 .await;
             Ok(deleted)
+        })
+    }
+    fn list_epochs(&self) -> Result<Vec<u64>, String> {
+        self.rt.block_on(async {
+            // Delimiter `/` makes R2 collapse each `snap/{e}/…` generation into a single
+            // common-prefix entry, so we get the set of epochs without listing every tile object.
+            let pages = self.bucket.list("snap/".to_string(), Some("/".to_string()))
+                .await.map_err(|e| e.to_string())?;
+            crate::metrics::record_class_a(pages.len() as u64); // each ListObjects page = Class A
+            let mut out = Vec::new();
+            for page in pages {
+                if let Some(cps) = page.common_prefixes {
+                    for cp in cps {
+                        // cp.prefix looks like "snap/12345/".
+                        if let Some(e) = cp.prefix.strip_prefix("snap/")
+                            .and_then(|s| s.strip_suffix('/'))
+                            .and_then(|s| s.parse::<u64>().ok())
+                        { out.push(e); }
+                    }
+                }
+            }
+            Ok(out)
         })
     }
     fn label(&self) -> &'static str { "r2" }
@@ -401,6 +456,33 @@ mod tests {
         assert!(!root.join("snap/9").exists());
         // a missing prefix is success → 0
         assert_eq!(sink.delete_prefix("snap/9/").unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_disk_list_epochs_for_boot_gc() {
+        let root = std::env::temp_dir().join(format!("hive-snap-epochs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sink = LocalDiskSink { root: root.clone() };
+
+        // No `snap/` dir yet → empty (a fresh data dir must not error the boot GC).
+        assert!(sink.list_epochs().unwrap().is_empty());
+
+        // Three generations on the sink (two orphaned, one "current").
+        sink.put("snap/100/0/1/2.png", b"a").unwrap();
+        sink.put("snap/200/0/3/4.png", b"b").unwrap();
+        sink.put("snap/300/0/5/6.png", b"c").unwrap();
+        // A non-numeric dir must be ignored, not crash the parse.
+        std::fs::create_dir_all(root.join("snap/junk")).unwrap();
+
+        let mut found = sink.list_epochs().unwrap();
+        found.sort_unstable();
+        assert_eq!(found, vec![100, 200, 300]);
+
+        // The boot-GC selection: everything strictly older than the current (300) is an orphan.
+        let orphans: Vec<u64> = found.into_iter().filter(|&e| e < 300).collect();
+        assert_eq!(orphans, vec![100, 200]);
 
         let _ = std::fs::remove_dir_all(&root);
     }

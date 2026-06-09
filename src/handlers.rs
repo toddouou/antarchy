@@ -226,6 +226,18 @@ pub fn handle_message(
     if t == "view-pause"  { world.paused_views.insert(pid); return; }
     if t == "view-resume" { world.paused_views.remove(&pid); world.dirty_tick = world.tick; return; }
 
+    // ---- Admin fog-of-war preview (server-authoritative; gated on is_admin) ----
+    // Admins normally get an all-zero fog field (god view). Toggling this ON makes the server compute
+    // the REAL fog for this admin so they can preview what players see. Non-admins can't reach it, so
+    // the cleared-fog path is never exposed to them.
+    if t == "fog-view" {
+        if !is_admin { return; }
+        if msg["on"].as_bool().unwrap_or(false) { world.admin_fog_preview.insert(pid); }
+        else { world.admin_fog_preview.remove(&pid); }
+        world.dirty_tick = world.tick;   // force the next viewport cycle to re-send tiles + fog
+        return;
+    }
+
     // ---- Forbidden zones ----
     if t == "get-forbidden-zones" {
         let zones: Vec<Value> = world.queens.iter()

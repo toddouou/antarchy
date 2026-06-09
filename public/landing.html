@@ -99,6 +99,9 @@
   .hero p{max-width:560px;color:var(--hero-dim);font-size:15px;margin:12px 0 20px;
     text-shadow:0 1px 10px rgba(0,0,0,.75),0 1px 2px rgba(0,0,0,.7)}
   .cta-row{display:flex;gap:12px;flex-wrap:wrap}
+  .hero-sub{margin-top:14px;font-size:13px;color:var(--hero-dim);text-shadow:0 1px 8px rgba(0,0,0,.75)}
+  .hero-sub a{color:#7cc4ff;cursor:pointer;font-weight:600;border-bottom:1px solid transparent}
+  .hero-sub a:hover{border-bottom-color:#7cc4ff}
   .watch-chip{position:absolute;top:14px;left:0;right:0;display:flex;justify-content:center;pointer-events:none}
   .watch-chip .inner{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--hero-ink);
     background:rgba(7,9,12,.72);border:1px solid var(--line);border-radius:999px;padding:6px 14px;
@@ -142,7 +145,8 @@
   .modal-bg.open{display:flex}
   .modal{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:16px;
     box-shadow:var(--shadow);padding:26px}
-  .modal .x{float:right;cursor:pointer;color:var(--dim);font-size:18px;line-height:1}
+  .modal .x{float:right;cursor:pointer;color:var(--dim);font-size:18px;line-height:1;
+    background:none;border:none;padding:2px;margin:-2px;font-family:inherit;border-radius:6px}
   .modal .x:hover{color:var(--ink)}
   .modal h2{font-family:'VT323',monospace;font-size:30px;margin-bottom:2px}
   .modal .sub{color:var(--dim);font-size:12.5px;margin-bottom:18px}
@@ -159,9 +163,13 @@
   .modal .btn{width:100%;margin-top:18px;justify-content:center;text-align:center}
   .err{color:var(--red);font-size:12px;min-height:16px;margin-top:10px}
   .ok{color:var(--grn);font-size:12px;min-height:16px;margin-top:10px}
-  .switch{margin-top:16px;font-size:12px;color:var(--dim);text-align:center}
-  .switch a{color:var(--blu);cursor:pointer}
+  .switch{margin-top:16px;font-size:12.5px;color:var(--dim);text-align:center}
+  .switch a{color:var(--blu);cursor:pointer;font-weight:600;border-bottom:1px solid transparent}
+  .switch a:hover{border-bottom-color:currentColor}
   .hint{font-size:11px;color:var(--dim);margin-top:6px}
+  /* Keyboard focus — always-visible ring so Tab navigation reads clearly (mouse clicks stay clean). */
+  .btn:focus-visible,.switch a:focus-visible,.modal .x:focus-visible,.hero-sub a:focus-visible,
+    .theme-switch:focus-visible,.foot a:focus-visible{outline:2px solid var(--blu);outline-offset:2px}
 </style>
 </head>
 <body>
@@ -180,8 +188,7 @@
       <svg class="ts-sun" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M19.4 4.6l-1.8 1.8M6.4 17.6l-1.8 1.8"/></g></svg>
       <span class="ts-thumb"></span>
     </button>
-    <button class="btn" id="nav-login">Log in</button>
-    <button class="btn primary" id="nav-signup">Play free</button>
+    <button class="btn primary" id="nav-enter">Back to the front ▸</button>
   </div>
 </header>
 
@@ -203,6 +210,7 @@
       <button class="btn primary" id="hero-cta">⚑ Claim your spawn</button>
       <button class="btn" id="hero-watch">Keep watching ↓</button>
     </div>
+    <div class="hero-sub">Already command a hive? <a id="hero-login">Log in</a></div>
   </div></div>
 </div>
 
@@ -267,9 +275,9 @@
 <!-- AUTH MODAL -->
 <div class="modal-bg" id="auth">
   <div class="modal">
-    <span class="x" id="auth-x">✕</span>
+    <button class="x" id="auth-x" type="button" aria-label="Close">✕</button>
     <!-- LOGIN -->
-    <div class="step active" data-step="login">
+    <div class="step active" data-step="login" data-primary="li-go">
       <h2>Welcome back</h2><div class="sub">Log in with your email or phone.</div>
       <label>Email or phone</label><input id="li-ident" autocomplete="username" placeholder="you@example.com">
       <label>Password</label><input id="li-pw" type="password" autocomplete="current-password" placeholder="••••••••">
@@ -278,7 +286,7 @@
       <div class="switch"><a id="to-forgot">Forgot password?</a> · New here? <a id="to-reg">Create account</a></div>
     </div>
     <!-- REGISTER -->
-    <div class="step" data-step="reg">
+    <div class="step" data-step="reg" data-primary="r-go">
       <h2>Join the war</h2><div class="sub">Your handle is public; email & phone keep your empire safe.</div>
       <label>Handle (public name)</label><input id="r-handle" maxlength="20" placeholder="ANTLORD">
       <label>Email</label><input id="r-email" type="email" autocomplete="email" placeholder="you@example.com">
@@ -294,7 +302,7 @@
       <div class="switch">Already enlisted? <a id="to-login">Log in</a></div>
     </div>
     <!-- VERIFY EMAIL -->
-    <div class="step" data-step="vemail">
+    <div class="step" data-step="vemail" data-primary="ve-go">
       <h2>Check your email</h2><div class="sub">We sent a 6-digit code to <b id="ve-to">your inbox</b>.</div>
       <label>Verification code</label><input id="ve-code" class="code" inputmode="numeric" maxlength="6" placeholder="000000">
       <button class="btn primary" id="ve-go">Verify email →</button>
@@ -303,14 +311,14 @@
       <div class="switch">Didn't get it? <a id="ve-resend">Resend code</a><span class="hint" id="ve-resend-wait" style="display:none"></span></div>
     </div>
     <!-- VERIFY PHONE -->
-    <div class="step" data-step="vphone">
+    <div class="step" data-step="vphone" data-primary="vp-go">
       <h2>Verify your phone</h2><div class="sub">Enter the 6-digit code we texted you.</div>
       <label>Verification code</label><input id="vp-code" class="code" inputmode="numeric" maxlength="6" placeholder="000000">
       <button class="btn primary" id="vp-go">Verify phone →</button>
       <div class="err" id="vp-err"></div>
     </div>
     <!-- FORGOT -->
-    <div class="step" data-step="forgot">
+    <div class="step" data-step="forgot" data-primary="fp-go">
       <h2>Reset password</h2><div class="sub">We'll email you a reset link.</div>
       <label>Email</label><input id="fp-email" type="email" placeholder="you@example.com">
       <button class="btn primary" id="fp-go">Send reset link →</button>
@@ -318,7 +326,7 @@
       <div class="switch"><a id="to-login2">← Back to log in</a></div>
     </div>
     <!-- RESET (from email link ?token=) -->
-    <div class="step" data-step="reset">
+    <div class="step" data-step="reset" data-primary="rs-go">
       <h2>Choose a new password</h2><div class="sub">Set a new password for your account.</div>
       <label>New password</label><input id="rs-pw" type="password" placeholder="min 8 chars">
       <label>Confirm</label><input id="rs-pw2" type="password" placeholder="repeat">
@@ -338,12 +346,19 @@
 const HUES=['#b5524a','#c08a52','#b8a24a','#6f8f5a','#4a8f86','#4a6f9c','#6b5b95','#8a8a8a'];
 const SS_HANDLE='antarchy-handle';  // non-secret display-name hint only; the session is an HttpOnly cookie
 const $=id=>document.getElementById(id);
-let regId=null, chosenHue=0;
+let regId=null, chosenHue=0, lastFocus=null;
 
-function openAuth(step){ $('auth').classList.add('open'); showStep(step||'login'); }
-function closeAuth(){ $('auth').classList.remove('open'); }
-function showStep(s){ document.querySelectorAll('.step').forEach(e=>e.classList.toggle('active',e.dataset.step===s)); }
+function openAuth(step){ lastFocus=document.activeElement; $('auth').classList.add('open'); showStep(step||'login'); }
+function closeAuth(){ $('auth').classList.remove('open'); if(lastFocus&&lastFocus.focus){ try{lastFocus.focus();}catch(e){} } }
+function showStep(s){ document.querySelectorAll('.step').forEach(e=>e.classList.toggle('active',e.dataset.step===s));
+  // auto-focus the active step's first field so the modal is ready to type into (keyboard-first UX).
+  const step=document.querySelector('.step.active'); if(step){ const f=step.querySelector('input')||step.querySelector('button,[tabindex]');
+    if(f) setTimeout(()=>{ try{f.focus();}catch(e){} },30); } }
 function setErr(id,m){ $(id).textContent=m||''; }
+// Make a non-button element (our <a> switch links) keyboard-operable: Tab reaches it, Enter/Space fire it.
+function clickable(el,fn){ if(!el) return; el.tabIndex=0; el.setAttribute('role','button');
+  el.addEventListener('click',fn);
+  el.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); fn(e); } }); }
 
 async function postJSON(url,body){
   try{
@@ -364,16 +379,30 @@ function enterGame(handle){
   d.className='hue'+(i===0?' sel':''); d.style.background=c; d.onclick=()=>{ chosenHue=i;
     document.querySelectorAll('.hue').forEach((x,j)=>x.classList.toggle('sel',j===i)); }; h.appendChild(d); }); })();
 
-// nav + switches
-$('nav-login').onclick=()=>openAuth('login');
-$('nav-signup').onclick=()=>openAuth('reg');
+// nav + switches — header CTA = LOGIN (witty); hero CTA = REGISTER, with a "Log in" link beneath it.
+$('nav-enter').onclick=()=>openAuth('login');
 $('hero-cta').onclick=()=>openAuth('reg');
 $('foot-play').onclick=()=>openAuth('login');
 $('hero-watch').onclick=()=>window.scrollTo({top:window.innerHeight*0.62,behavior:'smooth'});
-$('auth-x').onclick=closeAuth;
+clickable($('hero-login'),()=>openAuth('login'));
+$('auth-x').onclick=closeAuth;                 // native <button>: Enter/Space already work
 $('auth').onclick=e=>{ if(e.target===$('auth')) closeAuth(); };
-$('to-reg').onclick=()=>showStep('reg'); $('to-login').onclick=()=>showStep('login');
-$('to-login2').onclick=()=>showStep('login'); $('to-forgot').onclick=()=>showStep('forgot');
+clickable($('to-reg'),()=>showStep('reg'));   clickable($('to-login'),()=>showStep('login'));
+clickable($('to-login2'),()=>showStep('login')); clickable($('to-forgot'),()=>showStep('forgot'));
+
+// Keyboard inside the modal: Enter submits the active step; Tab stays trapped; Esc closes.
+function authFocusables(){ return [...$('auth').querySelectorAll('button,a[role="button"],input,[tabindex]')]
+  .filter(el=>el.offsetParent!==null && !el.disabled); }
+$('auth').addEventListener('keydown',e=>{
+  if(e.key==='Enter' && e.target.tagName==='INPUT'){
+    const step=document.querySelector('.step.active'), b=step&&$(step.dataset.primary);
+    if(b&&!b.disabled){ e.preventDefault(); b.click(); } return; }
+  if(e.key==='Tab'){ const f=authFocusables(); if(!f.length) return;
+    const first=f[0], last=f[f.length-1];
+    if(e.shiftKey && document.activeElement===first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); } }
+});
+document.addEventListener('keydown',e=>{ if(e.key==='Escape' && $('auth').classList.contains('open')) closeAuth(); });
 
 // THEME — dark by default; the pre-paint script already applied any saved choice. <button> is
 // natively keyboard-operable (Enter/Space); we keep the chosen theme in localStorage.
@@ -389,9 +418,9 @@ function toggleTheme(){ applyTheme(document.documentElement.dataset.theme==='lig
 $('theme-toggle').onclick=toggleTheme;
 applyTheme(document.documentElement.dataset.theme==='light'?'light':'dark');
 
-// If we have a handle hint, surface "Enter game" (the cookie, if still valid, auths at /play; if not,
-// /play bounces back here to log in).
-if(localStorage.getItem(SS_HANDLE)){ $('nav-signup').textContent='Enter game ▸'; $('nav-signup').onclick=()=>location.href='/play'; }
+// Returning visitor (handle hint present): keep the fast path — the header CTA jumps straight to
+// /play (the cookie, if still valid, auths there; if not, /play bounces back here to log in).
+if(localStorage.getItem(SS_HANDLE)){ $('nav-enter').onclick=()=>location.href='/play'; }
 
 // LOGIN
 $('li-go').onclick=async()=>{ setErr('li-err','');

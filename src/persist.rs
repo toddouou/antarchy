@@ -190,9 +190,37 @@ pub fn write_snapshot_bytes(raw: &[u8], path: &str) -> io::Result<()> {
 pub fn save(world: &World, path: &str) -> io::Result<()> {
     let raw = serialize_world(world)?;
     write_snapshot_bytes(&raw, path)?;
+    // Persist the R2 tile-generation epoch beside the snapshot (see `save_epoch`).
+    save_epoch(world, path);
     // Accounts persist alongside the world so both files move together.
     world.auth.save();
     Ok(())
+}
+
+/// Path of the epoch sidecar (`world.snapshot.epoch`) beside the world snapshot.
+fn epoch_path(world_path: &str) -> String { format!("{world_path}.epoch") }
+
+/// Persist the R2 snapshot **epoch** (tile-generation tag) in its own tiny sidecar file. Kept out
+/// of the bincode `WorldSnapshot` deliberately: that format reads fields positionally, so adding a
+/// field would break loading an existing live snapshot (bincode has no "missing field" default).
+///
+/// **Why this exists:** the epoch is the `snap/{epoch}/…` R2 key prefix. It used to be re-minted
+/// from the boot clock on every start, so each restart re-uploaded the whole canvas under a *fresh*
+/// generation and orphaned the previous one on R2 **forever** — an unbounded storage leak that a
+/// world WIPE could not reclaim (wipe only retires the single current generation). Persisting the
+/// epoch keeps the generation STABLE across restarts: a redeploy re-uses the existing objects
+/// instead of leaking a new copy. Cheap (a few bytes); written on every `save` (shutdown + post-wipe).
+pub fn save_epoch(world: &World, world_path: &str) {
+    if let Err(e) = fs::write(epoch_path(world_path), world.epoch.to_string()) {
+        eprintln!("[persist] epoch sidecar save failed: {e}");
+    }
+}
+
+/// Read the persisted snapshot epoch, if present and valid. `None` → no sidecar yet (first boot
+/// after this change, or a fresh data dir) → the caller keeps the freshly-minted boot epoch.
+pub fn load_epoch(world_path: &str) -> Option<u64> {
+    fs::read_to_string(epoch_path(world_path)).ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 /// Load a world snapshot from `path`. Accepts both the new **v2 gzip-bincode** and the legacy
@@ -390,6 +418,28 @@ mod tests {
         assert_eq!(p.killed_by.get("BOB").copied(), Some(2), "rivalry map survives round-trip");
 
         assert!(w2.queen_map_dirty, "queen map flagged for rebuild");
+
+        // The R2 epoch is persisted in its own sidecar (NOT the bincode snapshot) so it survives a
+        // restart → the snapshot generation stays stable instead of leaking a fresh R2 canvas copy
+        // every boot. `save` wrote it above; it must read back as the exact epoch we saved.
+        assert_eq!(load_epoch(&path), Some(w.epoch), "epoch sidecar round-trips via save()");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn epoch_sidecar_absent_then_present() {
+        let dir = std::env::temp_dir().join(format!("hive_epoch_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("world.snapshot").to_str().unwrap().to_string();
+
+        // No sidecar yet → None (boot keeps its freshly-minted epoch).
+        assert_eq!(load_epoch(&path), None);
+
+        let mut w = World::new();
+        w.epoch = 1_700_000_000;
+        save_epoch(&w, &path);
+        assert_eq!(load_epoch(&path), Some(1_700_000_000));
 
         std::fs::remove_dir_all(&dir).ok();
     }
