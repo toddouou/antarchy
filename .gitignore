@@ -2,9 +2,13 @@
 /target-dev
 /target-check
 users.json
+users.json.tmp
 sessions.json
 *.snapshot
 world.snapshot
+*.snapshot.tmp
 *.snapshot.epoch
+config.json
+config.json.tmp
 .env
 .env.*

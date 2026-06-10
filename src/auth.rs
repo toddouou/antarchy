@@ -174,9 +174,18 @@ impl Auth {
             c.save_file.replace("world.snapshot", "users.json")
         };
         let data = AuthSave { users: self.users.clone(), banned: self.banned.clone() };
-        if let Ok(json) = serde_json::to_string_pretty(&data) {
-            let _ = fs::write(&save_path, json);
-        }
+        let json = match serde_json::to_string_pretty(&data) {
+            Ok(j)  => j,
+            Err(e) => { eprintln!("[auth] serialize users.json failed: {e}"); return; }
+        };
+        // This is the account database — write atomically (temp + fsync + rename, like the world
+        // snapshot) so a crash mid-write can never leave a truncated users.json behind, and say so
+        // out loud when the disk lets us down instead of silently dropping accounts.
+        let tmp = format!("{save_path}.tmp");
+        let res = fs::File::create(&tmp)
+            .and_then(|mut f| { use std::io::Write; f.write_all(json.as_bytes())?; f.sync_all() })
+            .and_then(|_| fs::rename(&tmp, &save_path));
+        if let Err(e) = res { eprintln!("[auth] write users.json failed: {e}"); }
     }
 
     /// Load accounts + bans from `users.json` (path derived from the world snapshot path). Falls

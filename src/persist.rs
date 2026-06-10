@@ -166,7 +166,7 @@ pub fn serialize_world(world: &World) -> io::Result<Vec<u8>> {
         tick:           world.tick,
         started_at:     world.started_at,
     };
-    bincode::serialize(&snap).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    bincode::serialize(&snap).map_err(io::Error::other)
 }
 
 /// **Slow, off-lock half of the save:** gzip the bincode buffer and write it atomically
@@ -177,8 +177,10 @@ pub fn write_snapshot_bytes(raw: &[u8], path: &str) -> io::Result<()> {
         let f = fs::File::create(&tmp)?;
         let mut enc = GzEncoder::new(BufWriter::new(f), Compression::default());
         enc.write_all(raw)?;
-        let mut w = enc.finish()?;
-        w.flush()?;
+        let w = enc.finish()?;
+        // fsync before the rename — the rename must never promote a not-yet-durable temp file to
+        // being the live snapshot (a power cut could otherwise leave a truncated one behind it).
+        w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     }
     fs::rename(&tmp, path)?;
     Ok(())
@@ -316,7 +318,7 @@ pub fn append_wal(world: &World, keys: &[u64], path: &str) -> io::Result<()> {
         WalChunk { key, owners }
     }).collect();
     let rec = WalRecord { tick: world.tick, chunks };
-    let raw = bincode::serialize(&rec).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let raw = bincode::serialize(&rec).map_err(io::Error::other)?;
     let mut gz = Vec::new();
     { let mut enc = GzEncoder::new(&mut gz, Compression::default()); enc.write_all(&raw)?; enc.finish()?; }
     let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
@@ -370,16 +372,14 @@ mod tests {
         });
         w.players.insert(42, Player {
             id: 42, username: "ALICE".into(), color: "#abc".into(), hue_idx: 3,
-            ants_avail: 7, next_refill: 123_456, queen_placed_at: Some(42), npc: false, guest: false,
-            view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 5,
+            ants_avail: 7, next_refill: 123_456, queen_placed_at: Some(42), conn_gen: 5,
             prestige: 2, credits: 50, defenders: vec![1, 2, 3],
             visited_countries:  ["US".to_string()].into_iter().collect(),
             visited_continents: ["NA".to_string()].into_iter().collect(),
             lifetime_kills: 9, lifetime_peak_tiles: 1234, queens_fielded: 2,
-            unlimited_credits: true, unlimited_ants: false,
+            unlimited_credits: true,
             killed_by: [("BOB".to_string(), 2)].into_iter().collect(),
-            kills_of: Default::default(),
-            away: None,
+            ..Default::default()
         });
 
         // Point persistence at a unique temp dir; the path keeps the `world.snapshot` name so the

@@ -17,6 +17,9 @@ pub const MAX_PAD: i32 = 224;
 ///
 /// Operating on a slice (not `&World`) is deliberate: it lets fog run **outside** the
 /// World read lock, off the simulation thread. Admin no-fog is handled by the caller.
+// The wide flat signature is part of that design — a params struct would be built and
+// unpacked at the single call site for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_fog_field_slice(
     owners: &[u32], pw: usize, ph: usize, pad: usize, w: usize, h: usize, owner_id: u32,
     clear_r: f32, grad_r: f32,

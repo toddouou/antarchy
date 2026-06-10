@@ -143,7 +143,7 @@ impl Queen {
 
 // ---- Player ---------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Player {
     /// Redundant with the `players` map key; kept for clarity/Debug. Not read directly.
     #[allow(dead_code)]
@@ -482,6 +482,23 @@ impl World {
         }
     }
 
+    /// Force-disconnect a connected player: send the client a `force-logout` (it toasts the
+    /// reason, drops stored creds, and returns to the landing page), then sever the connection's
+    /// channels. The write task drains out, and the sim loop's `Cmd::Message` arm drops anything
+    /// else that socket sends (it only dispatches while `tx` is `Some`). Used by admin kick/ban
+    /// and the world wipe.
+    pub fn force_logout(&mut self, pid: u32, reason: &str) {
+        if let Some(p) = self.players.get_mut(&pid) {
+            if let Some(tx) = &p.tx {
+                let _ = tx.send(serde_json::json!({"t":"force-logout","reason":reason}).to_string());
+            }
+            p.tx           = None;
+            p.view_tx      = None;
+            p.ctl_tx       = None;
+            p.egress_meter = None;
+        }
+    }
+
     /// Phase-3 control fan-out. `frame` is a pre-built `[kind][deflated json]` binary control frame
     /// (build it once with `network::ctl_frame`); `json_fallback` is the identical message as raw
     /// text. Players that negotiated the binary protocol (`bin` + a live `ctl_tx`) get the compressed
@@ -602,5 +619,33 @@ mod tests {
         // bubble_r scales with level, so it should match the formula and exceed the L1 base.
         assert_eq!(q.bubble_r, bubble_r_for_level(25, &c));
         assert!(q.bubble_r > c.bubble_r, "range should grow past the L1 base");
+    }
+
+    /// Kick/ban path: the client must receive a real `force-logout` frame (NOT the old
+    /// empty-string nudge, which just threw inside the client's `JSON.parse` and disconnected
+    /// nobody), and every connection channel must drop so the write task exits and the sim loop
+    /// stops dispatching that socket's messages (`Cmd::Message` only runs while `tx` is `Some`).
+    #[test]
+    fn force_logout_notifies_then_severs_channels() {
+        let mut w = World::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4);
+        w.players.insert(9, Player {
+            id: 9, username: "EVE".into(),
+            tx: Some(BoundedTx::new(tx)),
+            egress_meter: Some(Arc::new(EgressMeter::default())),
+            conn_gen: 1,
+            ..Default::default()
+        });
+
+        w.force_logout(9, "KICKED BY ADMIN");
+
+        let frame = rx.try_recv().expect("client was sent a frame");
+        let v: serde_json::Value = serde_json::from_str(&frame).expect("frame is valid JSON");
+        assert_eq!(v["t"], "force-logout");
+        assert_eq!(v["reason"], "KICKED BY ADMIN");
+        let p = w.players.get(&9).unwrap();
+        assert!(p.tx.is_none() && p.view_tx.is_none() && p.ctl_tx.is_none() && p.egress_meter.is_none(),
+                "all connection channels severed");
+        w.force_logout(12345, "NOBODY");   // unknown pid is a quiet no-op
     }
 }

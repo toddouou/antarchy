@@ -42,15 +42,6 @@ fn capture_chunk(tiles: &TileMap, key: u64) -> ChunkSnap {
     }
 }
 
-/// Under the caller's read lock, convert each dirty chunk key into owner-id form. Cheap relative to
-/// PNG encoding (the expensive part), so the lock is held only briefly. Returns `(cx, cy, snap)`.
-pub fn snapshot_dirty(tiles: &TileMap, keys: &[u64]) -> Vec<(u32, u32, ChunkSnap)> {
-    keys.iter().map(|&k| {
-        let (cx, cy) = TileMap::chunk_coords(k);
-        (cx, cy, capture_chunk(tiles, k))
-    }).collect()
-}
-
 /// A super-tile (R2 Class-A lever B): one PNG covering an S×S block of native chunks. `subs` holds
 /// each constituent chunk in owner-id form with its in-block offset `(scx, scy) ∈ 0..s`. `all_empty`
 /// lets the writer skip encoding a fully-transparent PNG and `delete` the key instead (free op).
@@ -136,13 +127,6 @@ fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
         }
     }
     out
-}
-
-/// Encode one chunk → a 256×256 RGBA PNG. Returns the PNG bytes (off-lock; no `World` access).
-pub fn rasterize_chunk(snap: &ChunkSnap, colors: &FxHashMap<u32, [u8; 3]>) -> Vec<u8> {
-    let mut rgba = vec![0u8; CHUNK_DIM * CHUNK_DIM * 4];
-    blit_chunk_into(&mut rgba, CHUNK_DIM, 0, 0, snap, colors);
-    encode_png(&rgba, CHUNK_DIM as u32, CHUNK_DIM as u32)
 }
 
 /// Encode one super-tile → an `(s*256)²` RGBA PNG by blitting each constituent chunk at its pixel
@@ -412,18 +396,20 @@ mod tests {
     fn rasterizes_uniform_and_dense_to_valid_png() {
         let mut colors = FxHashMap::default();
         colors.insert(7u32, [255, 0, 0]);
-        let png = rasterize_chunk(&ChunkSnap::Uniform(7), &colors);
+        // A 1×1 super-tile is exactly one 256×256 chunk — the production encode path.
+        let one = |snap: ChunkSnap| SuperSnap { sx: 0, sy: 0, subs: vec![(0, 0, snap)], all_empty: false };
+        let png = rasterize_supertile(&one(ChunkSnap::Uniform(7)), &colors, 1);
         // PNG magic number.
         assert_eq!(&png[0..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']);
         assert!(png.len() > 50);
 
         let mut cells = vec![0u32; CHUNK_DIM * CHUNK_DIM];
         cells[0] = 7;
-        let png2 = rasterize_chunk(&ChunkSnap::Dense(cells), &colors);
+        let png2 = rasterize_supertile(&one(ChunkSnap::Dense(cells)), &colors, 1);
         assert_eq!(&png2[0..4], &[0x89, b'P', b'N', b'G']);
 
         // Empty chunk still produces a (transparent) valid PNG.
-        let png3 = rasterize_chunk(&ChunkSnap::Empty, &colors);
+        let png3 = rasterize_supertile(&one(ChunkSnap::Empty), &colors, 1);
         assert_eq!(&png3[0..4], &[0x89, b'P', b'N', b'G']);
     }
 
@@ -500,7 +486,10 @@ mod tests {
 
         t.clear_owner(7); // queen 7 dies → its tiles cleared
         let keys = t.drain_dirty_chunks();
-        let snaps = snapshot_dirty(&t, &keys);
+        let snaps: Vec<(u32, u32, ChunkSnap)> = keys.iter().map(|&k| {
+            let (cx, cy) = TileMap::chunk_coords(k);
+            (cx, cy, capture_chunk(&t, k))
+        }).collect();
 
         let shared = snaps.iter().find(|(cx, cy, _)| *cx == 0 && *cy == 0).expect("shared chunk dirty");
         let solo   = snaps.iter().find(|(cx, cy, _)| *cx == 1 && *cy == 0).expect("solo chunk dirty");

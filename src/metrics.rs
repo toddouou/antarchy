@@ -102,14 +102,10 @@ pub fn record(kind: MsgKind, payload_len: usize) {
 
 /// `(bytes, msgs)` per kind, indexed by `MsgKind as usize` (parallel to `KIND_NAMES`).
 pub fn per_kind() -> [(u64, u64); KIND_COUNT] {
-    let mut out = [(0u64, 0u64); KIND_COUNT];
-    for i in 0..KIND_COUNT {
-        out[i] = (
-            EGRESS.bytes[i].load(Ordering::Relaxed),
-            EGRESS.msgs[i].load(Ordering::Relaxed),
-        );
-    }
-    out
+    std::array::from_fn(|i| (
+        EGRESS.bytes[i].load(Ordering::Relaxed),
+        EGRESS.msgs[i].load(Ordering::Relaxed),
+    ))
 }
 
 pub fn header_bytes() -> u64 { EGRESS.header_bytes.load(Ordering::Relaxed) }

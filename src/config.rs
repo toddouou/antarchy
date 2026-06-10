@@ -19,9 +19,8 @@ pub const HUES: &[&str] = &[
 pub const ENEMY_HUES: &[&str] = &["#9b3027","#6b4423","#5a4e7c","#3d5a80","#52796f"];
 
 // ---- Shop / credit economy -------------------------------------------------
-/// Credits are earned by killing an enemy queen (+1 each). Beta 1.0 removed the 100-credit cap;
-/// the symbol stays (= no ceiling) so the former clamp call sites remain valid no-ops.
-pub const CREDIT_CAP: u64 = u64::MAX;
+// Credits are earned by killing an enemy queen (+1 each). Beta 1.0 removed the credit cap;
+// balances grow with `saturating_add`, so there is no ceiling and no overflow.
 // Shop prices (credits)
 pub const PRICE_RELOCATE: u64 = 20;
 pub const PRICE_DEFENDER: u64 = 1;
@@ -893,9 +892,9 @@ mod tests {
         assert!(y1 - y0 <= max_view_span());
     }
 
-    /// `params_of` (drives save/load/reset + the client cfg push) and `ADMIN_CLAMP` (the slider clamp
-    /// + `apply_admin_param` arms) must enumerate the SAME tunable set. When they drift, a param
-    /// becomes unpersistable / unresettable / un-editable — exactly the bug class this guards
+    /// `params_of` (drives save/load/reset + the client cfg push) and `ADMIN_CLAMP` (the slider
+    /// clamp and `apply_admin_param` arms) must enumerate the SAME tunable set. When they drift, a
+    /// param becomes unpersistable / unresettable / un-editable — exactly the bug class this guards
     /// (`reset_to_defaults` previously omitted `ant_hz`/`ant_view_cap`).
     #[test]
     fn params_of_and_admin_clamp_enumerate_the_same_tunables() {

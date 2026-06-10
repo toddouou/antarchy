@@ -1853,7 +1853,11 @@ function connect() {
   // Text frames → handle(). Binary frames route on byte 0: <16 = viewport (tile/ant) → handleViewBin();
   // >=16 = compressed CONTROL (me/leaderboard/stats/region-holders) → inflate → handle().
   ws.onmessage=e=>{
-    if (typeof e.data==='string') { handle(JSON.parse(e.data)); return; }
+    if (typeof e.data==='string') {
+      // One malformed text frame must not throw out of the socket handler.
+      try { handle(JSON.parse(e.data)); } catch(err) { console.warn('bad frame', err); }
+      return;
+    }
     if (new Uint8Array(e.data,0,1)[0] >= 16) handleCtlBin(e.data); else handleViewBin(e.data);
   };
 }
@@ -1954,8 +1958,8 @@ async function handleViewBin(ab){
 // (async-decoded) tile frame can't make ants jump backwards.
 function applyAntsOnly(msg){
   if (!vw || (vw.tick||0) > msg.tick) return;
-  const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np;
-  vw.ants=msg.ants; vw.tick=msg.tick;
+  const np=new Map(); for (const a of vw.ants||[]) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np;
+  vw.ants=msg.ants||[]; vw.tick=msg.tick;
   const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT;
 }
 
@@ -1964,7 +1968,7 @@ function applyAntsOnly(msg){
 function applyViewFrame(f){
   // If this tile frame decoded out-of-order behind a newer ant frame, keep the newer ants.
   if (vw && (vw.tick||0) > (f.tick||0)) { f.ants=vw.ants; f.tick=vw.tick; }
-  if (vw) { const np=new Map(); for (const a of vw.ants) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
+  if (vw) { const np=new Map(); for (const a of vw.ants||[]) np.set(a[0],{x:a[1],y:a[2]}); prevAntPos=np; }
   { const nowT=performance.now(), dt=nowT-lastVwAt; if (dt>4&&dt<500) antFrameDt=antFrameDt?antFrameDt*0.6+dt*0.4:dt; lastVwAt=nowT; }
   vw=f;
   // Only 1:1 frames feed the persistent fine cache; LOD (downsampled) frames are drawn directly from vw.

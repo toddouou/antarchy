@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::config::{
     cfg, level_for_xp, total_xp_for_level, current_ms, ENEMY_HUES,
-    BRUTE_DMG_MULT, CREDIT_CAP, DEFENDER_RANGE, TILE_MILESTONES,
+    BRUTE_DMG_MULT, DEFENDER_RANGE, TILE_MILESTONES,
     GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE,
 };
 use crate::world::{Ant, MetroHolder, Player, Queen, QueenHit, World, XpGrant};
@@ -124,7 +124,7 @@ pub fn apply_peak_unlocks(world: &mut World, player_id: u32, new_lvl: u16) {
 
     if grant_starter_credit {
         if let Some(p) = world.players.get_mut(&player_id) {
-            p.credits = (p.credits + 1).min(CREDIT_CAP);
+            p.credits = p.credits.saturating_add(1);
         }
     }
     let tx = world.players.get(&player_id).and_then(|p| p.tx.clone());
@@ -229,7 +229,7 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         }
         if let Some(kq) = world.queens.get_mut(&kid) { kq.kills += 1; }
         if let Some(kp) = world.players.get_mut(&kid) {
-            kp.credits = (kp.credits + 1).min(CREDIT_CAP);
+            kp.credits = kp.credits.saturating_add(1);
         }
         let kill_xp = cfg().xp_kill;
         award_xp(world, kid, kill_xp, "kill", qx, qy);
@@ -337,14 +337,7 @@ pub fn wipe_world_and_users(world: &mut World) {
     //    flow runs — fixing the old bug where the admin was retained in-game with no way to deploy.
     let all_ids: Vec<u32> = world.players.keys().copied().collect();
     for id in all_ids {
-        if let Some(p) = world.players.get_mut(&id) {
-            if let Some(tx) = &p.tx {
-                let _ = tx.send(r#"{"t":"force-logout","reason":"WORLD WIPED"}"#.to_string());
-            }
-            p.tx = None;
-            p.view_tx = None;
-            p.ctl_tx = None;
-        }
+        world.force_logout(id, "WORLD WIPED");
         world.players.remove(&id);
     }
 
@@ -396,15 +389,8 @@ pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, s
     world.players.insert(id, Player {
         id, username: format!("NPC_{id}"), color: hue,
         hue_idx: hue_idx as i32,
-        ants_avail: 0, next_refill: 0, queen_placed_at: None,
-        npc: true, guest: false, view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0,
-        prestige: 0, credits: 0,
-        defenders: Vec::new(),
-        visited_countries: Default::default(), visited_continents: Default::default(),
-        lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0,
-        unlimited_credits: false, unlimited_ants: false,
-        killed_by: Default::default(), kills_of: Default::default(),
-        away: None,
+        npc: true,
+        ..Default::default()
     });
     world.queen_map_dirty = true;
 
@@ -442,13 +428,13 @@ pub fn tick_world(world: &mut World) {
     // --- Occasional dedup (every 64 ticks): removes stacked same-owner same-direction ants ---
     // Parallel sort (rayon) keeps this O(n log n) pass off the critical path at 100k ants;
     // the dedup itself stays serial (it only walks the now-sorted vec once).
-    if world.tick % 64 == 0 && !world.ants.is_empty() {
+    if world.tick.is_multiple_of(64) && !world.ants.is_empty() {
         world.ants.par_sort_unstable_by_key(|a| (a.owner, a.x, a.y, a.dx as i32, a.dy as i32));
         world.ants.dedup_by_key(|a| (a.owner, a.x, a.y, a.dx, a.dy));
     }
 
     // --- Spatial sort every 50 ticks: group ants by 256×256 chunk for cache locality ---
-    if world.tick % 50 == 0 && !world.ants.is_empty() {
+    if world.tick.is_multiple_of(50) && !world.ants.is_empty() {
         let chunk_w = world.world_w / 256 + 1;
         world.ants.par_sort_unstable_by_key(|a| {
             let cx = a.x as u32 / 256;
@@ -460,7 +446,7 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 1: Plan moves — Rayon parallel, no Mutex, fold/reduce for accumulation
     // =========================================================================
-    let is_even = world.tick % 2 == 0;
+    let is_even = world.tick.is_multiple_of(2);
     let (hits, xp_grants) = {
         let tiles     = &world.tiles;
         let queen_map = &world.queen_map;
@@ -889,7 +875,7 @@ pub fn tick_world(world: &mut World) {
     // Phase 8: Passive queen HP regen (c.hp_regen HP per second) + shield expiry
     // =========================================================================
     let ticks_per_sec = c.tick_rate.max(1) as u64;
-    if c.hp_regen > 0.0 && world.tick % ticks_per_sec == 0 {
+    if c.hp_regen > 0.0 && world.tick.is_multiple_of(ticks_per_sec) {
         let gain = c.hp_regen.round() as i32;
         if gain > 0 {
             for q in world.queens.values_mut() {
@@ -897,7 +883,7 @@ pub fn tick_world(world: &mut World) {
             }
         }
     }
-    if world.tick % 50 == 0 {
+    if world.tick.is_multiple_of(50) {
         let now = current_ms();
         for q in world.queens.values_mut() {
             if let Some(exp) = q.shield_expiry {
@@ -909,24 +895,26 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 8b: Defender trigger (throttled every 25 ticks)
     // =========================================================================
-    if world.tick % 25 == 0 && !world.ants.is_empty() {
+    if world.tick.is_multiple_of(25) && !world.ants.is_empty() {
         let now = current_ms();
         let def_range = DEFENDER_RANGE;
         let def_lifespan = c.lifespan;
         let player_ids: Vec<u32> = world.players.keys().copied().collect();
         for def_pid in player_ids {
-            let is_npc = world.players.get(&def_pid).map(|p| p.npc).unwrap_or(true);
-            if is_npc { continue; }
-            let has_defenders = world.players.get(&def_pid).map(|p| !p.defenders.is_empty()).unwrap_or(false);
-            if !has_defenders { continue; }
+            // Skip NPCs and players with no queued defenders (one lookup covers both gates).
+            if world.players.get(&def_pid).is_none_or(|p| p.npc || p.defenders.is_empty()) { continue; }
             let queen_data = world.queens.get(&def_pid)
                 .filter(|q| !q.dead)
                 .map(|q| (q.x, q.y, q.size as i32));
             let Some((qx, qy, qsize)) = queen_data else { continue };
             let qcx = qx + qsize / 2;
             let qcy = qy + qsize / 2;
-            world.players.get_mut(&def_pid).unwrap().defenders.retain(|&exp| exp > now);
-            if world.players.get(&def_pid).map(|p| p.defenders.is_empty()).unwrap_or(true) { continue; }
+            // Expire lapsed purchases; bail if none survive.
+            let any_live = world.players.get_mut(&def_pid).is_some_and(|p| {
+                p.defenders.retain(|&exp| exp > now);
+                !p.defenders.is_empty()
+            });
+            if !any_live { continue; }
             // Nearest in-range enemy ant — the defender deploys toward it.
             let mut nearest: Option<(i32, i32, i32)> = None; // (chebyshev, ex, ey)
             for a in world.ants.iter() {
@@ -937,7 +925,7 @@ pub fn tick_world(world: &mut World) {
                 }
             }
             let Some((_, ex, ey)) = nearest else { continue };
-            world.players.get_mut(&def_pid).unwrap().defenders.remove(0);
+            if let Some(p) = world.players.get_mut(&def_pid) { p.defenders.remove(0); }
             // Spawn one tile OUTSIDE the queen footprint on the side facing the enemy, heading
             // outward — so the defender never lands on queen tiles (which left it stuck once the
             // queen's footprint grew with level).
@@ -978,8 +966,8 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     flush_xp(world);
 
-    if world.tick % DISCOVERY_INTERVAL == 0 { sample_visited(world); }
-    if world.tick % HOLDER_INTERVAL == 0 {
+    if world.tick.is_multiple_of(DISCOVERY_INTERVAL) { sample_visited(world); }
+    if world.tick.is_multiple_of(HOLDER_INTERVAL) {
         recompute_holders(world);
         let holders = crate::network::build_region_holders(world);
         world.broadcast_ctl(
@@ -991,7 +979,7 @@ pub fn tick_world(world: &mut World) {
     // Season upkeep: sweep Dense chunks that became solid-one-owner (via clash conversions,
     // which bypass the inline fill-compaction) back into Uniform — keeps tile RAM proportional
     // to the painted *perimeter* rather than area over a month of churn. Cheap; throttled.
-    if world.tick % COMPACT_INTERVAL == 0 {
+    if world.tick.is_multiple_of(COMPACT_INTERVAL) {
         world.tiles.compact_pass();
     }
 }
@@ -1203,17 +1191,7 @@ mod tests {
     }
 
     fn mk_player(id: u32) -> crate::world::Player {
-        crate::world::Player {
-            id, username: String::new(), color: String::new(), hue_idx: 0,
-            ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false, guest: false,
-            view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
-            defenders: Vec::new(), visited_countries: Default::default(),
-            visited_continents: Default::default(), lifetime_kills: 0,
-            lifetime_peak_tiles: 0, queens_fielded: 0,
-            unlimited_credits: false, unlimited_ants: false,
-            killed_by: Default::default(), kills_of: Default::default(),
-            away: None,
-        }
+        crate::world::Player { id, ..Default::default() }
     }
 
     /// A tile milestone fires once when peak tiles first reach a threshold, and never again.
@@ -1397,15 +1375,7 @@ mod bench {
             w.queens.insert(id, Queen { x, y, size: 2, hp: 100, max_hp: 100, level: 1, xp: 0.0,
                 kills: 0, bubble_r: 30.0, last_attacker: None, dead: false, tiles_ever_held: 0,
                 cached_tiles: 0, npc: false, shield: 0, shield_expiry: None, region: String::new() });
-            w.players.insert(id, Player { id, username: String::new(), color: String::new(),
-                hue_idx: 0, ants_avail: 0, next_refill: 0, queen_placed_at: None, npc: false, guest: false,
-                view: None, tx: None, view_tx: None, ctl_tx: None, egress_meter: None, bin: false, conn_gen: 0, prestige: 0, credits: 0,
-                defenders: Vec::new(), visited_countries: Default::default(),
-                visited_continents: Default::default(), lifetime_kills: 0, lifetime_peak_tiles: 0,
-                queens_fielded: 0,
-                unlimited_credits: false, unlimited_ants: false,
-                killed_by: Default::default(), kills_of: Default::default(),
-                away: None });
+            w.players.insert(id, Player { id, ..Default::default() });
         }
         w.queen_map_dirty = true;
 

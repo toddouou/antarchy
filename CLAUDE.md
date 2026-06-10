@@ -28,12 +28,18 @@ uptime; tile-store stats (`tilesPainted`/`chunks`/`uniformChunks`/`denseChunks`/
 timing (`tickMsP50`/`tickMsP99`/`tickMsMax`); `seasonSecs`.
 **World info:** `curl http://localhost:8080/world-info` (world size, spawn, geo projection).
 
-**Persistence:** state is **restored on startup** (`src/persist.rs`). Two files live under the
+**Persistence:** state is **restored on startup** (`src/persist.rs`). These files live under the
 directory from the `HIVE_DATA_DIR` env var (default = working dir; in production point it at the
 host's persistent data dir via the service env file, or it won't survive a redeploy):
-- `world.snapshot` — gzip-compressed JSON of tiles, ants, queens, players (durable fields only),
-  `next_player_id`, `tick`, `started_at`. Written atomically (temp file + rename).
-- `users.json` — accounts + ban list (`Auth::save`/`Auth::load`, now `{users, banned}`).
+- `world.snapshot` — gzip-compressed bincode of tiles, ants, queens, players (durable fields only),
+  `next_player_id`, `tick`, `started_at`. Written atomically (temp file + fsync + rename).
+- `world.snapshot.epoch` — the R2 tile-generation epoch, persisted beside the snapshot so a restart
+  can't regress the super-tile keyspace.
+- `users.json` — accounts + ban list (`Auth::save`/`Auth::load`, `{users, banned}`). Same atomic
+  temp + fsync + rename treatment.
+- `config.json` — admin-tuned slider values (`config::save_config`/`load_config`), rewritten when a
+  tunable changes and re-applied through the clamping setters on boot, so admin tuning survives a
+  restart.
 
 The world autosaves every ~60 s (in `sim_loop`) and on shutdown (Ctrl-C / SIGTERM handler in
 `main.rs` — covers service restarts/redeploys). On boot, `main` calls `Auth::load` + `persist::load`/`restore`;
@@ -57,7 +63,7 @@ src/
                          apply_admin_param, reset_to_defaults, queen_size_for_level,
                          max_hp_for_level, total_xp_for_level, level_for_xp, calc_score,
                          current_ms; shop prices +
-                         tunables (CREDIT_CAP, PRICE_*, BRUTE_DMG_MULT, DEFENDER_RANGE, …)
+                         tunables (PRICE_*, BRUTE_DMG_MULT, DEFENDER_RANGE, …)
   world.rs             — World aggregate + Ant/Queen/Player/PlayerView/XpGrant/QueenHit/
                          MetroHolder/AwaySnapshot structs; send_to/broadcast/broadcast_near;
                          get_queen_map; cell_key; paint_queen_body/clear_queen_body/
@@ -90,8 +96,8 @@ src/
   email.rs             — transactional email via Resend (verify/reset codes); dormant until
                          HIVE_RESEND_API_KEY set — logs the code to the console as a dev fallback
   sms.rs               — SMS verify-code sender; dormant stub (logs the code) until a provider is wired
-  persist.rs           — world snapshot save/load/restore: gzip JSON of tiles/ants/queens/players/
-                         counters → world.snapshot (atomic temp+rename); pairs with Auth's users.json
+  persist.rs           — world snapshot save/load/restore: gzip bincode of tiles/ants/queens/players/
+                         counters → world.snapshot (atomic temp+fsync+rename); pairs with users.json
   metrics.rs           — egress + R2 op counters (Class-A/B/delete) behind /egress-stats; denial-of-
                          wallet spike alerts
   snapshot.rs          — R2 super-tile pipeline: rasterize dirty chunks → PNG, coalesce into super
@@ -238,10 +244,13 @@ PORT=8090 CARGO_TARGET_DIR=target-dev cargo test --release bench_ -- --ignored -
 - `bench_tick_1k_queens_100k_ants` — tick @ the full target (1k queens + 100k ants; ~9–12 ms).
 - `bench_queen_collisions_1k` — isolated Phase-9 cost; spatial bucketing took it ~2,400 µs → ~90 µs.
 
-**Known limits (identified, not yet addressed — need client/protocol work + browser validation):**
-- **Palette fan-out**: `finish_view` clones the full palette into every client's tile frame →
-  O(players²) work at high connected counts. Fix: send the palette only on change, cache it client-side.
-- **Leaderboard payload**: the full live-queen list is broadcast every 20 ticks; should be top-N.
+**Former known limits — both addressed:**
+- **Palette fan-out**: tile frames carry a per-frame **local** palette bounded by the owners visible
+  in that viewport (`tileIds`/`tileIdsAdd`), and the global owner→colour map is built **once per
+  tile cycle** behind an `Arc` shared by every client's `finish_view` job (skipped entirely on
+  ants-only cycles) — no O(players²) work at high connected counts.
+- **Leaderboard payload**: capped to the top 100 by Grand Score (`LEADERBOARD_TOP_N`) and broadcast
+  only when a signature of the standings changes (plus a ~5 s forced heartbeat).
 
 ## Client ↔ geography
 

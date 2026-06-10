@@ -285,6 +285,11 @@ fn gen_code() -> String { format!("{:06}", rand::thread_rng().gen_range(0..1_000
 
 // ---- Per-IP rate limiter (fixed 1-minute window) -----------------------------------------------
 
+/// Soft cap on tracked IPs: past this, stale windows are evicted before a new IP is admitted —
+/// nothing else prunes this map (it lives in axum state, outside the World and `api::gc`), so
+/// without the sweep a spoofed-IP flood would grow it forever.
+const MAX_TRACKED_IPS: usize = 4096;
+
 #[derive(Clone, Default)]
 pub struct RateLimiter {
     inner: Arc<Mutex<HashMap<String, (u64, u32)>>>, // ip -> (window_start_ms, count)
@@ -295,6 +300,9 @@ impl RateLimiter {
     pub fn check(&self, ip: &str) -> bool {
         let now = current_ms();
         let mut g = self.inner.lock();
+        if g.len() >= MAX_TRACKED_IPS && !g.contains_key(ip) {
+            g.retain(|_, (start, _)| now.saturating_sub(*start) <= 60_000);
+        }
         let e = g.entry(ip.to_string()).or_insert((now, 0));
         if now.saturating_sub(e.0) > 60_000 { *e = (now, 0); }
         e.1 += 1;
@@ -511,4 +519,35 @@ fn client_ip(headers: &HeaderMap) -> String {
         .and_then(|s| s.split(',').next()).map(|s| s.trim().to_string())
         .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Once the tracked-IP cap is hit, lapsed windows are swept before a new IP is admitted — the
+    /// map stays bounded under a spoofed-IP flood (nothing else prunes it: it lives in axum state,
+    /// outside the World and `api::gc`). Entries still inside their window must survive the sweep.
+    #[test]
+    fn rate_limiter_evicts_stale_ips_at_cap() {
+        let rl = RateLimiter::default();
+        let now = current_ms();
+        {
+            let mut g = rl.inner.lock();
+            for i in 0..MAX_TRACKED_IPS {
+                g.insert(format!("10.{}.{}.{}", i >> 16, (i >> 8) & 0xFF, i & 0xFF), (now - 120_000, 5));
+            }
+        }
+        assert!(rl.check("203.0.113.7"), "fresh caller admitted");
+        assert_eq!(rl.inner.lock().len(), 1, "all lapsed windows swept; only the fresh caller remains");
+
+        {
+            let mut g = rl.inner.lock();
+            for i in 0..MAX_TRACKED_IPS {
+                g.insert(format!("10.{}.{}.{}", i >> 16, (i >> 8) & 0xFF, i & 0xFF), (now, 1));
+            }
+        }
+        assert!(rl.check("203.0.113.8"));
+        assert!(rl.inner.lock().len() > MAX_TRACKED_IPS, "in-window entries survive the sweep");
+    }
 }

@@ -70,7 +70,7 @@ pub fn build_queen_roster(world: &World) -> String {
             }))
         })
         .collect();
-    qs.sort_by(|a, b| b.0.cmp(&a.0));
+    qs.sort_by_key(|q| std::cmp::Reverse(q.0));
     qs.truncate(ROSTER_TOP_N);
     let queens: Vec<Value> = qs.into_iter().map(|(_, v)| v).collect();
     json!({"t": "queen-roster", "queens": queens}).to_string()
@@ -376,7 +376,7 @@ pub struct RawView {
 fn cap_ants_by_id(ants: &mut Vec<(u32, i32, i32, i8, i8, u32, u8)>, cap: usize) {
     if cap > 0 && ants.len() > cap {
         let stride = ants.len().div_ceil(cap);
-        ants.retain(|t| (t.0 as usize) % stride == 0);
+        ants.retain(|t| (t.0 as usize).is_multiple_of(stride));
     }
 }
 
@@ -766,10 +766,10 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
                 cur.push(l);
             }
         }
-        let mut changed: Vec<(u32, u16)> = Vec::new();
-        for i in 0..n {
-            if cur[i] != p.local[i] { changed.push((i as u32, cur[i])); }
-        }
+        let changed: Vec<(u32, u16)> = cur.iter().zip(&p.local).enumerate()
+            .filter(|(_, (c, l))| c != l)
+            .map(|(i, (&c, _))| (i as u32, c))
+            .collect();
         if changed.len() <= n / 4 {
             let seq = p.seq.wrapping_add(1);
             // Fog-on-keyframes-only (Phase 3): `bin` clients retain the last keyframe's fog and we
@@ -923,7 +923,7 @@ mod tests {
         cap_ants_by_id(&mut c, 4000);
         assert!(c.len() <= 4000, "trimmed to at most the cap (got {})", c.len());
         let stride = 10_000usize.div_ceil(4000); // = 3
-        assert!(c.iter().all(|t| (t.0 as usize) % stride == 0), "survivors are exactly the id-stride set");
+        assert!(c.iter().all(|t| (t.0 as usize).is_multiple_of(stride)), "survivors are exactly the id-stride set");
         let mut c2 = mk(10_000);
         cap_ants_by_id(&mut c2, 4000);
         assert_eq!(c, c2, "same input ⇒ same kept set (frame-stable, no flicker)");

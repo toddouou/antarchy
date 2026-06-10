@@ -512,7 +512,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             }
 
             // beta-v2: GC expired pending registrations + reset tokens (cheap; throttled ~40 s).
-            if w.tick % 600 == 0 { crate::api::gc(&mut w); }
+            if w.tick.is_multiple_of(600) { crate::api::gc(&mut w); }
 
             // Season rollover: once uptime exceeds the configured season length, wipe the
             // world and start a fresh season (compaction keeps RAM flat across the churn).
@@ -1060,11 +1060,10 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
     let mut total_bytes = 0u64;
     let mut total_msgs  = 0u64;
     let mut by_kind = serde_json::Map::new();
-    for i in 0..crate::metrics::KIND_COUNT {
-        let (b, m) = per[i];
+    for (name, &(b, m)) in crate::metrics::KIND_NAMES.iter().zip(per.iter()) {
         total_bytes += b;
         total_msgs  += m;
-        by_kind.insert(crate::metrics::KIND_NAMES[i].to_string(), serde_json::json!({
+        by_kind.insert(name.to_string(), serde_json::json!({
             "bytes": b,
             "msgs":  m,
             "bytesPerSec": (b as f64 / secs).round() as u64,

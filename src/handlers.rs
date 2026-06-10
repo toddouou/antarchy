@@ -30,6 +30,15 @@ fn check_seq(world: &mut World, pid: u32, msg: &Value) -> bool {
     true
 }
 
+/// Deduct a shop purchase from the player's balance. The caller has already verified
+/// affordability; `saturating_sub` keeps the arithmetic safe regardless.
+fn charge(world: &mut World, pid: u32, price: u64, unlimited: bool) {
+    if unlimited { return; }
+    if let Some(p) = world.players.get_mut(&pid) {
+        p.credits = p.credits.saturating_sub(price);
+    }
+}
+
 /// Returns (player_id, msg_to_send) or None if message is silently ignored.
 pub fn handle_message(
     world:     &mut World,
@@ -77,7 +86,7 @@ pub fn handle_message(
             ..Default::default()
         });
         world.auth.save();
-        let welcome = create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, false, tx.clone());
+        let welcome = create_or_reconnect_player(world, id, &raw_u, &color, hue_idx, tx.clone());
         *player_id = Some(id);
         apply_bin_cap(world, id, &msg);
         let me = build_player_info(world, id, true, None);
@@ -101,7 +110,7 @@ pub fn handle_message(
             if let Some(ur) = world.auth.users.get_mut(&u) { ur.password_hash = new_hash; }
             world.auth.save();
         }
-        let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
+        let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, tx.clone());
         *player_id = Some(rec.id);
         // Pre-existing high-level accounts predate the unlock system: silently raise peak_level to
         // their current queen level so their chrome shows immediately — WITHOUT firing popups/credit.
@@ -123,7 +132,7 @@ pub fn handle_message(
         let rec = world.auth.find_by_id(id).cloned();
         let Some(rec) = rec else { let _ = tx.send(err("Account not found")); return; };
         if world.auth.banned.contains(&rec.username) { let _ = tx.send(err("BANNED")); return; }
-        let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, rec.is_admin, tx.clone());
+        let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, tx.clone());
         *player_id = Some(rec.id);
         backfill_peak_level(world, rec.id);
         apply_bin_cap(world, rec.id, &msg);
@@ -146,14 +155,10 @@ pub fn handle_message(
         let id = world.alloc_guest_id();
         world.players.insert(id, Player {
             id, username: "spectator".into(), color: "#8a8a8a".into(), hue_idx: -1,
-            ants_avail: 0, next_refill: 0, queen_placed_at: None,
-            npc: false, guest: true, view: None,
-            tx: Some(tx.clone()), view_tx: None, ctl_tx: None, egress_meter: None, bin: false,
-            conn_gen: 1, prestige: 0, credits: 0, defenders: Vec::new(),
-            visited_countries: Default::default(), visited_continents: Default::default(),
-            lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0,
-            unlimited_credits: false, unlimited_ants: false,
-            killed_by: Default::default(), kills_of: Default::default(), away: None,
+            guest: true,
+            tx: Some(tx.clone()),
+            conn_gen: 1,
+            ..Default::default()
         });
         *player_id = Some(id);
         // bin negotiation → guests get the compressed ant frames (kind 3) for minimal egress.
@@ -455,10 +460,10 @@ pub fn handle_message(
                 // NPCs have no account to ban — remove the dummy entirely (kill_queen purges it).
                 if world.players.get(&tid).map(|p| p.npc).unwrap_or(false) {
                     kill_queen(world, tid, None, "admin");
-                } else if let Some(bp) = world.players.get(&tid) {
-                    let uname = bp.username.clone();
-                    if let Some(btx) = &bp.tx { let _ = btx.send("".to_string()); }
+                } else if let Some(uname) = world.players.get(&tid).map(|p| p.username.clone()) {
                     world.auth.banned.insert(uname.clone());
+                    world.auth.save(); // moderation state must survive a crash, not just the next graceful save
+                    world.force_logout(tid, "BANNED BY ADMIN");
                     let msg = json!({"t":"event","msg":format!("[ADMIN] {uname} BANNED")}).to_string();
                     world.broadcast(&msg);
                 }
@@ -510,9 +515,8 @@ pub fn handle_message(
             kill_queen(world, tid, None, "admin");
             return;
         }
-        if let Some(tp) = world.players.get(&tid) {
-            let uname = tp.username.clone();
-            if let Some(ttx) = &tp.tx { let _ = ttx.send("".to_string()); }
+        if let Some(uname) = world.players.get(&tid).map(|p| p.username.clone()) {
+            world.force_logout(tid, "KICKED BY ADMIN");
             let ev = json!({"t":"event","msg":format!("[ADMIN] {uname} KICKED")}).to_string();
             world.broadcast(&ev);
         }
@@ -707,7 +711,7 @@ pub fn handle_message(
                 let ww = world.world_w as i32; let wh = world.world_h as i32;
                 if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 { let _ = tx.send(err("Out of bounds")); return; }
                 if world.too_close_to_queen(x, y, pid) { let _ = tx.send(err("Too close to another queen")); return; }
-                if let Some(p) = world.players.get_mut(&pid) { if !unlimited_credits { p.credits -= price; } }
+                charge(world, pid, price, unlimited_credits);
                 world.clear_queen_body(ox, oy, sz, pid);
                 if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
                 world.paint_queen_body(x, y, sz, pid);
@@ -718,15 +722,14 @@ pub fn handle_message(
                 let queen_alive = world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false);
                 if !queen_alive { let _ = tx.send(err("Need a live queen")); return; }
                 let expiry = current_ms() + DEFENDER_MS;
-                if let Some(p) = world.players.get_mut(&pid) { if !unlimited_credits { p.credits -= price; } p.defenders.push(expiry); }
+                charge(world, pid, price, unlimited_credits);
+                if let Some(p) = world.players.get_mut(&pid) { p.defenders.push(expiry); }
                 let _ = tx.send(json!({"t":"shop-ok","item":"defender"}).to_string());
             }
             "worker" => {
                 // +1 inventory worker — a stock top-up, so no live-queen requirement.
-                if let Some(p) = world.players.get_mut(&pid) {
-                    if !unlimited_credits { p.credits -= price; }
-                    p.ants_avail += 1;
-                }
+                charge(world, pid, price, unlimited_credits);
+                if let Some(p) = world.players.get_mut(&pid) { p.ants_avail += 1; }
                 let _ = tx.send(json!({"t":"shop-ok","item":"worker"}).to_string());
             }
             "brute" => {
@@ -744,7 +747,7 @@ pub fn handle_message(
                     Err(e) => { let _ = tx.send(err(e)); return; }
                 };
                 let lifespan = cfg().lifespan;
-                if let Some(p) = world.players.get_mut(&pid) { if !unlimited_credits { p.credits -= price; } }
+                charge(world, pid, price, unlimited_credits);
                 world.ants.push(crate::world::Ant::new_kind(rand::random::<u32>(), pid, x, y, adx, ady, lifespan, 1));
                 world.dirty_tick = world.tick;
                 let _ = tx.send(json!({"t":"shop-ok","item":"brute","x":x,"y":y}).to_string());
@@ -758,7 +761,7 @@ pub fn handle_message(
                     .map(|q| q.shield > 0 && q.shield_expiry.is_some_and(|e| e > now))
                     .unwrap_or(false);
                 if active { let _ = tx.send(err("Shield already active")); return; }
-                if let Some(p) = world.players.get_mut(&pid) { if !unlimited_credits { p.credits -= price; } }
+                charge(world, pid, price, unlimited_credits);
                 if let Some(q) = world.queens.get_mut(&pid) {
                     q.shield = q.max_hp;
                     q.shield_expiry = Some(now + SHIELD_MS);
@@ -776,8 +779,8 @@ pub fn handle_message(
         let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
         let amount = msg["amount"].as_u64().unwrap_or(0);
         if let Some(tp) = world.players.get_mut(&tid) {
-            // saturating: CREDIT_CAP is u64::MAX, so a raw `+` could overflow on a huge admin amount.
-            tp.credits = tp.credits.saturating_add(amount).min(crate::config::CREDIT_CAP);
+            // saturating: a huge admin amount must not overflow the balance.
+            tp.credits = tp.credits.saturating_add(amount);
             let new_cr = tp.credits;
             if let Some(ttx) = &tp.tx {
                 let _ = ttx.send(json!({"t":"event","msg":format!("+{amount} CREDITS (ADMIN) · total {new_cr}")}).to_string());
@@ -790,7 +793,7 @@ pub fn handle_message(
     if t == "admin-set-credits" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
         let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
-        let amount = msg["amount"].as_u64().unwrap_or(0).min(crate::config::CREDIT_CAP);
+        let amount = msg["amount"].as_u64().unwrap_or(0);
         if let Some(tp) = world.players.get_mut(&tid) {
             tp.credits = amount;
             if let Some(ttx) = &tp.tx {
@@ -866,7 +869,6 @@ fn backfill_peak_level(world: &mut World, id: u32) {
 fn create_or_reconnect_player(
     world: &mut World,
     id: u32, username: &str, color: &str, hue_idx: i32,
-    _is_admin: bool,
     tx: BoundedTx<String>,
 ) -> Option<String> {
     use crate::config::current_ms;
@@ -897,18 +899,9 @@ fn create_or_reconnect_player(
         hue_idx,
         ants_avail: daily,
         next_refill: now + 24 * 3600 * 1000,
-        queen_placed_at: None,
-        npc: false, guest: false, view: None,
-        tx: Some(tx), view_tx: None,
-        ctl_tx: None, egress_meter: None, bin: false,
+        tx: Some(tx),
         conn_gen: 1,
-        prestige: 0, credits: 0,
-        defenders: Vec::new(),
-        visited_countries: Default::default(), visited_continents: Default::default(),
-        lifetime_kills: 0, lifetime_peak_tiles: 0, queens_fielded: 0,
-        unlimited_credits: false, unlimited_ants: false,
-        killed_by: Default::default(), kills_of: Default::default(),
-        away: None,
+        ..Default::default()
     });
     println!("[connect] {username} ({})", id);
     None
