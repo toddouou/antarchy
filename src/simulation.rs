@@ -160,9 +160,9 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     world.tiles.clear_owner(loser_id);
     world.dirty_tick = world.tick;
 
-    // Prestige: increment on each queen death. Real players also lose their standing
-    // army — workers reset to the starter count and the daily timer restarts, so no
-    // refill arrives until tomorrow. (Existing live ants are removed below.)
+    // Prestige: increment on each queen death. Real players also lose their standing army —
+    // workers reset to the starter count. (Existing live ants are removed below.) The daily-claim
+    // window is unaffected by death; `next_refill` is legacy and no longer grants anything.
     let daily = cfg().daily_ants;
     let now = current_ms();
     if let Some(p) = world.players.get_mut(&loser_id) {

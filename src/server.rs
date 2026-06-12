@@ -495,21 +495,10 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
 
             if !w.paused { tick_world(&mut w); }
 
-            // Daily ant refill check
+            // Daily ants are no longer auto-granted here — the old rolling 24 h refill stacked
+            // portions day after day. The ONLY grant path is the `claim-daily` handler: one
+            // portion per 00:00-UTC window, claimed by the player, forfeited if skipped.
             let now = crate::config::current_ms();
-            let daily = cfg().daily_ants;
-            for p in w.players.values_mut() {
-                if p.npc || p.tx.is_none() { continue; }
-                if p.next_refill > 0 && now >= p.next_refill {
-                    p.ants_avail += daily;
-                    p.next_refill = now + 24 * 3600 * 1000;
-                    if let Some(tx) = &p.tx {
-                        let _ = tx.send(serde_json::json!({
-                            "t":"event","msg":format!("+{daily} DAILY WORKERS")
-                        }).to_string());
-                    }
-                }
-            }
 
             // beta-v2: GC expired pending registrations + reset tokens (cheap; throttled ~40 s).
             if w.tick.is_multiple_of(600) { crate::api::gc(&mut w); }

@@ -47,8 +47,8 @@ center queen (E3) must not collide — settle z-index/anchor strategy in the Gro
 | A1 | /play defaults to light mode | ✅ code done 2026-06-12 — browser visual pass pending |
 | A2 | No ant placement in enemy queen zone; zones never intersect (server-gated + client UX) | ✅ code done 2026-06-12 — two-tab playtest pending |
 | A3 | Zoom cap anchors to queen's island on split territory (zoomBounds) | ✅ code done 2026-06-12 — relocate playtest pending |
-| B1 | Stop daily-ant compounding (exactly 1× portion per window) | ⏸ awaiting plan approval |
-| B2 | Claim button + server-idempotent claim per 00:00-UTC window | ⏸ awaiting plan approval |
+| B1 | Stop daily-ant compounding (exactly 1× portion per window) | ✅ code done 2026-06-12 — auto-refill loop deleted; claim is the only grant path |
+| B2 | Claim button + server-idempotent claim per 00:00-UTC window | ✅ code done 2026-06-12 — WS E2E verified (grant once, replays rejected, persisted) |
 | C1 | Fix landing-page ads | ⏸ awaiting plan approval |
 | C2 | /play bottom AdSense banner | ⏸ awaiting plan approval |
 | C3 | Rewarded ~30s ad gate before daily claim (server grant only) | ⏸ awaiting plan approval |
@@ -61,6 +61,18 @@ center queen (E3) must not collide — settle z-index/anchor strategy in the Gro
 | E3 | Persistent ~20-entry events log popup under center queen (feature-flagged) | ⏸ awaiting plan approval |
 
 Sequence: A → B → C (needs B) → D (independent) → E.
+
+## Group B plan (approved + implemented 2026-06-12)
+
+- Root cause: rolling-24h auto-grant in sim_loop (`ants_avail += daily`) — deleted. The ONLY
+  grant path is the `claim-daily` WS handler (`claim_daily` helper in handlers.rs), idempotent
+  via `UserRecord.last_claim_day` (UTC day number, users.json `#[serde(default)]` — NOT the
+  bincode snapshot). Windows = `config::utc_day` / `next_utc_midnight_ms` (00:00 UTC).
+- `me` sends `nextResetMs` + `claimReady` (replaced `nextRefillMs`); workers-panel DAILY cell
+  renders a pulsing CLAIM button when claimable, else the countdown; `daily-claimed` msg applies
+  the authoritative count. Registration marks day-1 claimed (starter = day-1 portion); existing
+  accounts get one catch-up claim. `Player.next_refill` kept as a legacy field (snapshot layout).
+- C3 hook: the rewarded-ad gate becomes a precondition inside the same `claim-daily` handler.
 
 ## Group A plan (approved 2026-06-12)
 

@@ -83,6 +83,8 @@ pub fn handle_message(
             // Legacy WS register has no email/phone; handle mirrors the username. beta-v2 accounts
             // come through the REST /api/* path which sets email/phone/handle properly.
             handle: raw_u.clone(),
+            // The signup starter inventory counts as day one's portion — first CLAIM at next 00:00 UTC.
+            last_claim_day: crate::config::utc_day(current_ms()),
             ..Default::default()
         });
         world.auth.save();
@@ -307,6 +309,23 @@ pub fn handle_message(
         world.paint_queen_body(x, y, size, pid);
         let _ = tx.send(json!({"t":"queen-placed","x":x,"y":y}).to_string());
         let _ = tx.send(json!({"t":"event","msg":"QUEEN PLACED · DEPLOY ANTS WITHIN BUBBLE"}).to_string());
+        return;
+    }
+
+    // ---- Daily claim (the ONLY daily-ant grant path; the rolling auto-refill is gone) ----
+    // One portion per 00:00-UTC window, idempotent via UserRecord.last_claim_day. The rewarded-ad
+    // gate (Group C) will become a precondition here — keep every grant inside claim_daily.
+    if t == "claim-daily" {
+        if !check_seq(world, pid, &msg) { return; }
+        match claim_daily(world, pid, current_ms()) {
+            Ok(amount) => {
+                world.auth.save();   // persist the claimed window (users.json)
+                let avail = world.players.get(&pid).map(|p| p.ants_avail).unwrap_or(0);
+                let _ = tx.send(json!({"t":"daily-claimed","amount":amount,"antsAvail":avail}).to_string());
+                let _ = tx.send(json!({"t":"event","msg":format!("+{amount} DAILY WORKERS")}).to_string());
+            }
+            Err(e) => { let _ = tx.send(err(e)); }
+        }
         return;
     }
 
@@ -822,6 +841,23 @@ pub fn handle_message(
     }
 }
 
+/// Grant the daily ant portion for the current 00:00-UTC window. Idempotent: the account's
+/// `last_claim_day` (users.json) marks the window claimed — a replay/double-call is rejected, and
+/// an unclaimed window is simply forfeited once the next one starts (no carry-over, no stacking).
+/// Pure state change; the caller persists via `Auth::save` on success. Returns the portion size.
+fn claim_daily(world: &mut World, pid: u32, now: u64) -> Result<i32, &'static str> {
+    let Some(p) = world.players.get(&pid) else { return Err("Not logged in"); };
+    if p.npc || p.guest { return Err("Spectators cannot claim"); }
+    let uname = p.username.clone();
+    let day = crate::config::utc_day(now);
+    let Some(u) = world.auth.users.get_mut(&uname) else { return Err("No account record"); };
+    if u.last_claim_day >= day { return Err("Already claimed — next portion at 00:00 UTC"); }
+    u.last_claim_day = day;
+    let daily = cfg().daily_ants;
+    if let Some(p) = world.players.get_mut(&pid) { p.ants_avail += daily; }
+    Ok(daily)
+}
+
 /// Validate a worker placement at (`x`,`y`) heading (`vdx`,`vdy`) for `pid`, given their live
 /// queen's footprint. Returns the resolved cardinal direction, or a client-facing error string.
 /// Shared verbatim by place-ant and the shop brute (identical legality rules).
@@ -1017,6 +1053,37 @@ mod tests {
         assert!(!w.queen_zone_overlaps(1065, 1001, 30.0, 999), "64 apart ≥ 30+30 → legal");
         // The placing player's own queen never blocks them (relocate case).
         assert!(!w.queen_zone_overlaps(1001, 1001, 30.0, pid));
+    }
+
+    #[test]
+    fn daily_claim_grants_once_per_utc_window() {
+        const DAY: u64 = 86_400_000;
+        let mut w = World::new();
+        let pid = 7u32;
+        w.players.insert(pid, Player { id: pid, username: "BOB".into(), ..Default::default() });
+        w.auth.users.insert("BOB".into(), UserRecord { id: pid, username: "BOB".into(), ..Default::default() });
+        let now = 20_000 * DAY + 5_000;   // a few seconds into an arbitrary UTC day
+        let daily = cfg().daily_ants;
+
+        // First claim grants exactly one portion.
+        assert_eq!(claim_daily(&mut w, pid, now), Ok(daily));
+        assert_eq!(w.players[&pid].ants_avail, daily);
+        // Replay / double-click anywhere in the same window: rejected, nothing granted.
+        assert!(claim_daily(&mut w, pid, now).is_err());
+        assert!(claim_daily(&mut w, pid, (20_001 * DAY) - 1).is_err(), "23:59:59.999 same window");
+        assert_eq!(w.players[&pid].ants_avail, daily);
+        // The next window opens at 00:00 UTC sharp.
+        assert_eq!(claim_daily(&mut w, pid, 20_001 * DAY), Ok(daily));
+        // Skipping windows forfeits them — three days later still yields ONE portion.
+        assert_eq!(claim_daily(&mut w, pid, 20_004 * DAY + 123), Ok(daily));
+        assert!(claim_daily(&mut w, pid, 20_004 * DAY + 999).is_err());
+        assert_eq!(w.players[&pid].ants_avail, 3 * daily);
+
+        // No account record / not logged in → no grant.
+        assert!(claim_daily(&mut w, 999, now).is_err());
+        // Guests can never claim.
+        w.players.insert(8, Player { id: 8, username: "BOB".into(), guest: true, ..Default::default() });
+        assert!(claim_daily(&mut w, 8, 30_000 * DAY).is_err());
     }
 
     #[test]

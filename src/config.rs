@@ -860,9 +860,27 @@ pub fn current_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// UTC day number (days since the Unix epoch) for an epoch-ms timestamp. The daily-claim window:
+/// one ant portion is claimable per UTC day, resetting at **00:00 UTC** sharp.
+pub fn utc_day(ms: u64) -> u64 { ms / 86_400_000 }
+
+/// Epoch-ms of the next 00:00 UTC after `ms` — the client countdown target for the daily claim.
+pub fn next_utc_midnight_ms(ms: u64) -> u64 { (utc_day(ms) + 1) * 86_400_000 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utc_day_windows_split_exactly_at_midnight() {
+        const DAY: u64 = 86_400_000;
+        let d = 20_000u64; // an arbitrary UTC day number
+        assert_eq!(utc_day(d * DAY), d, "00:00:00.000 starts the new window");
+        assert_eq!(utc_day(d * DAY - 1), d - 1, "23:59:59.999 is still the old window");
+        assert_eq!(utc_day(d * DAY + DAY - 1), d, "the whole day maps to one window");
+        assert_eq!(next_utc_midnight_ms(d * DAY), (d + 1) * DAY);
+        assert_eq!(next_utc_midnight_ms(d * DAY + DAY - 1), (d + 1) * DAY, "1 ms before reset");
+    }
 
     /// THE AoI guarantee: a max-zoom-out / map-hack view spanning millions of tiles is clamped to at
     /// most `max_view_span` on each axis, centred on the request — so live entities can never leak

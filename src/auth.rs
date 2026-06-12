@@ -39,6 +39,12 @@ pub struct UserRecord {
     pub email_verified: bool,
     #[serde(default)]
     pub phone_verified: bool,
+    /// UTC day number (`config::utc_day`) of the last claimed daily-ant window; 0 = never claimed.
+    /// One portion per 00:00-UTC window, granted ONLY by the `claim-daily` handler (idempotent via
+    /// this field). Lives here (users.json, additive serde default) — NOT in the bincode world
+    /// snapshot — so it survives restarts without invalidating snapshots.
+    #[serde(default)]
+    pub last_claim_day: u64,
 }
 
 impl UserRecord {

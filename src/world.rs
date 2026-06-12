@@ -152,6 +152,9 @@ pub struct Player {
     pub color:           String,
     pub hue_idx:         i32,
     pub ants_avail:      i32,
+    /// LEGACY — the old rolling-24 h auto-refill deadline. No longer read for granting (daily
+    /// ants are claim-only, keyed off `UserRecord.last_claim_day`); kept so the bincode snapshot
+    /// layout stays stable.
     pub next_refill:     u64,
     pub queen_placed_at: Option<u64>,
     pub npc:             bool,

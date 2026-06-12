@@ -181,6 +181,12 @@ pub fn build_player_info(
     };
     // Highest level this USER has ever reached — drives client-side unlock gating (see auth).
     let peak_level = world.auth.users.get(&p.username).map(|u| u.peak_level).unwrap_or(0);
+    // Daily claim state (00:00-UTC windows): true while the current window's portion is unclaimed.
+    // Display only — the `claim-daily` handler re-validates against the server clock.
+    let now_ms = current_ms();
+    let claim_ready = !p.npc && !p.guest && world.auth.users.get(&p.username)
+        .map(|u| u.last_claim_day < crate::config::utc_day(now_ms))
+        .unwrap_or(false);
 
     let queen_val: Value = if let Some(q) = q {
         json!({
@@ -252,7 +258,9 @@ pub fn build_player_info(
         "colorChosen": color_chosen,
         "peakLevel": peak_level,
         "antsAvail": p.ants_avail,
-        "nextRefillMs": (p.next_refill as i64 - current_ms() as i64).max(0),
+        // Countdown to the next 00:00 UTC reset + whether the current window is still claimable.
+        "nextResetMs": crate::config::next_utc_midnight_ms(now_ms).saturating_sub(now_ms),
+        "claimReady": claim_ready,
         "queen": queen_val,
         "prestige":  p.prestige,
         "credits":   p.credits,

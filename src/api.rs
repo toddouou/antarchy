@@ -172,6 +172,8 @@ fn verify(world: &mut World, reg_id: String, code: String, is_email: bool) -> Au
         color: pr.color, hue_idx: pr.hue_idx, is_admin: false, color_chosen: true,
         peak_level: 0, email: pr.email, phone: pr.phone, handle: pr.handle.clone(),
         email_verified: true, phone_verified: pr.phone_ok,
+        // The signup starter inventory counts as day one's portion — first CLAIM at next 00:00 UTC.
+        last_claim_day: crate::config::utc_day(crate::config::current_ms()),
     });
     world.auth.save();
     AuthOutcome::Verified { uid: id, handle: pr.handle }

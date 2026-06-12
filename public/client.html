@@ -479,6 +479,11 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .btn-sm:active { transform:translate(1px,1px); box-shadow:1px 1px 0 0 var(--ink); }
   .btn-sm.r { background:var(--red); color:#fff; }
   .btn-sm.r:hover { background:#ff1020; }
+  /* Daily-claim button (workers panel) — pulses while the day's portion is unclaimed. */
+  .btn-claim { background:var(--yel); padding:4px 8px; animation:claimPulse 1.4s ease-in-out infinite; }
+  .btn-claim:disabled { opacity:.5; cursor:default; animation:none; }
+  @keyframes claimPulse { 0%,100%{ box-shadow:2px 2px 0 0 var(--ink); }
+    50%{ box-shadow:2px 2px 0 0 var(--ink), 0 0 12px 2px rgba(255,184,0,.6); } }
   .diag { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); line-height:1.8; }
   .diag span { color:var(--red); }
 
@@ -822,7 +827,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div class="wk-grid">
         <div class="wk-cell"><div class="wk-l">READY</div><div class="wk-v" id="ants-avail">0</div></div>
         <div class="wk-cell"><div class="wk-l">ARMY</div><div class="wk-v" id="wk-army">0<span class="wk-cap" id="wk-cap"></span></div></div>
-        <div class="wk-cell"><div class="wk-l">REFILL</div><div class="wk-v sm" id="refill-timer">--:--:--</div></div>
+        <div class="wk-cell"><div class="wk-l">DAILY</div><div class="wk-v sm" id="refill-timer">--:--:--</div></div>
       </div>
       <div class="wk-army-bar"><div class="wk-army-fill" id="wk-army-fill"></div></div>
       <button class="btn" id="btn-ant" disabled>+ DEPLOY WORKER</button>
@@ -1150,7 +1155,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     </div>
     <div class="slider-g">
       <div class="slider-l">
-        <span>DAILY ANTS <span class="sinfo" data-tip="Ants each player receives per 24-hour refill. More ants = more expansion potential per day.">?</span></span>
+        <span>DAILY ANTS <span class="sinfo" data-tip="Ants per daily claim (00:00 UTC reset). Unclaimed days are forfeited. More ants = more expansion potential per day.">?</span></span>
         <span class="v"><span id="v-da">3</span></span>
       </div>
       <input type="range" id="s-da" min="0" max="20" step="1" value="3">
@@ -2119,6 +2124,13 @@ function handle(msg) {
       forbiddenPlaceR = msg.placeR || 0;
       if (mode==='place-queen') updateSpawnStatus();
       break;
+    case 'daily-claimed':
+      // Server confirmed the window's portion. Apply the authoritative count immediately
+      // (the next `me` tick would do it anyway) and flip the cell back to the countdown.
+      if (me){ me.antsAvail = msg.antsAvail; me.claimReady = false; updateHUD(); }
+      toast(`+${msg.amount} DAILY WORKERS`);
+      AudioEngine.plop();
+      break;
     case 'cfg': applyCfgSlider(msg.key, msg.value); break;
     case 'server-stats': applyServerStats(msg); break;
     case 'kill': pushKill(msg); break;
@@ -2683,8 +2695,16 @@ function updateHUD() {
   if ($('wk-army-fill')&&cap) $('wk-army-fill').style.width=Math.min(100,army/cap*100)+'%';
   if ($('wk-list-count')) $('wk-list-count').textContent=army;
   updateDeployBtn();
-  const total=me.nextRefillMs||0;
-  $('refill-timer').innerHTML=fmtDur(total/1000);
+  // Daily claim cell: while the current 00:00-UTC window is unclaimed it IS the claim button;
+  // otherwise a countdown to the next reset. Server-driven (`claimReady`/`nextResetMs` in `me`) —
+  // the claim-daily handler re-validates the window, so this is presentation only.
+  const dailyCell=$('refill-timer');
+  if (me.claimReady) {
+    if (!document.getElementById('btn-claim'))
+      dailyCell.innerHTML='<button class="btn-sm btn-claim" id="btn-claim" onclick="claimDaily()">CLAIM</button>';
+  } else {
+    dailyCell.innerHTML=fmtDur((me.nextResetMs||0)/1000);
+  }
   // ---- Progressive unlock visibility (desktop header + mobile nav + sidebar; one gate config) ----
   const shopOn=isUnlocked('shop');
   if ($('hbtn-shop')) $('hbtn-shop').style.display = shopOn?'':'none';
@@ -2694,6 +2714,15 @@ function updateHUD() {
     wkBrute.style.display = isUnlocked('brute')?'':'none';
     if (!isUnlocked('brute') && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
   }
+}
+
+// Claim the day's worker portion. The grant lives ONLY in the server's claim-daily handler
+// (idempotent per 00:00-UTC window) — disabling the button here is just anti-spam polish.
+function claimDaily(){
+  AudioEngine.click();
+  const b=document.getElementById('btn-claim');
+  if (b) b.disabled=true;
+  send({t:'claim-daily'});
 }
 
 /* CANVAS */
