@@ -255,7 +255,13 @@ pub fn handle_message(
                 })
             })
             .collect();
-        let _ = tx.send(json!({"t":"forbidden-zones","zones":zones}).to_string());
+        // The requester's prospective bubble radius: queen placement must keep BOTH bubbles
+        // apart (zones may never intersect), so the client inflates each zone by `placeR`.
+        // Ant placement uses the raw `r`. Live queen → relocate at its current radius.
+        let place_r = world.queens.get(&pid).filter(|q| !q.dead)
+            .map(|q| q.bubble_r)
+            .unwrap_or_else(|| cfg().bubble_r);
+        let _ = tx.send(json!({"t":"forbidden-zones","zones":zones,"placeR":place_r}).to_string());
         return;
     }
 
@@ -272,10 +278,11 @@ pub fn handle_message(
         if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 {
             let _ = tx.send(err("Out of bounds")); return;
         }
-        if world.too_close_to_queen(x, y, pid) {
+        let size = queen_size_for_level(1);
+        // No-overlap rule: the new queen's L1 bubble may not intersect any existing bubble.
+        if world.queen_zone_overlaps(x + size as i32 / 2, y + size as i32 / 2, c.bubble_r, pid) {
             let _ = tx.send(err("Too close to another queen")); return;
         }
-        let size = queen_size_for_level(1);
         let max_hp = crate::config::max_hp_for_level(1, &c);
         let bubble_r = c.bubble_r;
         drop(c);
@@ -704,13 +711,14 @@ pub fn handle_message(
 
         match item.as_str() {
             "relocate" => {
-                let old_pos = world.queens.get(&pid).filter(|q| !q.dead).map(|q| (q.x, q.y, q.size));
-                let Some((ox, oy, sz)) = old_pos else { let _ = tx.send(err("Need a live queen")); return; };
+                let old_pos = world.queens.get(&pid).filter(|q| !q.dead).map(|q| (q.x, q.y, q.size, q.bubble_r));
+                let Some((ox, oy, sz, my_r)) = old_pos else { let _ = tx.send(err("Need a live queen")); return; };
                 let x = msg["x"].as_i64().unwrap_or(-1) as i32;
                 let y = msg["y"].as_i64().unwrap_or(-1) as i32;
                 let ww = world.world_w as i32; let wh = world.world_h as i32;
                 if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 { let _ = tx.send(err("Out of bounds")); return; }
-                if world.too_close_to_queen(x, y, pid) { let _ = tx.send(err("Too close to another queen")); return; }
+                // No-overlap rule: relocating keeps the queen's current bubble — same circle test.
+                if world.queen_zone_overlaps(x + sz as i32 / 2, y + sz as i32 / 2, my_r, pid) { let _ = tx.send(err("Too close to another queen")); return; }
                 charge(world, pid, price, unlimited_credits);
                 world.clear_queen_body(ox, oy, sz, pid);
                 if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
@@ -829,6 +837,10 @@ fn validate_worker_placement(
     world.get_queen_map();
     if world.queen_map.contains_key(&world.cell_key(x, y)) {
         return Err("Cannot place on a queen");
+    }
+    // Enemy spawn zones are absolute no-deploy areas — even on your own painted tiles.
+    if world.too_close_to_queen(x, y, pid) {
+        return Err("Too close to an enemy queen");
     }
     let dxq = (x - (qx + qs as i32 / 2)) as i64;
     let dyq = (y - (qy + qs as i32 / 2)) as i64;
@@ -963,6 +975,48 @@ mod tests {
         assert_eq!(validate_worker_placement(&mut w, pid, (1005, 1005), (0, -1), q), Err("Enemy tile inside bubble"));
         // An unknown heading falls back to up.
         assert_eq!(validate_worker_placement(&mut w, pid, (1006, 1004), (9, 9), q), Ok((0, -1)));
+    }
+
+    #[test]
+    fn worker_placement_rejects_enemy_queen_zone() {
+        let (mut w, pid) = world_with_queen();
+        let q = (1000, 1000, 2u8, 30.0);
+        // A rival queen at (2000,1000), bubble 30 (centre ≈ (2001,1001)).
+        w.queens.insert(200, Queen { x: 2000, y: 1000, size: 2, hp: 100, max_hp: 100,
+            level: 1, xp: 0.0, kills: 0, bubble_r: 30.0, last_attacker: None, dead: false,
+            tiles_ever_held: 0, cached_tiles: 0, npc: false, shield: 0, shield_expiry: None,
+            region: String::new() });
+        w.queen_map_dirty = true;
+        // Inside the enemy bubble → rejected, even before territory rules apply.
+        assert_eq!(validate_worker_placement(&mut w, pid, (2010, 1000), (0, -1), q),
+                   Err("Too close to an enemy queen"));
+        // Even on the player's OWN painted tile inside the enemy bubble.
+        w.tiles.set(2015, 1001, pid);
+        assert_eq!(validate_worker_placement(&mut w, pid, (2015, 1001), (0, -1), q),
+                   Err("Too close to an enemy queen"));
+        // Just outside the enemy bubble on an owned tile → legal.
+        w.tiles.set(2040, 1001, pid);
+        assert_eq!(validate_worker_placement(&mut w, pid, (2040, 1001), (0, -1), q), Ok((0, -1)));
+        // A dead enemy queen no longer projects a zone.
+        w.queens.get_mut(&200).unwrap().dead = true;
+        w.queen_map_dirty = true;
+        w.tiles.set(2015, 1001, 0);
+        assert_eq!(validate_worker_placement(&mut w, pid, (2015, 1001), (0, -1), q),
+                   Err("Place inside your bubble or on your territory"),
+                   "dead queen's zone gone — falls through to the territory rule");
+    }
+
+    #[test]
+    fn queen_zones_can_never_intersect() {
+        let (w, pid) = world_with_queen(); // queen centre ≈ (1001,1001), bubble 30
+        // Point test (worker rule) — strictly inside vs outside the bubble edge.
+        assert!(w.too_close_to_queen(1020, 1001, 999), "point inside bubble");
+        assert!(!w.too_close_to_queen(1035, 1001, 999), "point outside bubble");
+        // Circle-overlap (queen placement): a second 30-radius bubble needs ≥60 separation.
+        assert!(w.queen_zone_overlaps(1055, 1001, 30.0, 999), "54 apart < 30+30 → bubbles overlap");
+        assert!(!w.queen_zone_overlaps(1065, 1001, 30.0, 999), "64 apart ≥ 30+30 → legal");
+        // The placing player's own queen never blocks them (relocate case).
+        assert!(!w.queen_zone_overlaps(1001, 1001, 30.0, pid));
     }
 
     #[test]

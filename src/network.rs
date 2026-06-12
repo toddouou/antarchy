@@ -230,6 +230,17 @@ pub fn build_player_info(
         Some(b) => json!([b[0], b[1], b[2], b[3]]),
         None    => Value::Null,
     };
+    // Zoom-out anchor: the AABB of the territory island CONTAINING the queen (chunk-grid flood
+    // fill). After a relocation splits the empire, this keeps the max zoom-out framed on the
+    // queen's island instead of the planetary global AABB; islands merge back automatically once
+    // a painted trail reconnects them. Pan leash keeps `ownerBounds`, so far islands stay pannable.
+    let zoom_bounds_json = match q.filter(|q| !q.dead) {
+        Some(q) => match world.tiles.queen_island_bounds(player_id, q.x.max(0) as u32, q.y.max(0) as u32) {
+            Some(b) => json!([b[0], b[1], b[2], b[3]]),
+            None    => Value::Null,
+        },
+        None => owner_bounds_json.clone(),
+    };
 
     // Dynamic fields — sent on every periodic `me` (≥1 Hz).
     let mut info = json!({
@@ -270,6 +281,7 @@ pub fn build_player_info(
         "loadOsmR":    load_osm_r,
         "voidR":       void_r,
         "ownerBounds": owner_bounds_json,
+        "zoomBounds":  zoom_bounds_json,
         "stats": { "tiles": tiles, "secs": secs, "kills": q.map(|q|q.kills).unwrap_or(0), "score": score as i64 },
         "army": world.ant_counts.get(&player_id).copied().unwrap_or(0),
         "ants": my_ants,

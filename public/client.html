@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-<!-- Theme: default dark; honour the saved choice before first paint (no flash). -->
+<!-- Theme: default light; honour the saved choice before first paint (no flash). -->
 <script>try{var t=localStorage.getItem('antarchy-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
 <title>antarchy — the ants are revolting</title>
 <link rel="icon" href="/favicon.png" type="image/png">
@@ -1439,7 +1439,10 @@ let mapVisible=true;
 // All radii in world tiles, measured from the player's territory (ownerBounds, or the queen until
 // any tile is owned). clear = full detail; loadOsmR = basemap fetch boundary; voidR = beyond here we
 // fetch NOTHING (server tiles, OSM, snapshot) — just paint grey. Defaults match L1 until `me` lands.
-let loadClearR=45, loadOsmR=65, loadVoidR=65, ownerBounds=null;
+// `ownerBounds` = AABB of ALL owned tiles (pan leash — a split empire stays fully pannable);
+// `zoomBounds`  = AABB of the island CONTAINING the queen (zoom-out cap — a split empire never
+// forces a planetary auto-fit; the server merges them back once a trail reconnects the islands).
+let loadClearR=45, loadOsmR=65, loadVoidR=65, ownerBounds=null, zoomBounds=null;
 let inVoid=false, tabHidden=false, _viewSuspended=false; // view-suspend reconciliation (void + hidden tab)
 // Near-colored tile set cache
 let nearColoredCache=null, nearColoredVw=null;
@@ -2113,6 +2116,7 @@ function handle(msg) {
     // 'view' (tile/ant) frames are binary now — decoded by handleViewBin → applyViewFrame/applyAntsOnly.
     case 'forbidden-zones':
       forbiddenZones = msg.zones || [];
+      forbiddenPlaceR = msg.placeR || 0;
       if (mode==='place-queen') updateSpawnStatus();
       break;
     case 'cfg': applyCfgSlider(msg.key, msg.value); break;
@@ -2515,7 +2519,7 @@ function applySettings(){
   AudioEngine.setMasterVolume(settings.vol);
   document.body.classList.toggle('no-scan', !settings.scan);
 }
-// THEME — dark by default; the pre-paint <head> script applied any saved choice before first paint.
+// THEME — light by default; the pre-paint <head> script applied any saved choice before first paint.
 function applyTheme(t){ const th=(t==='light')?'light':'dark'; document.documentElement.dataset.theme=th;
   try{ localStorage.setItem('antarchy-theme',th); }catch(e){} }
 function openSettingsWindow(){ AudioEngine.click(); openWindow('SETTINGS','settings'); renderSettingsWindow(); }
@@ -2704,9 +2708,11 @@ function resize() { const r=cvs.getBoundingClientRect(); cvs.width=r.width; cvs.
 function worldBrowsable(){ return mode==='place-queen' || panLocked || !me || !me.queen || me.queen.dead; }
 // Territory bounding box (tiles) inflated by `pad`, clamped to the world. Falls back to the queen
 // (then the camera) before any territory/bounds are known. Anchors all three fog zones + the gates.
-function territoryAABB(pad){
+// Pass `bounds` (e.g. `zoomBounds`) to anchor on a different AABB; default = full `ownerBounds`.
+function territoryAABB(pad, bounds){
   let x0,y0,x1,y1;
-  if (ownerBounds){ x0=ownerBounds[0]; y0=ownerBounds[1]; x1=ownerBounds[2]; y1=ownerBounds[3]; }
+  const b = bounds || ownerBounds;
+  if (b){ x0=b[0]; y0=b[1]; x1=b[2]; y1=b[3]; }
   else if (me && me.queen && !me.queen.dead){ x0=x1=me.queen.x; y0=y1=me.queen.y; }
   else { x0=x1=view.x; y0=y1=view.y; }
   return { x0:Math.max(0,x0-pad), y0:Math.max(0,y0-pad),
@@ -2727,6 +2733,7 @@ function applyFowFromMe(){
   if (me.loadOsmR!=null) loadOsmR   = me.loadOsmR;
   if (me.voidR!=null)    loadVoidR  = me.voidR;
   if ('ownerBounds' in me) ownerBounds = me.ownerBounds; // [x0,y0,x1,y1] or null
+  if ('zoomBounds'  in me) zoomBounds  = me.zoomBounds;  // queen's-island AABB or null
 }
 
 function clampView() {
@@ -2745,7 +2752,10 @@ function clampView() {
     // territory FILLS the screen with just a thin fog edge — not a tiny queen in a sea of fog. Floor at
     // 2·clearR so a brand-new queen frames its clear zone. (Pan box is wider, so you can still nudge
     // into the fog ring; the full-canvas shroud keeps it leak-proof.)
-    const zb = territoryAABB(loadClearR);
+    // Anchored on `zoomBounds` (the queen's island only) — a post-relocation split empire must never
+    // force a planetary auto-fit. The PAN box above keeps the full AABB, so the far island stays
+    // reachable by panning across the fogged gap.
+    const zb = territoryAABB(loadClearR, zoomBounds);
     const maxSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadClearR);
     minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
   }
@@ -3447,6 +3457,7 @@ function render() {
 
   const v = vw;
   const placingMode = mode==='place-queen';
+  const antPlacingMode = mode==='place-ant-down'||mode==='place-ant-drag'||mode==='shop-brute'||mode==='shop-brute-drag';
   const myId = me?.id || 0;
 
   // 2) Tile layer + fog. Territory is hidden entirely while browsing (queen-select). For play, blit
@@ -3504,8 +3515,11 @@ function render() {
     ctx.restore();
   }
 
-  // Placement mode: forbidden zone tint overlay (discrete — cell is in or out)
-  if (placingMode && forbiddenZones.length) {
+  // Placement modes: forbidden zone tint overlay (discrete — cell is in or out). Queen placement
+  // inflates each zone by the player's own prospective bubble (zones may never intersect);
+  // ant/brute placement shows the raw no-deploy bubbles.
+  if ((placingMode || antPlacingMode) && forbiddenZones.length) {
+    const extraR = placingMode ? forbiddenPlaceR : 0;
     ctx.fillStyle='rgba(255,46,63,0.28)';
     for (let ty=0; ty<v.h; ty++) {
       for (let tx=0; tx<v.w; tx++) {
@@ -3514,8 +3528,8 @@ function render() {
         const wx=v.x0+tx, wy=v.y0+ty;
         let inside=false;
         for (const z of forbiddenZones) {
-          const ddx=wx-z.x, ddy=wy-z.y;
-          if (ddx*ddx+ddy*ddy < z.r*z.r) { inside=true; break; }
+          const ddx=wx-z.x, ddy=wy-z.y, zr=z.r+extraR;
+          if (ddx*ddx+ddy*ddy < zr*zr) { inside=true; break; }
         }
         if (inside) ctx.fillRect(px,py,(cp+.5)|0,(cp+.5)|0);
       }
@@ -3524,7 +3538,7 @@ function render() {
 
   // Placement mode hover: glowing queen sprite
   if (placingMode && hover) {
-    const blocked = forbiddenZones.some(z => tileInZone(hover, z)) || hoverIsWater;
+    const blocked = tileInForbiddenZone(hover, forbiddenPlaceR) || hoverIsWater;
     const hx = hover.x - v.x0, hy = hover.y - v.y0;
     const QSZ = 2;
     const px = offX + hx * cp, py = offY + hy * cp;
@@ -3699,10 +3713,12 @@ function render() {
     }
   }
 
-  // 9) Hover preview (ant placement only — queen placement handled above)
-  if (hover && mode==='place-ant-down') {
+  // 9) Hover preview (ant/brute placement only — queen placement handled above). Red = inside an
+  // enemy queen's zone (no-deploy).
+  if (hover && (mode==='place-ant-down' || mode==='shop-brute')) {
+    const blocked = tileInForbiddenZone(hover);
     const px=offX+(hover.x-v.x0)*cp, py=offY+(hover.y-v.y0)*cp;
-    ctx.strokeStyle=me?.color||'#0d0d0d'; ctx.lineWidth=3;
+    ctx.strokeStyle=blocked ? '#ff2e3f' : (me?.color||'#0d0d0d'); ctx.lineWidth=3;
     ctx.strokeRect(px,py,cp,cp);
   }
 
@@ -3833,6 +3849,10 @@ function loop(t) {
 /* INPUT — click & drag ant placement */
 let dragging=false, dragFrom=null, dragViewStart=null, dragLast=null;
 let forbiddenZones = []; // [{x, y, r}] - rendered as red gradients during placement
+// My prospective bubble radius (server `placeR`): queen placement must keep BOTH bubbles apart
+// (zones can never intersect), so queen-placement checks inflate each zone by this; ant/brute
+// placement uses the raw zone radius (no deploying inside an enemy bubble).
+let forbiddenPlaceR = 0;
 function screenToTile(sx,sy) {
   const r=cvs.getBoundingClientRect();
   const cp=CELL*view.zoom;
@@ -3857,12 +3877,14 @@ cvs.addEventListener('mousedown', e => {
   const r=cvs.getBoundingClientRect();
   const tile=screenToTile(e.clientX, e.clientY);
   if (mode==='place-ant-down') {
+    if (tileInForbiddenZone(tile)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
     mode='place-ant-drag';
     dragFrom={px:e.clientX-r.left, py:e.clientY-r.top, raw:{x:e.clientX,y:e.clientY}};
     antPlaceOrigin=tile; antPlaceDir=[0,-1];
   } else if (mode==='place-queen') {
     if (!tile || _queenPlaceCooldown) return;
     if (hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); return; }
+    if (tileInForbiddenZone(tile, forbiddenPlaceR)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
     _queenPlaceCooldown = true;
     setTimeout(() => { _queenPlaceCooldown = false; }, 600);
     // RELOCATE reuses the full placement flow (geolocate + forbidden zones) — same screen, but the
@@ -3885,6 +3907,7 @@ cvs.addEventListener('mousedown', e => {
     // stay in mode — each click places another ant
     return;
   } else if (mode==='shop-brute') {
+    if (tileInForbiddenZone(tile)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
     shopOrigin=tile; shopDir=[0,-1];
     mode='shop-brute-drag';
     dragFrom={px:e.clientX-r.left, py:e.clientY-r.top, raw:{x:e.clientX,y:e.clientY}};
@@ -3904,7 +3927,7 @@ window.addEventListener('mousemove', e => {
       card.style.display='block';
       card.style.left=(e.clientX+18)+'px';
       card.style.top=Math.max(10,e.clientY-58)+'px';
-      const blocked = forbiddenZones.some(z=>tileInZone(hover,z));
+      const blocked = tileInForbiddenZone(hover, forbiddenPlaceR);
       if (blocked) {
         card.className='bad';
         $('ss-card-title').textContent='✕ BLOCKED';
@@ -3954,7 +3977,9 @@ window.addEventListener('mousemove', e => {
 window.addEventListener('mouseup', () => {
   if (mode==='place-ant-drag' && dragFrom) {
     $('dir-overlay').style.display='none';
-    send({t:'place-ant', x:antPlaceOrigin.x, y:antPlaceOrigin.y,
+    // Re-check the origin — zones can refresh mid-drag. The server is the real gate.
+    if (tileInForbiddenZone(antPlaceOrigin)) toast('TOO CLOSE TO AN ENEMY QUEEN');
+    else send({t:'place-ant', x:antPlaceOrigin.x, y:antPlaceOrigin.y,
       dx:antPlaceDir[0], dy:antPlaceDir[1]});
     // Sticky mode: return to place-ant-down so the next click+drag works too.
     // If the player runs out of ants, exitPlaceMode() is called on the next 'me' update.
@@ -3963,7 +3988,8 @@ window.addEventListener('mouseup', () => {
   }
   if (mode==='shop-brute-drag' && dragFrom && shopOrigin) {
     $('dir-overlay').style.display='none';
-    send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
+    if (tileInForbiddenZone(shopOrigin)) toast('TOO CLOSE TO AN ENEMY QUEEN');
+    else send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
     dragFrom=null; exitShopMode();
   }
   if (dragging) { dragging=false; cvs.classList.remove('dragging'); dragFrom=null; }
@@ -4006,13 +4032,17 @@ cvs.addEventListener('touchstart', e=>{
 
     if (mode==='place-ant-down') {
       // Begin ant drag (same flow as mousedown)
+      const tile=screenToTile(t.clientX,t.clientY);
+      if (tileInForbiddenZone(tile)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
       mode='place-ant-drag';
       dragFrom={px:t.clientX-r.left, py:t.clientY-r.top, raw:{x:t.clientX,y:t.clientY}};
-      antPlaceOrigin=screenToTile(t.clientX,t.clientY);
+      antPlaceOrigin=tile;
       antPlaceDir=[0,-1];
     } else if (mode==='shop-brute') {
       // Begin brute drag (start tile + drag a direction) — mirrors the mousedown path.
-      shopOrigin=screenToTile(t.clientX,t.clientY); shopDir=[0,-1];
+      const tile=screenToTile(t.clientX,t.clientY);
+      if (tileInForbiddenZone(tile)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
+      shopOrigin=tile; shopDir=[0,-1];
       mode='shop-brute-drag';
       dragFrom={px:t.clientX-r.left, py:t.clientY-r.top, raw:{x:t.clientX,y:t.clientY}};
     } else {
@@ -4093,15 +4123,19 @@ function _onTouchEnd(e){
   e.preventDefault();
 
   if (mode==='place-ant-drag') {
-    // Finalize ant placement (same as mouseup)
+    // Finalize ant placement (same as mouseup, incl. the zone re-check)
     $('dir-overlay').style.display='none';
-    send({t:'place-ant',x:antPlaceOrigin.x,y:antPlaceOrigin.y,dx:antPlaceDir[0],dy:antPlaceDir[1]});
+    if (tileInForbiddenZone(antPlaceOrigin)) toast('TOO CLOSE TO AN ENEMY QUEEN');
+    else send({t:'place-ant',x:antPlaceOrigin.x,y:antPlaceOrigin.y,dx:antPlaceDir[0],dy:antPlaceDir[1]});
     mode='place-ant-down'; dragFrom=null;
 
   } else if (mode==='shop-brute-drag') {
     // Finalize brute placement (same as mouseup). A pure tap (no drag) sends the default [0,-1].
     $('dir-overlay').style.display='none';
-    if (shopOrigin) send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
+    if (shopOrigin) {
+      if (tileInForbiddenZone(shopOrigin)) toast('TOO CLOSE TO AN ENEMY QUEEN');
+      else send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
+    }
     dragFrom=null; exitShopMode();
 
   } else if (_tpTapStart && e.changedTouches.length>=1) {
@@ -4113,6 +4147,7 @@ function _onTouchEnd(e){
       // Tap-to-place modes — mirror the mousedown branches so mobile reaches full parity.
       if (mode==='place-queen') {
         if (tile && hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); }
+        else if (tile && tileInForbiddenZone(tile, forbiddenPlaceR)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); }
         else if (tile) { send(relocating ? {t:'shop-buy',item:'relocate',x:tile.x,y:tile.y} : {t:'place-queen',x:tile.x,y:tile.y}); }
       } else if (mode==='admin-move') {
         if (tile && adminMoveTargetId!==null)
@@ -4153,6 +4188,7 @@ function syncMnavDeploy(active){
 function enterPlaceMode() {
   closeSidebar();                 // MOBILE: reveal the map so the player can aim & drop
   mode='place-ant-down'; cvs.classList.add('placing');
+  startForbiddenPoll();           // enemy queen zones are no-deploy — show + block them live
   $('prompt').style.display='block'; $('prompt').textContent='CLICK & DRAG TO PLACE · CLICK BUTTON AGAIN TO STOP';
   $('drag-hint').style.display='block';
   $('btn-ant').classList.add('active');
@@ -4162,6 +4198,7 @@ function enterPlaceMode() {
 function exitPlaceMode() {
   if (mode==='place-ant-down' || mode==='place-ant-drag') {
     mode='idle'; cvs.classList.remove('placing');
+    stopForbiddenPoll();
     $('prompt').style.display='none'; $('drag-hint').style.display='none';
     $('btn-ant').classList.remove('active');
     $('btn-ant').textContent='+ DEPLOY WORKER';
@@ -4202,6 +4239,7 @@ function shopBuy(item) {
   shopItem=item;
   mode='shop-'+item;
   cvs.classList.add('placing');
+  startForbiddenPoll();           // enemy queen zones are no-deploy — show + block them live
   closeSidebar();                 // MOBILE: reveal the map for placement (brute)
   $('prompt').style.display='';
   $('prompt').textContent='Click start tile, drag direction';
@@ -4211,6 +4249,7 @@ function exitShopMode() {
   if (!mode.startsWith('shop-')) return;
   shopItem=null; shopOrigin=null;
   mode='idle'; cvs.classList.remove('placing');
+  stopForbiddenPoll();
   $('prompt').style.display='none';
   $('dir-overlay').style.display='none';
 }
@@ -4218,9 +4257,14 @@ function spawnDist(tile) {
   const dx=tile.x-WORLD.spawnX, dy=tile.y-WORLD.spawnY;
   return Math.sqrt(dx*dx+dy*dy);
 }
-function tileInZone(tile, z) {
-  const dx=tile.x-z.x, dy=tile.y-z.y;
-  return dx*dx+dy*dy < z.r*z.r;
+function tileInZone(tile, z, extraR) {
+  const dx=tile.x-z.x, dy=tile.y-z.y, r=z.r+(extraR||0);
+  return dx*dx+dy*dy < r*r;
+}
+// Is this tile inside any enemy queen's zone? (extraR = forbiddenPlaceR for queen placement.)
+// Client-side UX only — the server independently rejects illegal placements.
+function tileInForbiddenZone(tile, extraR) {
+  return !!tile && forbiddenZones.some(z => tileInZone(tile, z, extraR));
 }
 function showSpawnScreen() {
   $('spawn-screen').classList.add('vis');

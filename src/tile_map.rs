@@ -72,6 +72,12 @@ pub struct TileMap {
     /// (rebuildable from cells); restored via `rebuild_bounds`.
     #[serde(skip)]
     bounds: FxHashMap<u32, [u32; 4]>,
+    /// player_id → chunk keys where the owner has painted ≥1 tile. Same lifecycle as `bounds`:
+    /// expand-only while the owner holds tiles (a chunk whose owner-tiles all get erased stays in
+    /// the set until the owner drops to 0 tiles or `rebuild_bounds` runs — conservative, can only
+    /// over-merge islands), dropped at 0 tiles, rebuilt on restore. Feeds `queen_island_bounds`.
+    #[serde(skip)]
+    owner_chunks: FxHashMap<u32, FxHashSet<u64>>,
 }
 
 impl Default for TileMap {
@@ -86,6 +92,7 @@ impl Default for TileMap {
             dirty_chunk_touches: 0,
             dirty_chunks: FxHashSet::default(),
             bounds:    FxHashMap::default(),
+            owner_chunks: FxHashMap::default(),
         }
     }
 }
@@ -135,6 +142,7 @@ impl TileMap {
             if *e <= 0 {
                 self.counts.remove(&owner);
                 self.bounds.remove(&owner);   // last tile gone → reset the pan box on next paint
+                self.owner_chunks.remove(&owner);
                 if let Some(i) = self.id_to_idx.remove(&owner) {
                     self.free.push(i);
                 }
@@ -159,10 +167,12 @@ impl TileMap {
         self.bounds.get(&owner).copied()
     }
 
-    /// Recompute every owner's bounding box from the live cells. Called after a snapshot restore
-    /// (where `bounds` deserialized empty) so returning players keep their grown pan radius.
+    /// Recompute every owner's bounding box + painted-chunk set from the live cells. Called after
+    /// a snapshot restore (where `bounds`/`owner_chunks` deserialized empty) so returning players
+    /// keep their grown pan radius and island anchoring.
     pub fn rebuild_bounds(&mut self) {
         self.bounds.clear();
+        self.owner_chunks.clear();
         let keys: Vec<u64> = self.chunks.keys().copied().collect();
         for key in keys {
             let (cx, cy) = Self::chunk_coords(key);
@@ -173,6 +183,7 @@ impl TileMap {
                     if owner != 0 {
                         self.expand_bounds(owner, bx, by);
                         self.expand_bounds(owner, bx + CHUNK_MASK, by + CHUNK_MASK);
+                        self.owner_chunks.entry(owner).or_default().insert(key);
                     }
                 }
                 Some(Chunk::Dense { cells, .. }) => {
@@ -183,15 +194,56 @@ impl TileMap {
                         if owner == 0 { return None; }
                         Some((owner, li as u32))
                     }).collect();
+                    let mut last_owner = 0u32; // dedupe the per-cell chunk-set insert (runs of one owner)
                     for (owner, li) in owned {
                         let x = bx + (li & CHUNK_MASK);
                         let y = by + (li >> CHUNK_SHIFT);
                         self.expand_bounds(owner, x, y);
+                        if owner != last_owner {
+                            self.owner_chunks.entry(owner).or_default().insert(key);
+                            last_owner = owner;
+                        }
                     }
                 }
                 None => {}
             }
         }
+    }
+
+    /// AABB of the connected territory **island containing the queen**: the owner's painted
+    /// chunks flood-filled from the queen's chunk (8-connectivity on the 256×256 chunk grid),
+    /// intersected with the owner's exact tile `bounds`. Chunk granularity is conservative —
+    /// blobs within ~a chunk of each other count as one island, which is fine: only far-apart
+    /// islands (relocation) cause the planetary auto-zoom this exists to prevent. Falls back to
+    /// the full `owner_bounds` if the queen's chunk has no record (queen bodies are painted as
+    /// owner tiles, so that only happens transiently). The pan leash keeps using `owner_bounds`,
+    /// so far islands stay reachable by panning.
+    pub fn queen_island_bounds(&self, owner: u32, qx: u32, qy: u32) -> Option<[u32; 4]> {
+        let full = self.owner_bounds(owner)?;
+        let Some(chunks) = self.owner_chunks.get(&owner) else { return Some(full); };
+        let start = Self::chunk_key(qx, qy);
+        if !chunks.contains(&start) { return Some(full); }
+        let mut seen: FxHashSet<u64> = FxHashSet::default();
+        let mut stack = vec![start];
+        seen.insert(start);
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        while let Some(key) = stack.pop() {
+            let (cx, cy) = Self::chunk_coords(key);
+            x0 = x0.min(cx << CHUNK_SHIFT);
+            y0 = y0.min(cy << CHUNK_SHIFT);
+            x1 = x1.max((cx << CHUNK_SHIFT) | CHUNK_MASK);
+            y1 = y1.max((cy << CHUNK_SHIFT) | CHUNK_MASK);
+            for dy in -1i64..=1 {
+                for dx in -1i64..=1 {
+                    if dx == 0 && dy == 0 { continue; }
+                    let (nx, ny) = (cx as i64 + dx, cy as i64 + dy);
+                    if nx < 0 || ny < 0 { continue; }
+                    let nk = Self::chunk_key_from_coords(nx as u32, ny as u32);
+                    if chunks.contains(&nk) && seen.insert(nk) { stack.push(nk); }
+                }
+            }
+        }
+        Some([x0.max(full[0]), y0.max(full[1]), x1.min(full[2]), y1.min(full[3])])
     }
 
     /// Count a chunk-touch transition: bumps the cumulative counter only when a `set` mutates a
@@ -350,6 +402,7 @@ impl TileMap {
         }
         self.inc_count(new_owner);
         self.expand_bounds(new_owner, x, y);
+        self.owner_chunks.entry(new_owner).or_default().insert(key);
         self.note_dirty(key);
     }
 
@@ -363,6 +416,7 @@ impl TileMap {
         self.dirty_chunks.clear();
         self.last_touched_chunk = None;
         self.bounds.clear();
+        self.owner_chunks.clear();
     }
 
     /// Clear every tile owned by `owner` (→ unclaimed) and drop the owner's count + index.
@@ -372,6 +426,7 @@ impl TileMap {
     pub fn clear_owner(&mut self, owner: u32) {
         if owner == 0 { return; }
         self.bounds.remove(&owner);   // territory forfeited → reset the pan box
+        self.owner_chunks.remove(&owner);
         let oi = match self.id_to_idx.get(&owner) {
             Some(&i) => i,
             None     => { self.counts.remove(&owner); return; }
@@ -660,6 +715,40 @@ mod tests {
         assert_eq!(tm.get(1, 1), 0);
         assert!(tm.counts.is_empty());
         assert_eq!(tm.stats().0, 0);
+    }
+
+    #[test]
+    fn queen_island_bounds_anchors_to_queen_cluster() {
+        let mut tm = TileMap::default();
+        // Blob A (100..=109)² in chunk (0,0); blob B (5000..=5009, 100..=109) in chunk (19,0) —
+        // same chunk row, ~4,900 tiles apart (a post-relocation split empire).
+        for y in 100..110u32 { for x in 100..110u32 { tm.set(x, y, 5); } }
+        for y in 100..110u32 { for x in 5000..5010u32 { tm.set(x, y, 5); } }
+        assert_eq!(tm.owner_bounds(5), Some([100, 100, 5009, 109]), "global AABB spans both");
+
+        // The island AABB is the queen's blob's chunk(s), clamped to the exact tile bounds.
+        assert_eq!(tm.queen_island_bounds(5, 105, 105), Some([100, 100, 255, 109]),
+                   "queen on blob A — far blob excluded");
+        assert_eq!(tm.queen_island_bounds(5, 5005, 105), Some([4864, 100, 5009, 109]),
+                   "anchoring follows the queen's blob");
+
+        // A painted trail bridging the gap (steps < 256 → 8-connected chunks) merges the islands.
+        let mut x = 110u32;
+        while x < 5000 { tm.set(x, 105, 5); x += 200; }
+        let merged = tm.queen_island_bounds(5, 105, 105).unwrap();
+        assert_eq!(merged, [100, 100, 5009, 109], "reconnected islands → full bounds again");
+
+        // Restore path: a cleared chunk set falls back safely, then rebuilds to the same answer.
+        tm.owner_chunks.clear();
+        assert_eq!(tm.queen_island_bounds(5, 105, 105), Some([100, 100, 5009, 109]),
+                   "no chunk record → safe fallback to full bounds");
+        tm.rebuild_bounds();
+        assert_eq!(tm.queen_island_bounds(5, 105, 105).unwrap(), merged);
+
+        // Other owners and the no-tiles case stay independent.
+        assert_eq!(tm.queen_island_bounds(9, 105, 105), None);
+        tm.clear_owner(5);
+        assert_eq!(tm.queen_island_bounds(5, 105, 105), None);
     }
 
     #[test]

@@ -553,14 +553,22 @@ impl World {
         }
     }
 
-    /// True if (`x`,`y`) lies within any live OTHER queen's bubble. Shared by place-queen
-    /// and shop relocate to enforce the no-overlap spacing rule.
+    /// True if (`x`,`y`) lies within any live OTHER queen's bubble. Gates worker placement —
+    /// you can never deploy ants inside an enemy queen's spawn zone.
     pub fn too_close_to_queen(&self, x: i32, y: i32, exclude: u32) -> bool {
+        self.queen_zone_overlaps(x, y, 0.0, exclude)
+    }
+
+    /// True if a bubble of radius `my_r` centred at (`x`,`y`) would intersect any live OTHER
+    /// queen's bubble (circle overlap: centre distance < my_r + theirs). `my_r = 0` degenerates
+    /// to a point-in-bubble test. Shared by place-queen and shop relocate so two queens' zones
+    /// can never be created overlapping (level growth after placement is allowed).
+    pub fn queen_zone_overlaps(&self, x: i32, y: i32, my_r: f64, exclude: u32) -> bool {
         self.queens.iter().filter(|(_, q)| !q.dead).any(|(&qid, q)| {
             if qid == exclude { return false; }
             let ddx = (q.x + q.size as i32 / 2 - x) as i64;
             let ddy = (q.y + q.size as i32 / 2 - y) as i64;
-            ((ddx * ddx + ddy * ddy) as f64).sqrt() < q.bubble_r
+            ((ddx * ddx + ddy * ddy) as f64).sqrt() < q.bubble_r + my_r
         })
     }
 }
