@@ -72,7 +72,7 @@ struct PlayerSnapshot {
     queen_placed_at:     Option<u64>,
     npc:                 bool,
     prestige:            u32,
-    credits:             u64,
+    nectar:             u64,
     defenders:           Vec<u64>,
     visited_countries:   FxHashSet<String>,
     visited_continents:  FxHashSet<String>,
@@ -80,7 +80,7 @@ struct PlayerSnapshot {
     lifetime_peak_tiles: u64,
     queens_fielded:      u32,
     #[serde(default)]
-    unlimited_credits:   bool,
+    unlimited_nectar:   bool,
     #[serde(default)]
     unlimited_ants:      bool,
     #[serde(default)]
@@ -101,14 +101,14 @@ impl PlayerSnapshot {
             queen_placed_at:     p.queen_placed_at,
             npc:                 p.npc,
             prestige:            p.prestige,
-            credits:             p.credits,
+            nectar:             p.nectar,
             defenders:           p.defenders.clone(),
             visited_countries:   p.visited_countries.clone(),
             visited_continents:  p.visited_continents.clone(),
             lifetime_kills:      p.lifetime_kills,
             lifetime_peak_tiles: p.lifetime_peak_tiles,
             queens_fielded:      p.queens_fielded,
-            unlimited_credits:   p.unlimited_credits,
+            unlimited_nectar:   p.unlimited_nectar,
             unlimited_ants:      p.unlimited_ants,
             killed_by:           p.killed_by.clone(),
             kills_of:            p.kills_of.clone(),
@@ -134,14 +134,14 @@ impl PlayerSnapshot {
             bin:                 false,
             conn_gen:            0,
             prestige:            self.prestige,
-            credits:             self.credits,
+            nectar:             self.nectar,
             defenders:           self.defenders,
             visited_countries:   self.visited_countries,
             visited_continents:  self.visited_continents,
             lifetime_kills:      self.lifetime_kills,
             lifetime_peak_tiles: self.lifetime_peak_tiles,
             queens_fielded:      self.queens_fielded,
-            unlimited_credits:   self.unlimited_credits,
+            unlimited_nectar:   self.unlimited_nectar,
             unlimited_ants:      self.unlimited_ants,
             killed_by:           self.killed_by,
             kills_of:            self.kills_of,
@@ -373,11 +373,11 @@ mod tests {
         w.players.insert(42, Player {
             id: 42, username: "ALICE".into(), color: "#abc".into(), hue_idx: 3,
             ants_avail: 7, next_refill: 123_456, queen_placed_at: Some(42), conn_gen: 5,
-            prestige: 2, credits: 50, defenders: vec![1, 2, 3],
+            prestige: 2, nectar: 50, defenders: vec![1, 2, 3],
             visited_countries:  ["US".to_string()].into_iter().collect(),
             visited_continents: ["NA".to_string()].into_iter().collect(),
             lifetime_kills: 9, lifetime_peak_tiles: 1234, queens_fielded: 2,
-            unlimited_credits: true,
+            unlimited_nectar: true,
             killed_by: [("BOB".to_string(), 2)].into_iter().collect(),
             ..Default::default()
         });
@@ -409,12 +409,12 @@ mod tests {
 
         let p = w2.players.get(&42).expect("player restored");
         assert_eq!(p.username, "ALICE");
-        assert_eq!(p.credits, 50);
+        assert_eq!(p.nectar, 50);
         assert_eq!(p.defenders, vec![1, 2, 3]);
         assert!(p.visited_countries.contains("US"));
         assert!(p.tx.is_none() && p.view.is_none(), "runtime channels not persisted");
         assert_eq!(p.conn_gen, 0, "conn_gen reset on restore");
-        assert!(p.unlimited_credits && !p.unlimited_ants, "god-mode flags survive round-trip");
+        assert!(p.unlimited_nectar && !p.unlimited_ants, "god-mode flags survive round-trip");
         assert_eq!(p.killed_by.get("BOB").copied(), Some(2), "rivalry map survives round-trip");
 
         assert!(w2.queen_map_dirty, "queen map flagged for rebuild");

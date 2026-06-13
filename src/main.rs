@@ -19,6 +19,14 @@ mod world;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
+// RAM lever (Linux prod): use jemalloc instead of glibc malloc so freed pages are returned to the OS
+// promptly (decay-based purging) rather than ratcheting RSS upward over a long-lived season. Unix-only
+// — the Windows/MSVC dev build keeps the system allocator (jemalloc doesn't build cleanly there). To
+// purge even more aggressively, set `MALLOC_CONF=dirty_decay_ms:1000,muzzy_decay_ms:0` in the env file.
+#[cfg(unix)]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use server::{sim_loop, viewport_loop, run, WorldState, Cmd};
 use world::World;
 use config::cfg;

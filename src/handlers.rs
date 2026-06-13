@@ -35,7 +35,7 @@ fn check_seq(world: &mut World, pid: u32, msg: &Value) -> bool {
 fn charge(world: &mut World, pid: u32, price: u64, unlimited: bool) {
     if unlimited { return; }
     if let Some(p) = world.players.get_mut(&pid) {
-        p.credits = p.credits.saturating_sub(price);
+        p.nectar = p.nectar.saturating_sub(price);
     }
 }
 
@@ -115,7 +115,7 @@ pub fn handle_message(
         let welcome = create_or_reconnect_player(world, rec.id, &rec.username, &rec.color, rec.hue_idx, tx.clone());
         *player_id = Some(rec.id);
         // Pre-existing high-level accounts predate the unlock system: silently raise peak_level to
-        // their current queen level so their chrome shows immediately — WITHOUT firing popups/credit.
+        // their current queen level so their chrome shows immediately — WITHOUT firing popups/nectar.
         backfill_peak_level(world, rec.id);
         apply_bin_cap(world, rec.id, &msg);
         let me = build_player_info(world, rec.id, true, None);
@@ -494,16 +494,16 @@ pub fn handle_message(
                     world.broadcast(&msg);
                 }
             }
-            "unlimited-credits" => {
+            "unlimited-nectar" => {
                 // .map() releases the &mut players borrow before world.send_to() re-borrows world.
                 let st = world.players.get_mut(&tid).map(|tp| {
-                    tp.unlimited_credits = !tp.unlimited_credits;
-                    (tp.unlimited_credits, tp.username.clone())
+                    tp.unlimited_nectar = !tp.unlimited_nectar;
+                    (tp.unlimited_nectar, tp.username.clone())
                 });
                 if let Some((on, uname)) = st {
                     let lbl = if on { "ON" } else { "OFF" };
-                    let _ = tx.send(json!({"t":"event","msg":format!("[ADMIN] {uname} · UNLIMITED CREDITS {lbl}")}).to_string());
-                    world.send_to(tid, json!({"t":"event","msg":format!("UNLIMITED CREDITS {lbl}")}).to_string());
+                    let _ = tx.send(json!({"t":"event","msg":format!("[ADMIN] {uname} · UNLIMITED NECTAR {lbl}")}).to_string());
+                    world.send_to(tid, json!({"t":"event","msg":format!("UNLIMITED NECTAR {lbl}")}).to_string());
                 }
             }
             "unlimited-ants" => {
@@ -686,8 +686,8 @@ pub fn handle_message(
                     "maxHp":    q.map(|q| q.max_hp).unwrap_or(0),
                     "ants":     p.ants_avail,
                     "prestige": p.prestige,
-                    "credits":  p.credits,
-                    "unlimitedCredits": p.unlimited_credits,
+                    "nectar":   p.nectar,
+                    "unlimitedNectar":  p.unlimited_nectar,
                     "unlimitedAnts":    p.unlimited_ants,
                     "qx":       q.map(|q| q.x).unwrap_or(-1),
                     "qy":       q.map(|q| q.y).unwrap_or(-1),
@@ -716,8 +716,8 @@ pub fn handle_message(
             if peak < req { let _ = tx.send(err("Locked")); return; }
         }
 
-        let (credits, unlimited_credits) = world.players.get(&pid)
-            .map(|p| (p.credits, p.unlimited_credits)).unwrap_or((0, false));
+        let (nectar, unlimited_nectar) = world.players.get(&pid)
+            .map(|p| (p.nectar, p.unlimited_nectar)).unwrap_or((0, false));
         let price: u64 = match item.as_str() {
             "relocate" => PRICE_RELOCATE,
             "defender" => PRICE_DEFENDER,
@@ -726,7 +726,7 @@ pub fn handle_message(
             "shield"   => PRICE_SHIELD,
             _ => { let _ = tx.send(err("Unknown item")); return; }
         };
-        if !unlimited_credits && credits < price { let _ = tx.send(err("Not enough credits")); return; }
+        if !unlimited_nectar && nectar < price { let _ = tx.send(err("Not enough nectar")); return; }
 
         match item.as_str() {
             "relocate" => {
@@ -738,7 +738,7 @@ pub fn handle_message(
                 if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 { let _ = tx.send(err("Out of bounds")); return; }
                 // No-overlap rule: relocating keeps the queen's current bubble — same circle test.
                 if world.queen_zone_overlaps(x + sz as i32 / 2, y + sz as i32 / 2, my_r, pid) { let _ = tx.send(err("Too close to another queen")); return; }
-                charge(world, pid, price, unlimited_credits);
+                charge(world, pid, price, unlimited_nectar);
                 world.clear_queen_body(ox, oy, sz, pid);
                 if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
                 world.paint_queen_body(x, y, sz, pid);
@@ -749,13 +749,13 @@ pub fn handle_message(
                 let queen_alive = world.queens.get(&pid).map(|q| !q.dead).unwrap_or(false);
                 if !queen_alive { let _ = tx.send(err("Need a live queen")); return; }
                 let expiry = current_ms() + DEFENDER_MS;
-                charge(world, pid, price, unlimited_credits);
+                charge(world, pid, price, unlimited_nectar);
                 if let Some(p) = world.players.get_mut(&pid) { p.defenders.push(expiry); }
                 let _ = tx.send(json!({"t":"shop-ok","item":"defender"}).to_string());
             }
             "worker" => {
                 // +1 inventory worker — a stock top-up, so no live-queen requirement.
-                charge(world, pid, price, unlimited_credits);
+                charge(world, pid, price, unlimited_nectar);
                 if let Some(p) = world.players.get_mut(&pid) { p.ants_avail += 1; }
                 let _ = tx.send(json!({"t":"shop-ok","item":"worker"}).to_string());
             }
@@ -774,7 +774,7 @@ pub fn handle_message(
                     Err(e) => { let _ = tx.send(err(e)); return; }
                 };
                 let lifespan = cfg().lifespan;
-                charge(world, pid, price, unlimited_credits);
+                charge(world, pid, price, unlimited_nectar);
                 world.ants.push(crate::world::Ant::new_kind(rand::random::<u32>(), pid, x, y, adx, ady, lifespan, 1));
                 world.dirty_tick = world.tick;
                 let _ = tx.send(json!({"t":"shop-ok","item":"brute","x":x,"y":y}).to_string());
@@ -788,7 +788,7 @@ pub fn handle_message(
                     .map(|q| q.shield > 0 && q.shield_expiry.is_some_and(|e| e > now))
                     .unwrap_or(false);
                 if active { let _ = tx.send(err("Shield already active")); return; }
-                charge(world, pid, price, unlimited_credits);
+                charge(world, pid, price, unlimited_nectar);
                 if let Some(q) = world.queens.get_mut(&pid) {
                     q.shield = q.max_hp;
                     q.shield_expiry = Some(now + SHIELD_MS);
@@ -800,31 +800,31 @@ pub fn handle_message(
         return;
     }
 
-    // ---- Admin give credits ----
-    if t == "admin-give-credits" {
+    // ---- Admin give nectar ----
+    if t == "admin-give-nectar" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
         let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
         let amount = msg["amount"].as_u64().unwrap_or(0);
         if let Some(tp) = world.players.get_mut(&tid) {
             // saturating: a huge admin amount must not overflow the balance.
-            tp.credits = tp.credits.saturating_add(amount);
-            let new_cr = tp.credits;
+            tp.nectar = tp.nectar.saturating_add(amount);
+            let new_cr = tp.nectar;
             if let Some(ttx) = &tp.tx {
-                let _ = ttx.send(json!({"t":"event","msg":format!("+{amount} CREDITS (ADMIN) · total {new_cr}")}).to_string());
+                let _ = ttx.send(json!({"t":"event","msg":format!("+{amount} NECTAR (ADMIN) · total {new_cr}")}).to_string());
             }
         }
         return;
     }
 
-    // ---- Admin set credits ----
-    if t == "admin-set-credits" {
+    // ---- Admin set nectar ----
+    if t == "admin-set-nectar" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
         let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
         let amount = msg["amount"].as_u64().unwrap_or(0);
         if let Some(tp) = world.players.get_mut(&tid) {
-            tp.credits = amount;
+            tp.nectar = amount;
             if let Some(ttx) = &tp.tx {
-                let _ = ttx.send(json!({"t":"event","msg":format!("CREDITS SET TO {amount} (ADMIN)")}).to_string());
+                let _ = ttx.send(json!({"t":"event","msg":format!("NECTAR SET TO {amount} (ADMIN)")}).to_string());
             }
         }
         return;
@@ -903,7 +903,7 @@ fn apply_bin_cap(world: &mut World, id: u32, msg: &Value) {
 
 /// Silently raise a user's persisted `peak_level` to at least their current live-queen level. Used
 /// on login so accounts that were already high-level before the unlock system shipped get all their
-/// unlocked chrome immediately, WITHOUT firing the one-time unlock popups or starter credit (those
+/// unlocked chrome immediately, WITHOUT firing the one-time unlock popups or starter nectar (those
 /// fire only through `flush_xp` on a genuine level-up). No-op once peak ≥ current level.
 fn backfill_peak_level(world: &mut World, id: u32) {
     let lvl = world.queens.get(&id).map(|q| q.level).unwrap_or(0);

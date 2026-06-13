@@ -37,6 +37,15 @@ rust-s3           = { version = "0.35", default-features = false, features = ["t
 # shares the rustls/hyper stack already pulled by rust-s3 + tokio. Dormant until HIVE_RESEND_API_KEY set.
 reqwest           = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
+# RAM lever: jemalloc as the global allocator on the production (Linux) host. glibc's malloc holds
+# freed pages (it grows arenas and rarely returns memory to the OS), so RSS ratchets up as 24 h ant
+# trails paint and clear chunks even though live tile RAM is flat — exactly the "70% and climbing"
+# symptom. jemalloc's per-size-class decay returns dirty pages to the OS within seconds, flattening
+# RSS, at the cost of a little background CPU (which the box has to spare). Unix-only so the Windows
+# (MSVC) dev build keeps the system allocator and never tries to compile jemalloc.
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = "0.6"
+
 [profile.release]
 opt-level      = 3
 lto            = "thin"

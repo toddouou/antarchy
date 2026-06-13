@@ -15,7 +15,10 @@ const HOLDER_INTERVAL:    u64   = 500;  // ~10 s @ 50 Hz — king-of-the-hill re
 const HOLDER_STRIDE:      u32   = 4;    // sample every 4th cell in each axis (scaling care)
 const DISCOVERY_INTERVAL: u64   = 50;   // ~1 s — visited-region sampling cadence
 const DISCOVERY_SAMPLE_N: usize = 64;   // ants sampled per pass (round-robin, army-size-independent)
-const COMPACT_INTERVAL:   u64   = 1500; // ~30 s @ 50 Hz — Dense→Uniform tile-RAM compaction sweep
+const COMPACT_INTERVAL:   u64   = 500;  // ~33 s @ 15 Hz / ~10 s @ 50 Hz — Dense→Uniform tile-RAM
+                                        // compaction sweep. Lowered from 1500 (was ~100 s @ 15 Hz):
+                                        // the sim thread is far under budget, so reclaiming solidified
+                                        // chunks sooner trades cheap CPU for lower steady-state tile RAM.
 
 // ---- Direction helpers ----------------------------------------------------
 
@@ -90,7 +93,7 @@ pub fn flush_xp(world: &mut World) {
                     let _ = tx.send(json!({"t":"max-level","level":new_lvl}).to_string());
                 }
             }
-            // Progressive unlocks + one-time starter credit. Shared with the admin level/xp tools so
+            // Progressive unlocks + one-time starter nectar. Shared with the admin level/xp tools so
             // gates + popups behave identically however a player reaches a tier.
             apply_peak_unlocks(world, g.player_id, new_lvl);
         }
@@ -98,7 +101,7 @@ pub fn flush_xp(world: &mut World) {
 }
 
 /// Raise a USER's persisted `peak_level` toward `new_lvl`, emitting one `unlock` frame per gate the
-/// user crosses for the FIRST time and granting the level-10 starter credit exactly once. `peak_level`
+/// user crosses for the FIRST time and granting the level-10 starter nectar exactly once. `peak_level`
 /// lives on the account (users.json), so unlocks fire once per user ever — surviving queen death /
 /// prestige (Queen.level resets to 1). No-op when `new_lvl ≤` the user's existing peak, or for NPCs.
 /// Called from the natural level-up path (`flush_xp`) and the admin level/xp commands.
@@ -109,7 +112,7 @@ pub fn apply_peak_unlocks(world: &mut World, player_id: u32, new_lvl: u16) {
     };
     // Bump peak + collect newly-crossed gates (scoped &mut auth, released before touching players).
     let mut newly_unlocked: Vec<u16> = Vec::new();
-    let mut grant_starter_credit = false;
+    let mut grant_starter_nectar = false;
     if let Some(u) = world.auth.users.get_mut(&username) {
         let prev_peak = u.peak_level;
         if new_lvl > prev_peak {
@@ -117,14 +120,14 @@ pub fn apply_peak_unlocks(world: &mut World, player_id: u32, new_lvl: u16) {
             for &gate in &[GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE] {
                 if prev_peak < gate && gate <= new_lvl { newly_unlocked.push(gate); }
             }
-            if prev_peak < GATE_SHOP && GATE_SHOP <= new_lvl { grant_starter_credit = true; }
+            if prev_peak < GATE_SHOP && GATE_SHOP <= new_lvl { grant_starter_nectar = true; }
         }
     }
-    if newly_unlocked.is_empty() && !grant_starter_credit { return; }
+    if newly_unlocked.is_empty() && !grant_starter_nectar { return; }
 
-    if grant_starter_credit {
+    if grant_starter_nectar {
         if let Some(p) = world.players.get_mut(&player_id) {
-            p.credits = p.credits.saturating_add(1);
+            p.nectar = p.nectar.saturating_add(1);
         }
     }
     let tx = world.players.get(&player_id).and_then(|p| p.tx.clone());
@@ -177,11 +180,11 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     }
 
     // Capture the fallen queen's life stats for the player's death-screen summary.
-    let (secs_alive, new_prestige, credits) = match world.players.get(&loser_id) {
+    let (secs_alive, new_prestige, nectar) = match world.players.get(&loser_id) {
         Some(p) => (
             p.queen_placed_at.map(|t| now.saturating_sub(t) / 1000).unwrap_or(0),
             p.prestige,
-            p.credits,
+            p.nectar,
         ),
         None => (0, 0, 0),
     };
@@ -229,7 +232,7 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         }
         if let Some(kq) = world.queens.get_mut(&kid) { kq.kills += 1; }
         if let Some(kp) = world.players.get_mut(&kid) {
-            kp.credits = kp.credits.saturating_add(1);
+            kp.nectar = kp.nectar.saturating_add(1);
         }
         let kill_xp = cfg().xp_kill;
         award_xp(world, kid, kill_xp, "kill", qx, qy);
@@ -246,7 +249,7 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         "secsAlive": secs_alive,
         "region":    victim_region,
         "prestige":  new_prestige,
-        "credits":   credits,
+        "nectar":    nectar,
         "killer":    killer_name,
         "cause":     reason,
     }).to_string());
@@ -851,11 +854,19 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 6: Expire workers back to their owner's ready pool (24 h deploy life). Workers are
     // never destroyed — an expired worker returns to inventory for redeployment, like a capture.
+    //
+    // Lifespan is the LIVE global `cfg().lifespan` (the admin "WORKER RETURN" slider), NOT the
+    // value snapshotted into `a.lifespan` at spawn. Reading the current config here means every
+    // worker — including those already deployed — expires at the server's *current* decided age the
+    // instant the slider moves: lowering it returns over-age workers right away, raising it extends
+    // them. The matching `remaining = cfg.lifespan - age` ships to the client (network.rs /
+    // server.rs) so the WORKERS-panel bar drains at exactly this rate.
     // =========================================================================
     {
+        let life = c.lifespan;
         let mut returns: FxHashMap<u32, i32> = FxHashMap::default();
         world.ants.retain(|a| {
-            if a.age <= a.lifespan { true }
+            if a.age <= life { true }
             else { *returns.entry(a.owner).or_insert(0) += 1; false }
         });
         for (owner, n) in returns {
@@ -1089,6 +1100,41 @@ fn recompute_holders(world: &mut World) {
     world.metro_holders = holders;
 }
 
+/// Passive metro-region nectar: once per 00:00-UTC day, every player LEADING one or more metros
+/// earns `nectar_per_100k_day` nectar per 100,000 tiles they hold there. Idempotent per account via
+/// `UserRecord.last_accrual_day` (users.json) — safe to call repeatedly: a restart mid-day re-scans
+/// but already-paid players are skipped. NPCs are excluded. Returns the number of players paid.
+/// Caller (sim loop) gates the call on a UTC-day change and persists `auth` afterwards.
+pub fn accrue_metro_nectar(world: &mut World, now: u64) -> usize {
+    let rate = cfg().nectar_per_100k_day;
+    if rate <= 0.0 { return 0; }
+    let today = crate::config::utc_day(now);
+    // Tiles held per owner across all metro holders (king-of-the-hill leaders).
+    let mut by_owner: FxHashMap<u32, u64> = FxHashMap::default();
+    for h in &world.metro_holders {
+        if let Some(owner) = h.owner { *by_owner.entry(owner).or_insert(0) += h.tiles; }
+    }
+    let mut paid = 0usize;
+    for (pid, tiles) in by_owner {
+        // Real, logged-in-or-persisted accounts only (NPCs/guests have no UserRecord).
+        let username = match world.players.get(&pid) {
+            Some(p) if !p.npc && !p.guest => p.username.clone(),
+            _ => continue,
+        };
+        match world.auth.users.get(&username) {
+            Some(u) if u.last_accrual_day < today => {}
+            _ => continue,   // already accrued today, or no account record
+        }
+        if let Some(u) = world.auth.users.get_mut(&username) { u.last_accrual_day = today; }
+        let amount = (tiles as f64 / 100_000.0 * rate).round() as u64;
+        if amount == 0 { continue; }   // marked for today, but below the 100k threshold → nothing owed
+        if let Some(p) = world.players.get_mut(&pid) { p.nectar = p.nectar.saturating_add(amount); }
+        world.send_to(pid, json!({"t":"event","msg":format!("+{amount} NECTAR FROM YOUR REGIONS")}).to_string());
+        paid += 1;
+    }
+    paid
+}
+
 /// Fills `out` with (dest_key, ant_index) pairs sorted by dest_key.
 /// Uses `_nx/_ny` (planned destination) when `use_planned` is true, else `x/y` (current).
 /// Reuses existing Vec allocation — clear() preserves capacity.
@@ -1110,6 +1156,39 @@ fn build_sorted_pairs(out: &mut Vec<(u64, u32)>, ants: &[crate::world::Ant], ww_
 mod tests {
     use super::*;
     use crate::world::{Ant, World};
+
+    #[test]
+    fn metro_nectar_accrues_once_per_utc_day() {
+        use crate::auth::UserRecord;
+        const DAY: u64 = 86_400_000;
+        crate::config::apply_admin_param("nectar_per_100k_day", 1.0);   // deterministic rate
+        let mut w = World::new();
+        let pid = 7u32;
+        w.players.insert(pid, Player { id: pid, username: "BOB".into(), ..Default::default() });
+        w.auth.users.insert("BOB".into(), UserRecord { id: pid, username: "BOB".into(), ..Default::default() });
+        // BOB leads 250k tiles of metro → round(250000/100000 * 1.0) = 3 nectar/day. Unheld metro ignored.
+        w.metro_holders = vec![
+            MetroHolder { name: "A".into(), owner: Some(pid), tiles: 150_000 },
+            MetroHolder { name: "B".into(), owner: Some(pid), tiles: 100_000 },
+            MetroHolder { name: "C".into(), owner: None,      tiles: 999_999 },
+        ];
+        let now = 20_000 * DAY + 5_000;
+
+        // First scan of the day pays exactly once.
+        assert_eq!(accrue_metro_nectar(&mut w, now), 1);
+        assert_eq!(w.players[&pid].nectar, 3);
+        // Replay / restart within the same UTC day grants nothing.
+        assert_eq!(accrue_metro_nectar(&mut w, now), 0);
+        assert_eq!(accrue_metro_nectar(&mut w, (20_001 * DAY) - 1), 0, "23:59:59.999 same window");
+        assert_eq!(w.players[&pid].nectar, 3);
+        // The next 00:00-UTC window pays again.
+        assert_eq!(accrue_metro_nectar(&mut w, 20_001 * DAY), 1);
+        assert_eq!(w.players[&pid].nectar, 6);
+        // NPCs never accrue.
+        w.players.get_mut(&pid).unwrap().npc = true;
+        assert_eq!(accrue_metro_nectar(&mut w, 20_002 * DAY), 0);
+        assert_eq!(w.players[&pid].nectar, 6);
+    }
 
     /// Boundary regression: a brute's 2×2 footprint must never paint (or probe a queen cell)
     /// past the east/south world edge. Before the clamp it wrote a phantom tile at x == world_w

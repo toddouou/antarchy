@@ -8,6 +8,8 @@
 <title>antarchy — the ants are revolting</title>
 <link rel="icon" href="/favicon.png" type="image/png">
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Google AdSense — passive bottom banner on /play (loader mirrors landing.html; CSP whitelists googlesyndication). -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8322666756328568" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #f5f3ec; --bg2: #ffffff; --ink: #0d0d0d;
@@ -75,6 +77,16 @@
   .hbtn:hover .lb { color:var(--ink); }
   .hbtn.on { background:var(--ink); }
   .hbtn.on .lb { color:var(--yel); }
+
+  /* HEADER BALANCES — the two new currency readouts (D3): nectar (orange drop) + gems (green gem). */
+  .hbal { display:flex; align-items:center; gap:12px; margin-left:14px; }
+  .hbal-chip { display:flex; align-items:center; gap:6px; font-family:'Press Start 2P',monospace; font-size:8px; }
+  .hbal-ic { width:12px; height:12px; display:inline-block; flex:0 0 auto; }
+  .hbal-ic.nectar { background:#ff8a00; border-radius:50% 50% 50% 0; transform:rotate(45deg); }
+  .hbal-ic.gems   { background:var(--grn); transform:rotate(45deg); }
+  .hbal-v { color:var(--ink); }
+  .shop-pr.nectar { color:#ff8a00; }
+  .shop-pr.gem    { color:var(--grn); }
 
   /* KILLFEED (CS1.6-style, top-right, newest on top, fades) — boxy panel style to match UI */
   #killfeed { position:fixed; top:62px; right:14px; z-index:60; display:flex;
@@ -244,6 +256,17 @@
 
   /* CANVAS */
   .canvas-area { grid-area:c; position:relative; background:var(--bg2); overflow:hidden; touch-action:none; }
+  /* C2 — passive bottom ad banner. Anchored INSIDE the canvas cell so it never overlaps the sidebar
+     or the desktop footer. z-index 40: above the basemap/attribution but BELOW the killfeed (60),
+     mobile-nav (70), app windows (500) and the death/unlock/welcome modals (880-910). The future
+     events-log popup (E3, centered over the queen) takes a higher lane, so this thin bottom strip
+     won't collide with it. Shown only when in-game (see updateAdbarVis); click-through while placing
+     so it can never block a map click. */
+  #play-adbar { position:absolute; left:50%; transform:translateX(-50%); bottom:8px; z-index:40;
+    width:min(728px,94%); display:none; pointer-events:none; }
+  #play-adbar.vis { display:block; }
+  #play-adbar ins { display:block; pointer-events:auto; min-height:50px; }
+  #map.placing ~ #play-adbar ins { pointer-events:none; }   /* don't eat clicks during placement */
 canvas { display:block; width:100%; height:100%; cursor:grab;
     image-rendering:pixelated; image-rendering:crisp-edges;
     touch-action: none; }
@@ -358,11 +381,37 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .disc-stat b { color:var(--ink); text-align:right; }
 
   /* SHOP window — product cards */
-  .shop-top { display:flex; align-items:center; justify-content:space-between; gap:10px;
-    border:2px solid var(--ink); background:var(--ink); color:var(--bg2); padding:11px 14px; margin-bottom:16px; }
+  .shop-top { display:flex; align-items:center; justify-content:flex-start; gap:22px; flex-wrap:wrap;
+    border:2px solid var(--ink); background:var(--ink); color:var(--bg2); padding:11px 14px; margin-bottom:14px; }
   .shop-cr { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--yel); }
   .shop-cr b { font-size:15px; color:#fff; margin-left:6px; }
   .shop-note { font-family:'Press Start 2P',monospace; font-size:6px; color:rgba(255,255,255,.55); }
+  /* Shop balances (nectar + gems) + tab switcher (COSMETICS default / POWERUPS). */
+  .shop-bal { font-family:'Press Start 2P',monospace; font-size:8px; color:rgba(255,255,255,.7);
+    display:flex; align-items:center; gap:6px; }
+  .shop-bal b { font-size:14px; color:#fff; margin-left:4px; }
+  .bal-ic { width:12px; height:12px; display:inline-block; flex:0 0 auto; }
+  .bal-ic.nectar { background:#ff8a00; border-radius:50% 50% 50% 0; transform:rotate(45deg); }
+  .bal-ic.gems   { background:var(--grn); transform:rotate(45deg); }
+  .shop-tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .shop-tab { flex:1; font-family:'Press Start 2P',monospace; font-size:8px; padding:8px 6px;
+    background:var(--bg2); border:2px solid var(--ink); color:var(--dim); cursor:pointer; }
+  .shop-tab.active { background:var(--ink); color:#fff; }
+  .shop-foot { font-family:'Press Start 2P',monospace; font-size:7px; color:rgba(255,255,255,.55);
+    margin-top:14px; text-align:center; line-height:1.7; }
+  .shop-foot.blu { color:var(--blu); } .shop-foot.red { color:var(--red); }
+  /* HELP window (E2) — field manual */
+  .help-intro { font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--dim); line-height:1.6; margin-bottom:16px; }
+  .help-sec { margin-bottom:16px; }
+  .help-h { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--ink); border-bottom:2px solid var(--ink); padding-bottom:6px; margin-bottom:6px; }
+  .help-row { display:flex; justify-content:space-between; gap:14px; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:3px 0; }
+  .help-row span:first-child { color:var(--dim); }
+  .help-row span:last-child { color:var(--ink); text-align:right; }
+  /* EVENTS window (E3) — timestamped log */
+  .evt-log { display:flex; flex-direction:column; }
+  .evt-row { display:flex; gap:9px; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:4px 0; border-bottom:1px solid var(--line); }
+  .evt-ts { color:var(--dim); flex:0 0 auto; }
+  .evt-msg { color:var(--ink); word-break:break-word; }
   .shop-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
   .shop-card { border:2px solid var(--ink); background:var(--bg2); padding:14px 12px; display:flex;
     flex-direction:column; align-items:center; text-align:center; gap:7px; box-shadow:3px 3px 0 0 var(--ink); }
@@ -726,6 +775,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     #killfeed { top: calc(env(safe-area-inset-top) + 52px); right: 10px; }
     .toast { top: calc(env(safe-area-inset-top) + 58px); }
     .place-prompt { bottom: calc(66px + env(safe-area-inset-bottom)); }
+    #play-adbar { bottom: calc(60px + env(safe-area-inset-bottom)); }   /* ride above the bottom nav */
 
     /* --- Windows / modals at narrow width --- */
     .win { width: 96vw; max-height: 86vh; }
@@ -767,9 +817,15 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="hstat sh"><span class="l">TPS</span><span class="v" id="hdr-tps">0</span></div>
     <div class="hstat sh"><span class="l">UPTIME</span><span class="v" id="hdr-uptime">--</span></div>
   </div>
+  <div class="hbal">
+    <div class="hbal-chip" id="hbal-nectar" title="Nectar — spend on powerups in the shop"><span class="hbal-ic nectar"></span><span class="hbal-v" id="hdr-nectar">0</span></div>
+    <div class="hbal-chip" id="hbal-gems" title="Gems — the cosmetics currency"><span class="hbal-ic gems"></span><span class="hbal-v" id="hdr-gems">0</span></div>
+  </div>
   <div class="hdr-actions">
     <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
     <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><span class="ic">🧭</span><span class="lb">DISCOVER</span></button>
+    <button class="hbtn" id="hbtn-events" title="Events log" onclick="openEventsWindow()"><span class="ic">📜</span><span class="lb">EVENTS</span></button>
+    <button class="hbtn" id="hbtn-help" title="Help" onclick="openHelpWindow()"><span class="ic">❓</span><span class="lb">HELP</span></button>
     <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><span class="ic">⚙</span><span class="lb">SETTINGS</span></button>
   </div>
   <button class="hdr-logout" id="btn-logout" title="Log out">⎋ LOGOUT</button>
@@ -813,7 +869,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div class="stat-cell"><div class="l">ARMY</div><div class="v b" id="s-army">0</div></div>
       <div class="stat-cell"><div class="l">KILLS</div><div class="v r" id="s-kills">0</div></div>
       <div class="stat-cell"><div class="l">PRESTIGE</div><div class="v" id="s-prestige" style="color:var(--yel)">P0</div></div>
-      <div class="stat-cell"><div class="l">CREDITS</div><div class="v" id="s-credits" style="color:var(--grn)">0</div></div>
+      <div class="stat-cell"><div class="l">NECTAR</div><div class="v" id="s-credits" style="color:#ff8a00">0</div></div>
     </div>
   </div>
 
@@ -860,11 +916,23 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   </div>
 
   <button class="btn ghost" id="btn-recenter" style="margin-bottom:5px;">⊕ CENTER QUEEN</button>
+  <!-- Mobile-only: the header HELP/EVENTS buttons are hidden ≤768px, so surface them in the drawer. -->
+  <button class="btn ghost mobile-only" onclick="openEventsWindow()" style="margin-bottom:5px;">📜 EVENTS LOG</button>
+  <button class="btn ghost mobile-only" onclick="openHelpWindow()" style="margin-bottom:5px;">❓ HELP</button>
   <button class="btn ghost mobile-only" onclick="document.getElementById('btn-logout').click()" style="margin-bottom:5px;">⎋ LOGOUT</button>
 </aside>
 
 <main class="canvas-area">
   <canvas id="map"></canvas>
+  <!-- C2 — passive display banner (shown in-game; see #play-adbar CSS + updateAdbarVis).
+       TODO: replace data-ad-slot with a real /play banner slot id from the AdSense dashboard. -->
+  <div id="play-adbar">
+    <ins class="adsbygoogle" style="display:block"
+         data-ad-client="ca-pub-8322666756328568"
+         data-ad-slot="0000000000"
+         data-ad-format="auto"
+         data-full-width-responsive="true"></ins>
+  </div>
   <!-- OSM attribution (ODbL/usage-policy requirement). Shown whenever the basemap is visible. -->
   <a id="osm-attrib" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener"
      style="position:absolute;bottom:2px;right:4px;z-index:30;font:11px/1.4 system-ui,sans-serif;
@@ -902,11 +970,11 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div class="ds-stat"><div class="ds-l">TIME ALIVE</div><div class="ds-v" id="ds-time">0:00</div></div>
       <div class="ds-stat"><div class="ds-l">LEVEL</div><div class="ds-v" id="ds-level">1</div></div>
       <div class="ds-stat"><div class="ds-l">REGION</div><div class="ds-v" id="ds-region" style="font-size:8px">—</div></div>
-      <div class="ds-stat"><div class="ds-l">CREDITS</div><div class="ds-v" id="ds-credits" style="color:var(--grn)">0</div></div>
+      <div class="ds-stat"><div class="ds-l">NECTAR</div><div class="ds-v" id="ds-credits" style="color:#ff8a00">0</div></div>
     </div>
     <div class="ds-prestige">
       <div class="ds-pr-badge" id="ds-prestige">P0</div>
-      <div class="ds-pr-text">PRESTIGE EARNED<br><span>Each fallen queen raises your prestige. Prestige, stats &amp; credits persist — only your territory is lost.</span></div>
+      <div class="ds-pr-text">PRESTIGE EARNED<br><span>Each fallen queen raises your prestige. Prestige, stats &amp; nectar persist — only your territory is lost.</span></div>
     </div>
     <button class="btn ds-redeploy" id="ds-redeploy">▲ REDEPLOY QUEEN</button>
     <div class="ds-foot">A new queen deploys at full strength.</div>
@@ -1001,16 +1069,16 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div class="adm-input-row">
         <span class="adm-il">CR+</span>
         <input class="adm-in-sm" id="atgt-givecr" type="number" min="0" placeholder="0">
-        <button class="btn-sm" onclick="admGiveCredits()">ADD</button>
+        <button class="btn-sm" onclick="admGiveNectar()">ADD</button>
       </div>
       <div class="adm-input-row">
         <span class="adm-il">CR=</span>
         <input class="adm-in-sm" id="atgt-setcr" type="number" min="0" placeholder="0">
-        <button class="btn-sm" onclick="admSetCredits()">SET</button>
+        <button class="btn-sm" onclick="admSetNectar()">SET</button>
       </div>
       <div class="adm-subsec">GOD MODE</div>
       <div class="btn-row" style="margin-bottom:6px;">
-        <button class="btn-sm" id="atgt-unlim-cr" onclick="admToggleUnlim('credits')">∞ CR: OFF</button>
+        <button class="btn-sm" id="atgt-unlim-cr" onclick="admToggleUnlim('nectar')">∞ NEC: OFF</button>
         <button class="btn-sm" id="atgt-unlim-ant" onclick="admToggleUnlim('ants')">∞ ANTS: OFF</button>
       </div>
       <div class="adm-subsec">ACTIONS</div>
@@ -2052,7 +2120,7 @@ function handle(msg) {
         setTimeout(()=>{ card.style.display='none'; card.style.transform=''; }, 2500);
       }
       break;
-    case 'event': toast(msg.msg); admPushLog(msg.msg); break;
+    case 'event': toast(msg.msg); admPushLog(msg.msg); pushEventLog(msg.msg); break;
     case 'logged-in':
       me=msg.me;
       applyFowFromMe();   // level-scaled fog-of-war radii + territory AABB
@@ -2256,7 +2324,7 @@ function openWindow(title, kind){
 }
 function closeWindow(){ $('win-bg').style.display='none'; _winKind=null; syncHdrBtns(); }
 function syncHdrBtns(){
-  const map={shop:'hbtn-shop', disc:'hbtn-disc', settings:'hbtn-settings'};
+  const map={shop:'hbtn-shop', disc:'hbtn-disc', events:'hbtn-events', help:'hbtn-help', settings:'hbtn-settings'};
   for (const k in map){ const b=$(map[k]); if(b) b.classList.toggle('on', _winKind===k); }
 }
 function winIsOpen(kind){ const bg=$('win-bg'); return !!bg && bg.style.display!=='none' && (!kind || _winKind===kind); }
@@ -2445,10 +2513,10 @@ function closePopup(){
 // Unlock tier → popup content. Adding a tier later = one entry here + one GATES/config.rs line.
 const UNLOCK_CONTENT = {
   10:{art:'🛒', title:'SHOP <em>UNLOCKED</em>', sub:'LEVEL 10 REACHED',
-      body:"The requisitions terminal is online.<br>Spend credits from queen kills &amp; new regions.<br><b>+1 FREE CREDIT</b> — try it on the Defender.",
-      actions:[{label:'OPEN SHOP', primary:true, handler:()=>{ _highlightDefender=true; openShopWindow(); }}]},
+      body:"The requisitions terminal is online.<br>Spend nectar from queen kills &amp; new regions.<br><b>+1 FREE NECTAR</b> — try it on the Defender.",
+      actions:[{label:'OPEN SHOP', primary:true, handler:()=>{ _shopTab='powerups'; _highlightDefender=true; openShopWindow(); }}]},
   20:{art:'🐜', title:'WORKER <em>UNLOCKED</em>', sub:'LEVEL 20 REACHED',
-      body:'Buy <b>+1 inventory worker</b> for 10 CR<br>when your daily refill runs dry.'},
+      body:'Buy <b>+1 inventory worker</b> for 10 NECTAR<br>when your daily claim runs dry.'},
   30:{art:'🛡️', title:'SHIELD <em>UNLOCKED</em>', sub:'LEVEL 30 REACHED',
       body:'Wrap your queen in an absorbing shield.<br>Available now in the shop.'},
   40:{art:'🦏', title:'BRUTE <em>UNLOCKED</em>', sub:'LEVEL 40 REACHED',
@@ -2488,34 +2556,124 @@ const SHOP_ITEMS=[
   {id:'relocate',ic:'📍', nm:'RELOCATE', pr:20, gate:50, ds:'Teleport your queen to a new tile you pick.'},
 ];
 function openShopWindow(){ AudioEngine.click(); openWindow('SHOP — REQUISITIONS','shop'); renderShopWindow(); }
+// Shop tabs: COSMETICS is the DEFAULT (D3) even before it's functional; POWERUPS holds the live items.
+let _shopTab='cosmetics';
+function shopTab(name){ if(name===_shopTab) return; _shopTab=name; AudioEngine.click(); renderShopWindow(); }
+
+// Cosmetics line (tile/queen color & effects) — placeholder teasers priced in GEMS, not yet buyable.
+const COSMETIC_ITEMS=[
+  {ic:'🎨', nm:'TILE COLOR',  pr:100, ds:'Recolor the territory your ants paint.'},
+  {ic:'👑', nm:'QUEEN COLOR', pr:150, ds:'Give your queen a signature hue.'},
+  {ic:'✨', nm:'QUEEN AURA',   pr:250, ds:'Wrap your queen in a glowing aura effect.'},
+];
+
 function renderShopWindow(){
   const el=$('win-body'); if(!el) return;
   if(!me){ el.innerHTML='<div class="disc-empty">CONNECTING…</div>'; return; }
-  const cr=me.credits||0, q=me.queen, haveQ=!!(q&&!q.dead);
-  let html=`<div class="shop-top"><div class="shop-cr">CREDITS<b>${cr}</b></div>
-    <div class="shop-note">+1 CR PER QUEEN KILL</div></div><div class="shop-grid">`;
-  for (const it of SHOP_ITEMS){
-    if (peakLvl() < (it.gate||0)) continue;   // locked → fully omitted (no card, no hint)
-    const need = it.id==='worker' ? true : (it.id==='shield' ? (haveQ && !(me.shield>0)) : haveQ);
-    const dis = cr<it.pr || !need;
-    const hot = (it.id==='defender' && _highlightDefender) ? ' shop-hot' : '';
-    html+=`<div class="shop-card${hot}"><div class="shop-ic">${it.ic}</div>
-      <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
-      <div class="shop-pr">${it.pr} CR</div>
-      <button class="shop-buy" ${dis?'disabled':''} onclick="shopWindowBuy('${it.id}')">BUY</button></div>`;
+  const nectar=me.nectar||0, gems=me.gems||0, q=me.queen, haveQ=!!(q&&!q.dead);
+  let html=`<div class="shop-top">
+      <div class="shop-bal"><span class="bal-ic nectar"></span>NECTAR<b>${nectar.toLocaleString()}</b></div>
+      <div class="shop-bal"><span class="bal-ic gems"></span>GEMS<b>${gems.toLocaleString()}</b></div>
+    </div>
+    <div class="shop-tabs">
+      <button class="shop-tab${_shopTab==='cosmetics'?' active':''}" onclick="shopTab('cosmetics')">COSMETICS</button>
+      <button class="shop-tab${_shopTab==='powerups'?' active':''}" onclick="shopTab('powerups')">POWERUPS</button>
+    </div>
+    <div class="shop-grid">`;
+  if (_shopTab==='powerups'){
+    let any=false;
+    for (const it of SHOP_ITEMS){
+      if (peakLvl() < (it.gate||0)) continue;   // locked → fully omitted (no card, no hint)
+      any=true;
+      const need = it.id==='worker' ? true : (it.id==='shield' ? (haveQ && !(me.shield>0)) : haveQ);
+      const dis = nectar<it.pr || !need;
+      const hot = (it.id==='defender' && _highlightDefender) ? ' shop-hot' : '';
+      html+=`<div class="shop-card${hot}"><div class="shop-ic">${it.ic}</div>
+        <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
+        <div class="shop-pr nectar">${it.pr} NECTAR</div>
+        <button class="shop-buy" ${dis?'disabled':''} onclick="shopWindowBuy('${it.id}')">BUY</button></div>`;
+    }
+    _highlightDefender=false;   // one-shot nudge — clear after rendering
+    if (!any) html+=`<div class="disc-empty">LEVEL UP TO UNLOCK POWERUPS</div>`;
+    html+=`</div>`;
+    const dCount=me.defenders||0;
+    if (dCount>0) html+=`<div class="shop-foot blu">DEFENDERS QUEUED: ${dCount}</div>`;
+    if (!haveQ)   html+=`<div class="shop-foot red">DEPLOY A QUEEN TO PURCHASE</div>`;
+  } else {
+    for (const it of COSMETIC_ITEMS){
+      html+=`<div class="shop-card wip"><div class="shop-ic">${it.ic}</div>
+        <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
+        <div class="shop-pr gem">${it.pr} GEMS</div>
+        <button class="shop-buy" disabled>SOON</button></div>`;
+    }
+    html+=`</div><div class="shop-foot">COSMETICS ARE COMING SOON — EARN GEMS TO CUSTOMIZE YOUR HIVE.</div>`;
   }
-  _highlightDefender=false;   // one-shot nudge — clear after rendering
-  html+=`</div>`;
-  const dCount=me.defenders||0;
-  if (dCount>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--blu);margin-top:14px;text-align:center;">DEFENDERS QUEUED: ${dCount}</div>`;
-  if (!haveQ) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--red);margin-top:14px;text-align:center;">DEPLOY A QUEEN TO PURCHASE</div>`;
   el.innerHTML=html;
 }
 function shopWindowBuy(item){
-  shopBuy(item); // handles credit/queen checks + placement modes + sounds
+  shopBuy(item); // handles nectar/queen checks + placement modes + sounds
   // Placement items need the map — get the window out of the way.
   if (item==='relocate'||item==='brute') closeWindow();
   else if (winIsOpen('shop')) renderShopWindow();
+}
+
+// ---- Help window (E2): a field manual whose numbers come from the live me.cfg + GATES/SHOP_ITEMS ----
+function openHelpWindow(){ AudioEngine.click(); openWindow('HELP — FIELD MANUAL','help'); renderHelpWindow(); }
+function renderHelpWindow(){
+  const el=$('win-body'); if(!el) return;
+  const c=(me&&me.cfg)||{};
+  const v=(x,d)=> (x==null?d:x);
+  const num=x=> (typeof x==='number'? x.toLocaleString() : x);
+  const price=id=>{ const it=SHOP_ITEMS.find(x=>x.id===id); return it?it.pr:'—'; };
+  const sec=(title,rows)=>`<div class="help-sec"><div class="help-h">${title}</div>${rows}</div>`;
+  const row=(k,val)=>`<div class="help-row"><span>${k}</span><span>${val}</span></div>`;
+  const lifeHrs=Math.round(v(c.LIFESPAN,1296000)/v(c.TICK_RATE,15)/3600);
+  let html=`<div class="help-intro">Drop your queen anywhere on the world map, deploy Langton's-ant workers to paint territory, and besiege rival queens. Hold metro regions for passive income and climb the global leaderboard.</div>`;
+  html+=sec('WORKERS',
+       row('Daily workers', num(v(c.DAILY_ANTS,3))+' / day — CLAIM at 00:00 UTC')
+     + row('Worker lifespan', lifeHrs+' h')
+     + row('Army cap', num(v(c.ARMY_CAP,1000)))
+     + row('Ant damage', '×'+v(c.ANT_DAMAGE,1)+' per bite × your queen level'));
+  html+=sec('LEVELING',
+       row('XP curve', 'base '+num(v(c.XP_BASE,400))+' × '+v(c.XP_EXP,1.14)+' ^ level')
+     + row('Level cap', num(v(c.LEVEL_CAP,100)))
+     + row('XP per kill', num(v(c.XP_KILL,5000))));
+  html+=sec('QUEEN',
+       row('Start HP', num(v(c.HP_BASE,50))+' (grows with level)')
+     + row('HP regen', v(c.HP_REGEN,0)+' /s')
+     + row('Bubble radius', num(v(c.BUBBLE_R,30))+' tiles'));
+  html+=sec('NECTAR · powerups',
+       row('Earn', '+1 per queen kill')
+     + row('Passive', v(c.NECTAR_PER_100K_DAY,1)+' / day per 100k metro tiles held')
+     + row('Defender', price('defender')+' nectar')
+     + row('Worker', price('worker')+' nectar')
+     + row('Shield', price('shield')+' nectar')
+     + row('Brute', price('brute')+' nectar')
+     + row('Relocate', price('relocate')+' nectar'));
+  html+=sec('GEMS · cosmetics', row('Tile / queen color & effects','coming soon'));
+  html+=sec('UNLOCKS · by peak level',
+       row('Shop', 'L'+GATES.shop) + row('Buy worker', 'L'+GATES.worker) + row('Shield', 'L'+GATES.shield)
+     + row('Brute', 'L'+GATES.brute) + row('Relocate', 'L'+GATES.relocate));
+  el.innerHTML=html;
+}
+
+// ---- Events log (E3): a timestamped ring buffer fed from `event` messages, shown in a window ----
+const eventLog=[]; const EVENT_LOG_CAP=30;
+function pushEventLog(msg){
+  eventLog.push({ t:Date.now(), msg:String(msg==null?'':msg) });
+  if (eventLog.length>EVENT_LOG_CAP) eventLog.shift();
+  if (winIsOpen('events')) renderEventsWindow();   // live-append while open
+}
+function openEventsWindow(){ AudioEngine.click(); openWindow('EVENTS — LOG','events'); renderEventsWindow(); }
+function renderEventsWindow(){
+  const el=$('win-body'); if(!el) return;
+  if(!eventLog.length){ el.innerHTML='<div class="disc-empty">No events yet — kills, claims, unlocks and region income appear here.</div>'; return; }
+  let html='<div class="evt-log">';
+  for (let i=eventLog.length-1;i>=0;i--){ const e=eventLog[i];
+    const ts=new Date(e.t).toTimeString().slice(0,8);
+    html+=`<div class="evt-row"><span class="evt-ts">[${ts}]</span><span class="evt-msg">${esc(e.msg)}</span></div>`;
+  }
+  el.innerHTML=html+'</div>';
 }
 
 // ---- Settings window (sound / music / map / scanlines / volume) ----
@@ -2658,7 +2816,10 @@ function updateHUD() {
   $('s-army').textContent=me.army||0;
   $('s-kills').textContent=kills;
   $('s-prestige').textContent='P'+(me.prestige||0);
-  $('s-credits').textContent=(me.credits||0).toLocaleString();
+  $('s-credits').textContent=(me.nectar||0).toLocaleString();
+  // Header currency chips (D3): nectar = me.nectar balance; gems = cosmetics currency.
+  if ($('hdr-nectar')) $('hdr-nectar').textContent=(me.nectar||0).toLocaleString();
+  if ($('hdr-gems'))   $('hdr-gems').textContent=(me.gems||0).toLocaleString();
   $('d-army').textContent=me.army||0;
   if (q) {
     $('hp-cur').textContent=q.hp|0;
@@ -2713,6 +2874,22 @@ function updateHUD() {
   if (wkBrute){
     wkBrute.style.display = isUnlocked('brute')?'':'none';
     if (!isUnlocked('brute') && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
+  }
+  updateAdbarVis();
+}
+
+// C2 — passive bottom ad banner: visible only once the player is in-game (live queen, spawn screen
+// gone). The AdSense slot is pushed exactly once, the first time the bar is actually visible —
+// pushing a display:none unit throws "availableWidth=0". Click-through during placement is pure CSS.
+let _adbarPushed=false;
+function updateAdbarVis(){
+  const bar=$('play-adbar'); if(!bar) return;
+  const ss=$('spawn-screen');
+  const show = !!(me && me.queen && !me.queen.dead) && !(ss && ss.classList.contains('vis'));
+  bar.classList.toggle('vis', show);
+  if (show && !_adbarPushed){
+    _adbarPushed=true;
+    try{ (adsbygoogle=window.adsbygoogle||[]).push({}); }catch(e){}
   }
 }
 
@@ -2887,7 +3064,7 @@ function showInspectBox() {
     const col = (vw?.palette||palette)[q.id] || '#888';
     typeLabel = 'QUEEN';
     const prestigeRow = q.prestige > 0 ? `<div class="inspect-row"><span>PRESTIGE</span><span style="margin-left:auto;color:var(--yel)">P${q.prestige}</span></div>` : '';
-    const creditsRow = q.id===me?.id ? `<div class="inspect-row"><span>CREDITS</span><span style="margin-left:auto;color:var(--grn)">${(me.credits||0).toLocaleString()}</span></div>` : '';
+    const creditsRow = q.id===me?.id ? `<div class="inspect-row"><span>NECTAR</span><span style="margin-left:auto;color:#ff8a00">${(me.nectar||0).toLocaleString()}</span></div>` : '';
     rowsHtml = `
       <div class="inspect-row"><span class="inspect-swatch" style="background:${safeColor(col)}"></span><span>${esc(q.username||knownNames[q.id]||'???')}</span></div>
       <div class="inspect-row"><span>HP</span><span style="margin-left:auto">${q.hp}/${q.maxHp}</span></div>
@@ -2931,7 +3108,7 @@ function showDeathScreen(m){
   $('ds-time').innerHTML=fmtDur(m.secsAlive||0);
   $('ds-level').textContent=m.level||1;
   $('ds-region').textContent=m.region||'—';
-  $('ds-credits').textContent=(m.credits||0).toLocaleString();
+  $('ds-credits').textContent=(m.nectar||0).toLocaleString();
   $('ds-prestige').textContent='P'+(m.prestige||0);
   $('ds-sub').textContent = m.killer ? ('SLAIN BY '+String(m.killer).toUpperCase()) : 'FALLEN';
   $('death-screen').classList.add('vis');
@@ -4345,9 +4522,9 @@ function updateDeployBtn() {
   if (mode==='place-ant-down'||mode==='place-ant-drag'||mode.startsWith('shop-brute')) return;
   const q=me?.queen, haveQ=!!(q&&!q.dead);
   if (workerType==='brute') {
-    const cr=me?.credits||0;
-    b.textContent='+ DEPLOY BRUTE · 20CR';
-    b.disabled=!haveQ||(!me?.unlimitedCredits && cr<20);
+    const cr=me?.nectar||0;
+    b.textContent='+ DEPLOY BRUTE · 20 NECTAR';
+    b.disabled=!haveQ||(!me?.unlimitedNectar && cr<20);
   } else {
     b.textContent='+ DEPLOY WORKER';
     b.disabled=!haveQ||(!me?.unlimitedAnts && (me?.antsAvail||0)<=0);
@@ -4360,7 +4537,7 @@ $('btn-ant').onclick=()=>{
   if (mode==='place-ant-down' || mode==='place-ant-drag') { exitPlaceMode(); return; }
   if (mode.startsWith('shop-brute')) { exitShopMode(); updateDeployBtn(); return; }
   if (workerType==='brute') {
-    if (!me.unlimitedCredits && (me.credits||0)<20) return toast('NEED 20 CREDITS');
+    if (!me.unlimitedNectar && (me.nectar||0)<20) return toast('NEED 20 NECTAR');
     shopBuy('brute');
   } else {
     if (!me.unlimitedAnts && (me.antsAvail||0)<=0) return toast('NO ANTS LEFT');
@@ -4520,20 +4697,20 @@ function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants, qx, q
   if ($('atgt-setlvl')) $('atgt-setlvl').value=level;
   if ($('atgt-setants')) $('atgt-setants').value=ants;
   const tp=admPlayers.find(x=>x.id===pid);
-  admUpdUnlimBtns(tp?tp.unlimitedCredits:false, tp?tp.unlimitedAnts:false);
+  admUpdUnlimBtns(tp?tp.unlimitedNectar:false, tp?tp.unlimitedAnts:false);
 }
 function admUpdUnlimBtns(cr, ant) {
   const bc=$('atgt-unlim-cr'), ba=$('atgt-unlim-ant');
-  if (bc){ bc.textContent='∞ CR: '+(cr?'ON':'OFF'); bc.classList.toggle('on',!!cr); }
+  if (bc){ bc.textContent='∞ NEC: '+(cr?'ON':'OFF'); bc.classList.toggle('on',!!cr); }
   if (ba){ ba.textContent='∞ ANTS: '+(ant?'ON':'OFF'); ba.classList.toggle('on',!!ant); }
 }
 function admToggleUnlim(kind) {
   if (admTargetId==null) return; AudioEngine.click();
-  send({t:'admin-target',action:kind==='credits'?'unlimited-credits':'unlimited-ants',targetId:admTargetId});
+  send({t:'admin-target',action:kind==='nectar'?'unlimited-nectar':'unlimited-ants',targetId:admTargetId});
   // Optimistic flip + cache update; the server also echoes an event toast.
   const tp=admPlayers.find(x=>x.id===admTargetId);
-  if (tp){ if(kind==='credits') tp.unlimitedCredits=!tp.unlimitedCredits; else tp.unlimitedAnts=!tp.unlimitedAnts;
-    admUpdUnlimBtns(tp.unlimitedCredits, tp.unlimitedAnts); }
+  if (tp){ if(kind==='nectar') tp.unlimitedNectar=!tp.unlimitedNectar; else tp.unlimitedAnts=!tp.unlimitedAnts;
+    admUpdUnlimBtns(tp.unlimitedNectar, tp.unlimitedAnts); }
 }
 
 function admClearTarget() {
@@ -4633,15 +4810,15 @@ function admSetAnts() {
   if (admTargetId==null||isNaN(n)||n<0) return;
   AudioEngine.click(); send({t:'admin-set-ants',targetId:admTargetId,count:n}); toast('ANTS→'+n);
 }
-function admGiveCredits() {
+function admGiveNectar() {
   const n=parseInt($('atgt-givecr')?.value);
   if (admTargetId==null||isNaN(n)||n<=0) return;
-  AudioEngine.click(); send({t:'admin-give-credits',targetId:admTargetId,amount:n}); toast('+'+n+' CR');
+  AudioEngine.click(); send({t:'admin-give-nectar',targetId:admTargetId,amount:n}); toast('+'+n+' NECTAR');
 }
-function admSetCredits() {
+function admSetNectar() {
   const n=parseInt($('atgt-setcr')?.value);
   if (admTargetId==null||isNaN(n)||n<0) return;
-  AudioEngine.click(); send({t:'admin-set-credits',targetId:admTargetId,amount:n}); toast('CR→'+n);
+  AudioEngine.click(); send({t:'admin-set-nectar',targetId:admTargetId,amount:n}); toast('NECTAR→'+n);
 }
 
 /* Sandbox */

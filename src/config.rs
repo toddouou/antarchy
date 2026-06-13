@@ -18,10 +18,10 @@ pub const HUES: &[&str] = &[
 
 pub const ENEMY_HUES: &[&str] = &["#9b3027","#6b4423","#5a4e7c","#3d5a80","#52796f"];
 
-// ---- Shop / credit economy -------------------------------------------------
-// Credits are earned by killing an enemy queen (+1 each). Beta 1.0 removed the credit cap;
-// balances grow with `saturating_add`, so there is no ceiling and no overflow.
-// Shop prices (credits)
+// ---- Shop / nectar economy -------------------------------------------------
+// Nectar is earned by killing an enemy queen (+1 each) and passively from held metro regions.
+// Beta 1.0 removed the cap; balances grow with `saturating_add`, so there is no ceiling/overflow.
+// Shop prices (nectar)
 pub const PRICE_RELOCATE: u64 = 20;
 pub const PRICE_DEFENDER: u64 = 1;
 pub const PRICE_BRUTE:    u64 = 20;
@@ -36,7 +36,7 @@ pub const BRUTE_DMG_MULT: f32 = 10.0;  // brute queen-damage multiplier
 // ---- Progressive unlock gates (by peak level — see auth::UserRecord::peak_level) ----
 // Each feature/shop item is INVISIBLE + unbuyable until the player's peak level reaches its gate.
 // KEEP IN LOCKSTEP with the `GATES` table in public/client.html.
-pub const GATE_SHOP:     u16 = 10;  // shop button + access; defender buyable; +1 starter credit (once)
+pub const GATE_SHOP:     u16 = 10;  // shop button + access; defender buyable; +1 starter nectar (once)
 pub const GATE_WORKER:   u16 = 20;  // "worker" shop item (+1 inventory worker)
 pub const GATE_SHIELD:   u16 = 30;
 pub const GATE_BRUTE:    u16 = 40;  // brute shop item + sidebar BRUTE toggle
@@ -126,6 +126,9 @@ pub struct Config {
     /// fresh season begins (memory stays flat via chunk compaction). Default 30 days; admin
     /// can lower it for testing. 0 disables the auto-wipe entirely.
     pub season_secs: u64,
+    /// Passive nectar granted per real day per 100,000 metro tiles a player holds (leads). Paid once
+    /// per 00:00-UTC window in the sim loop. 0 disables passive accrual.
+    pub nectar_per_100k_day: f64,
 }
 
 impl Default for Config {
@@ -167,6 +170,7 @@ impl Default for Config {
             // only cleared by the admin panel's type-"WIPE" button. Admins can re-enable a timed
             // season via the slider (apply_admin_param) if desired.
             season_secs:       0,
+            nectar_per_100k_day: 1.0,
         }
     }
 }
@@ -223,6 +227,7 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("hp_regen",          0.0,       100.0),
     ("army_cap",          1.0, 1_000_000.0),
     ("season_secs",       0.0, 31_536_000.0),   // 0 (off) … 365 days
+    ("nectar_per_100k_day", 0.0,   1_000.0),
 ];
 
 /// Returns the clamped value, or None if key is unknown.
@@ -255,6 +260,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "hp_regen"          => c.hp_regen           = v,
         "army_cap"          => c.army_cap           = v as i32,
         "season_secs"       => c.season_secs        = v as u64,
+        "nectar_per_100k_day" => c.nectar_per_100k_day = v,
         _ => return None,
     }
     // A tunable changed → flag for the next off-lock persist (server.rs autosave / shutdown), so
@@ -328,6 +334,24 @@ pub fn snapshot_interval_secs() -> u64 {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(300)
             .clamp(30, 3600)
+    })
+}
+
+/// Territory tile-frame cadence in Hz (egress lever): the viewport loop ships at most one tile
+/// (keyframe/delta) frame every `(tick_rate / tile_hz)` ticks. `HIVE_TILE_HZ`, default **5**, clamped
+/// [1, 30]. Tile frames are the heavy ones (the full ownership grid + fog), so this is the single
+/// biggest authed-player egress knob. The old hard-coded formula was `tick_rate / 10`, which at the
+/// live 15 Hz tick degenerated to *every tick* (15 Hz); 5 Hz cuts tile bytes ~3× and — because the
+/// smaller, less frequent frames stop saturating the per-conn send queue — actually makes territory
+/// *arrive* faster, not slower. Ants ride their own (`ant_hz`) cadence, so motion is unaffected.
+/// Read once.
+pub fn tile_hz() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("HIVE_TILE_HZ").ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(5)
+            .clamp(1, 30)
     })
 }
 
@@ -689,6 +713,7 @@ fn params_of(c: &Config) -> Vec<(&'static str, f64)> {
         ("hp_regen",          c.hp_regen),
         ("army_cap",          c.army_cap as f64),
         ("season_secs",       c.season_secs as f64),
+        ("nectar_per_100k_day", c.nectar_per_100k_day),
     ]
 }
 

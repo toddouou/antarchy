@@ -181,7 +181,7 @@ pub struct Player {
     pub bin:             bool,
     pub conn_gen:        u64,
     pub prestige:        u32,
-    pub credits:         u64,
+    pub nectar:          u64,
     /// Queued shop defenders: each entry is an expiry timestamp (ms). When an enemy
     /// worker nears this player's queen, one is consumed to spawn a free distraction ant.
     pub defenders:       Vec<u64>,
@@ -194,8 +194,8 @@ pub struct Player {
     pub lifetime_peak_tiles: u64,
     pub queens_fielded:      u32,
     // ---- Admin god-mode (per-target toggles; persisted) ----
-    /// When set, this player never spends credits (shop is free).
-    pub unlimited_credits:   bool,
+    /// When set, this player never spends nectar (shop is free).
+    pub unlimited_nectar:    bool,
     /// When set, this player has an infinite worker pool (no ants_avail / army_cap gating).
     pub unlimited_ants:      bool,
     // ---- Rivalries (account-level, keyed by rival username; survive queen death) ----

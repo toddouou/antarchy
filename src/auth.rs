@@ -45,6 +45,16 @@ pub struct UserRecord {
     /// snapshot — so it survives restarts without invalidating snapshots.
     #[serde(default)]
     pub last_claim_day: u64,
+    /// Gems — the cosmetics-line currency (Group C UI; earn/spend wired in a later group). Lives
+    /// here (users.json, additive serde default) — NOT in the bincode world snapshot — so a cosmetics
+    /// balance survives the season wipe, matching `peak_level` / `last_claim_day`.
+    #[serde(default)]
+    pub gems: u64,
+    /// UTC day number (`config::utc_day`) of the last passive metro-nectar accrual; 0 = never.
+    /// Idempotency guard for the once-per-00:00-UTC accrual (server.rs sim loop). Same wipe-proof
+    /// home as `last_claim_day` — NOT the bincode snapshot.
+    #[serde(default)]
+    pub last_accrual_day: u64,
 }
 
 impl UserRecord {

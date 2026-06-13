@@ -263,7 +263,9 @@ pub fn build_player_info(
         "claimReady": claim_ready,
         "queen": queen_val,
         "prestige":  p.prestige,
-        "credits":   p.credits,
+        "nectar":    p.nectar,
+        // Cosmetics currency — sourced from the account record (wipe-proof, like peak_level).
+        "gems":      world.auth.users.get(&p.username).map(|u| u.gems).unwrap_or(0),
         "region":    q.map(|q| q.region.clone()).unwrap_or_default(),
         "defenders": p.defenders.len(),
         "visitedCountries":  visited_countries,
@@ -271,7 +273,7 @@ pub fn build_player_info(
         "lifetimeKills":     p.lifetime_kills,
         "lifetimePeakTiles": p.lifetime_peak_tiles,
         "queensFielded":     p.queens_fielded,
-        "unlimitedCredits":  p.unlimited_credits,
+        "unlimitedNectar":   p.unlimited_nectar,
         "unlimitedAnts":     p.unlimited_ants,
         "topRivalries": {
             "killedBy":    killed_by_top,
@@ -341,6 +343,7 @@ pub fn build_player_info(
             "LEVELUP_ANT_GRANT": c.levelup_ant_grant,
             "LEVEL_CAP":         c.xp_level_cap,
             "ARMY_CAP":          c.army_cap,
+            "NECTAR_PER_100K_DAY": c.nectar_per_100k_day,
         });
         // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
@@ -526,9 +529,18 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     })
 }
 
-/// Keyframe cadence: emit at least one self-contained keyframe every this many tile frames so a
-/// client that missed a delta (the latest-wins channel can drop frames) resyncs within ~1.5 s.
-const KF_INTERVAL: u32 = 15;
+/// Keyframe cadence: emit at least one self-contained keyframe every this many *tile* frames so a
+/// client that missed a delta (the latest-wins channel can drop frames; the client then freezes its
+/// territory until the next keyframe, see `baseSeq` check in client.html) resyncs promptly.
+///
+/// This is the **drop-recovery latency**, so it must stay roughly constant in wall-clock time no
+/// matter what `tile_hz` the operator picks — a fixed frame *count* would stretch to many seconds
+/// once tile frames are spaced out. We target ~1.5 s: `1.5 × tile_hz` frames, floored at 8 so a very
+/// low `tile_hz` still resyncs reasonably. (Geometry changes / large deltas still force a keyframe
+/// on demand, so active play keyframes more often than this floor anyway.)
+fn kf_interval() -> u32 {
+    (crate::config::tile_hz().saturating_mul(3) / 2).max(8)
+}
 const DEFAULT_COLOR: &str = "#9b3027";
 
 /// Per-client tile state retained by the viewport thread between cycles (NOT stored in `World`).
@@ -557,8 +569,13 @@ impl PrevGrid {
 }
 
 /// Raw DEFLATE (RFC 1951, no zlib/gzip header) to match the client's `DecompressionStream('deflate-raw')`.
+/// Uses the MAX compression level (9) rather than the default (6): every WS viewport/ant/control
+/// frame goes through here, the work runs lock-free in parallel per-client (rayon), and the VPS has
+/// abundant idle CPU — so spending a little more CPU here directly buys ~15–30% less outgoing
+/// bandwidth, which is the actual bottleneck. (Disk snapshots in `persist.rs` stay at the default
+/// level — those run under the world lock's encode path and aren't on the egress wire.)
 fn deflate_raw(data: &[u8]) -> Vec<u8> {
-    let mut e = DeflateEncoder::new(Vec::new(), Compression::default());
+    let mut e = DeflateEncoder::new(Vec::new(), Compression::best());
     let _ = e.write_all(data);
     e.finish().unwrap_or_default()
 }
@@ -756,7 +773,7 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
     // refresh is due. Otherwise build a delta, falling back to a keyframe if too much changed.
     let force_kf = match &prev {
         None => true,
-        Some(p) => p.geom != geom || p.frames_since_kf >= KF_INTERVAL,
+        Some(p) => p.geom != geom || p.frames_since_kf >= kf_interval(),
     };
 
     if !force_kf {

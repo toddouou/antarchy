@@ -63,6 +63,8 @@ pub struct AppState {
 
 static CLIENT_HTML:  &str = include_str!("../public/client.html");
 static LANDING_HTML: &str = include_str!("../public/landing.html");
+static PRIVACY_HTML: &str = include_str!("../public/privacy.html");
+static TOS_HTML:     &str = include_str!("../public/tos.html");
 
 // ---- HTTP handlers --------------------------------------------------------
 
@@ -141,6 +143,11 @@ fn session_uid_from_cookie(headers: &HeaderMap, sessions: &crate::session::Sessi
 
 /// `/reset` — the landing page handles the `?token=…` reset flow client-side, so just serve it.
 async fn landing_page() -> impl IntoResponse { Html(LANDING_HTML) }
+
+/// `/privacy` + `/tos` — static legal pages (AdSense requires a reachable privacy policy). Embedded
+/// via `include_str!` like the other pages; they inherit the global security headers/CSP.
+async fn privacy_page() -> impl IntoResponse { Html(PRIVACY_HTML) }
+async fn tos_page()     -> impl IntoResponse { Html(TOS_HTML) }
 
 static FAVICON: &[u8] = include_bytes!("../favicon.png");
 
@@ -401,6 +408,9 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
     let mut next_tick = Instant::now();
     // Wall-clock timer for the periodic world autosave (see below).
     let mut last_save = Instant::now();
+    // UTC-day gate for passive metro-nectar accrual (E1b). Loop-local: resets on restart, but the
+    // per-account `UserRecord.last_accrual_day` guard makes the grant itself idempotent.
+    let mut last_accrual_day = 0u64;
 
     loop {
         // ∥A off-lock save: the fast bincode encode happens under the lock below; the slow gzip +
@@ -499,6 +509,15 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             // portions day after day. The ONLY grant path is the `claim-daily` handler: one
             // portion per 00:00-UTC window, claimed by the player, forfeited if skipped.
             let now = crate::config::current_ms();
+
+            // Passive metro-region nectar: pay metro leaders once per 00:00-UTC day. The loop-local
+            // gate skips the per-tick rescan; `metro_holders` must be populated (first recompute) so
+            // a fresh boot doesn't "spend" the day on an empty holder list. Idempotent per account.
+            let today = crate::config::utc_day(now);
+            if today != last_accrual_day && !w.metro_holders.is_empty() {
+                last_accrual_day = today;
+                if crate::simulation::accrue_metro_nectar(&mut w, now) > 0 { w.auth.save(); }
+            }
 
             // beta-v2: GC expired pending registrations + reset tokens (cheap; throttled ~40 s).
             if w.tick.is_multiple_of(600) { crate::api::gc(&mut w); }
@@ -630,7 +649,10 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                 None // sim hasn't advanced since last delivery — nothing new to send
             } else {
                 let tr = cfg().tick_rate.max(1) as u64;
-                let tile_every = (tr / 10).max(1);
+                // Tile-frame cadence: one tile frame every `tr / tile_hz` ticks (default 5 Hz). The
+                // old `tr / 10` hard-code became "every tick" at the live 15 Hz tick (15/10→1), which
+                // maxed authed-player egress; `tile_hz` makes the heavy frames the operator's lever.
+                let tile_every = (tr / crate::config::tile_hz() as u64).max(1);
                 let include_tiles = tick.saturating_sub(last_tile_tick) >= tile_every
                     && w.dirty_tick + tile_every >= tick;
                 // Ant-frame cadence (Phase 3B): one ants-only frame every `tr/ant_hz` ticks instead of
@@ -1125,6 +1147,8 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/",           get(root_handler))        // landing page (GET) / guest spectator (WS)
         .route("/play",       get(play_handler))        // game client (GET) / authed game (WS)
         .route("/reset",      get(landing_page))        // password-reset lands here (?token=…)
+        .route("/privacy",    get(privacy_page))        // privacy policy (AdSense-required)
+        .route("/tos",        get(tos_page))            // terms of service
         .route("/favicon.png", get(favicon_handler))
         .route("/ads.txt",    get(ads_txt_handler))     // AdSense authorized-sellers (apex)
         .route("/health",     get(health_handler))
