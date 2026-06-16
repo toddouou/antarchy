@@ -29,6 +29,15 @@ pub fn turn_cw(dx: i8, dy: i8) -> (i8, i8) { (-dy, dx) }
 
 // ---- XP helpers -----------------------------------------------------------
 
+/// Lock-free allied check against a captured `player_alliance` index — for the hot parallel/serial
+/// tick loops that hold disjoint field borrows and so can't call `World::same_alliance` (which borrows
+/// all of `world`). `a == b` is intentionally false (callers handle the same-owner case separately).
+#[inline]
+fn allied_in(pa: &rustc_hash::FxHashMap<u32, u32>, a: u32, b: u32) -> bool {
+    if a == b { return false; }
+    match (pa.get(&a), pa.get(&b)) { (Some(x), Some(y)) => x == y, _ => false }
+}
+
 pub fn award_xp(world: &mut World, player_id: u32, amount: f64, reason: &'static str, x: i32, y: i32) {
     world.xp_queue.push(XpGrant { player_id, amount, reason, x, y });
 }
@@ -238,6 +247,11 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         award_xp(world, kid, kill_xp, "kill", qx, qy);
         flush_xp(world);
         world.send_to(kid, json!({"t":"event","msg":format!("KILL! +{} XP", kill_xp as i64)}).to_string());
+        // Alliance progression: a member's kill feeds the alliance's combined-contribution XP (no
+        // self-kill credit). Tier-ups re-apply member buffs + notify the roster inside the helper.
+        if kid != loser_id {
+            crate::handlers::award_alliance_xp(world, kid, cfg().alliance_xp_kill);
+        }
     }
 
     world.ants.retain(|a| a.owner != loser_id);
@@ -453,6 +467,7 @@ pub fn tick_world(world: &mut World) {
     let (hits, xp_grants) = {
         let tiles     = &world.tiles;
         let queen_map = &world.queen_map;
+        let player_alliance = &world.player_alliance;   // allies count as friendly for combat + turning
 
         world.ants.par_iter_mut()
             .fold(
@@ -477,7 +492,7 @@ pub fn tick_world(world: &mut World) {
                                 let (bx, by) = (ant.x + bdx, ant.y + bdy);
                                 if bx >= ww || by >= wh { continue; }   // skip off-edge cells
                                 let t = tiles.get(bx as u32, by as u32);
-                                if t != ant.owner { all_friendly = false; }
+                                if t != ant.owner && !allied_in(player_alliance, ant.owner, t) { all_friendly = false; }
                                 if t != 0         { all_white    = false; }
                             }
                         }
@@ -492,8 +507,8 @@ pub fn tick_world(world: &mut World) {
                         let cur = tiles.get(ant.x as u32, ant.y as u32);
                         if cur == 0 {
                             turn_ccw(ant.dx, ant.dy)
-                        } else if cur == ant.owner {
-                            turn_cw(ant.dx, ant.dy)
+                        } else if cur == ant.owner || allied_in(player_alliance, ant.owner, cur) {
+                            turn_cw(ant.dx, ant.dy)   // an ally's tile reads as friendly (turn like own)
                         } else {
                             (ant.dx, ant.dy)
                         }
@@ -522,7 +537,10 @@ pub fn tick_world(world: &mut World) {
                                 if bx >= ww || by >= wh { continue; }  // never index past the world edge
                                 let dest_key = by as u64 * ww_u64 + bx as u64;
                                 if let Some(&queen_id) = queen_map.get(&dest_key) {
-                                    if queen_id != ant.owner && !hit_queens.contains(&queen_id) {
+                                    // Allied queens are solid obstacles (brute bounces) but take no
+                                    // brute damage — brutes have no heal path, so they simply no-op.
+                                    if queen_id != ant.owner && !allied_in(player_alliance, ant.owner, queen_id)
+                                        && !hit_queens.contains(&queen_id) {
                                         hit_queens.push(queen_id);
                                         hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false, dmg_mult: BRUTE_DMG_MULT });
                                         xp.push(XpGrant { player_id: ant.owner, amount: 0.0, reason: "hit", x: ant.x, y: ant.y });
@@ -538,10 +556,12 @@ pub fn tick_world(world: &mut World) {
                     } else {
                         let dest_key = ny as u64 * ww_u64 + nx as u64;
                         if let Some(&queen_id) = queen_map.get(&dest_key) {
-                            if queen_id != ant.owner {
+                            if queen_id != ant.owner && !allied_in(player_alliance, ant.owner, queen_id) {
                                 hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: false, dmg_mult: 1.0 });
                                 xp.push(XpGrant { player_id: ant.owner, amount: 0.0, reason: "hit", x: ant.x, y: ant.y });
                             } else {
+                                // Own OR allied queen → a friendly touch HEALS (allied ants heal each
+                                // other's queens). `is_own` drives the heal branch in the apply pass.
                                 hits.push(QueenHit { queen_id, attacker: ant.owner, is_own: true, dmg_mult: 1.0 });
                             }
                             (ndx, ndy) = turn_cw(ndx, ndy);
@@ -575,14 +595,21 @@ pub fn tick_world(world: &mut World) {
         // so per-bite magnitude is bounded: ant 1–100, brute 10–1000.
         let atk_lvl = world.queens.get(&hit.attacker).map(|q| q.level).unwrap_or(1)
             .clamp(1, c.xp_level_cap) as f64;
-        let amount = c.ant_damage * atk_lvl * hit.dmg_mult as f64;
+        let base = c.ant_damage * atk_lvl * hit.dmg_mult as f64;
         if hit.is_own {
             // A friendly touch heals a hurt queen by the same amount it would deal as damage
             // (brutes heal 10× via dmg_mult). Applied + reported in the batched heal pass below.
-            *heal_map.entry(hit.queen_id).or_insert(0.0) += amount;
+            *heal_map.entry(hit.queen_id).or_insert(0.0) += base;
             world.xp_queue.push(XpGrant { player_id: hit.attacker, amount: heal_xp, reason: "heal", x: 0, y: 0 });
         } else {
-            *damage_map.entry(hit.queen_id).or_insert(0.0) += amount;
+            // Alliance offensive buff: the attacker's tier damage multiplier + the United Front
+            // (Phalanx) per-stack bonus (only once the tier unlocks Phalanx). Heals stay unbuffed.
+            let buffs = crate::config::alliance_buffs(world.alliance_level(hit.attacker));
+            let phalanx = if buffs.phalanx {
+                (world.phalanx_stacks.get(&hit.attacker).copied().unwrap_or(0) as f64 * c.phalanx_per_stack)
+                    .min(c.phalanx_cap)
+            } else { 0.0 };
+            *damage_map.entry(hit.queen_id).or_insert(0.0) += base * (buffs.dmg_mult + phalanx);
             last_attacker_map.insert(hit.queen_id, hit.attacker);
         }
     }
@@ -617,6 +644,9 @@ pub fn tick_world(world: &mut World) {
         if let Some(tx) = dtx {
             let _ = tx.send(json!({"t":"damage-taken","sx":qx,"sy":qy,"amount":dmg}).to_string());
         }
+        // MAYDAY: a member queen under enemy fire that crosses the HP threshold pings the whole
+        // alliance (shared-map marker + events line). Throttled per queen inside the helper.
+        crate::handlers::maybe_mayday(world, queen_id, qx, qy);
     }
 
     // Apply batched heals and notify the queen's owner (queens are keyed by player id, same as
@@ -679,6 +709,7 @@ pub fn tick_world(world: &mut World) {
     // Phase 3: Paint + commit move
     // =========================================================================
     let highway_xp = c.xp_highway_tick;
+    let pa3 = &world.player_alliance;   // ally tiles are friendly: never captured, never erased
     for ant in world.ants.iter_mut() {
         let cur_key = ant.y as u64 * ww_u64 + ant.x as u64;
         if !world.queen_map.contains_key(&cur_key) {
@@ -690,8 +721,9 @@ pub fn tick_world(world: &mut World) {
                             let (bxi, byi) = (ant.x + bdx, ant.y + bdy);
                             if bxi >= ww || byi >= wh { continue; }  // never paint past the world edge
                             let (bx, by) = (bxi as u32, byi as u32);
-                            if world.tiles.get(bx, by) != ant.owner {
-                                world.tiles.set(bx, by, ant.owner);
+                            let t = world.tiles.get(bx, by);
+                            if t != ant.owner && !allied_in(pa3, ant.owner, t) {
+                                world.tiles.set(bx, by, ant.owner);   // leave an ally's tiles untouched
                             }
                         }
                     }
@@ -708,6 +740,9 @@ pub fn tick_world(world: &mut World) {
                     }
                 } else if cur == ant.owner {
                     world.tiles.set(ant.x as u32, ant.y as u32, 0);
+                    ant.highway_ticks = 0;
+                } else if allied_in(pa3, ant.owner, cur) {
+                    // An ally's tile: pass through, leaving their ownership intact (no capture/erase).
                     ant.highway_ticks = 0;
                 } else {
                     world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
@@ -774,7 +809,11 @@ pub fn tick_world(world: &mut World) {
 
         // Only process cells with multiple owners
         let first_owner = world.ants[pairs[cstart].1 as usize].owner;
-        let multi = (cstart + 1..ci).any(|j| world.ants[pairs[j].1 as usize].owner != first_owner);
+        // Allied ants don't clash — only a genuinely hostile owner sharing the cell triggers conversion.
+        let multi = (cstart + 1..ci).any(|j| {
+            let o = world.ants[pairs[j].1 as usize].owner;
+            o != first_owner && !world.same_alliance(first_owner, o)
+        });
         if !multi { continue; }
 
         let cell_y = (k / ww_u64) as i32;
@@ -798,7 +837,9 @@ pub fn tick_world(world: &mut World) {
             let mut converted = false;
             for &(_, idx) in &pairs[cstart..ci] {
                 let idx = idx as usize;
-                if world.ants[idx].owner != dom {
+                let o = world.ants[idx].owner;
+                // Never convert an ally's ant (or one already owned by the dominant owner).
+                if o != dom && !world.same_alliance(o, dom) {
                     world.ants[idx].owner = dom;
                     converted = true;
                 }
@@ -836,7 +877,7 @@ pub fn tick_world(world: &mut World) {
         for (i, a) in world.ants.iter().enumerate() {
             if a.kind == 1 { continue; }
             if let Some(&bowner) = brute_cells.get(&(a.y as u64 * ww_u64 + a.x as u64)) {
-                if bowner != a.owner {
+                if bowner != a.owner && !world.same_alliance(bowner, a.owner) {
                     *returns.entry(a.owner).or_insert(0) += 1;
                     capture[i] = true;
                 }
@@ -980,6 +1021,9 @@ pub fn tick_world(world: &mut World) {
     if world.tick.is_multiple_of(DISCOVERY_INTERVAL) { sample_visited(world); }
     if world.tick.is_multiple_of(HOLDER_INTERVAL) {
         recompute_holders(world);
+        // United Front: refresh Phalanx stacks + alliance HP-buff headroom on the same cadence
+        // (bounded — ≤10 members per alliance, few alliances).
+        crate::handlers::recompute_alliance_auras(world);
         let holders = crate::network::build_region_holders(world);
         world.broadcast_ctl(
             std::sync::Arc::from(crate::network::ctl_frame(crate::network::CTL_REGION_HOLDERS, &holders)),
@@ -1037,6 +1081,8 @@ fn resolve_queen_collisions(world: &mut World) {
                     let dx = (qa.1 - qb.1) as i64;
                     let dy = (qa.2 - qb.2) as i64;
                     if ((dx * dx + dy * dy) as f64).sqrt() < min_dist {
+                        // Allies don't crush each other on contact (they may cluster — see Phalanx).
+                        if world.same_alliance(qa.0, qb.0) { continue; }
                         let (loser, winner) = if qa.3 < qb.3 || (qa.3 == qb.3 && qa.4 < qb.4) {
                             (qa.0, qb.0)
                         } else { (qb.0, qa.0) };
@@ -1188,6 +1234,37 @@ mod tests {
         w.players.get_mut(&pid).unwrap().npc = true;
         assert_eq!(accrue_metro_nectar(&mut w, 20_002 * DAY), 0);
         assert_eq!(w.players[&pid].nectar, 6);
+    }
+
+    /// Regression for the WORKERS lifespan-bar bug: worker expiry must read the LIVE global
+    /// `cfg().lifespan` (the admin "WORKER RETURN" slider), never the value snapshotted into
+    /// `a.lifespan` at spawn. A worker carrying a *stale tiny* snapshot while the live config is the
+    /// large default must survive (old `age <= a.lifespan` check wrongly expired it); a worker aged
+    /// past the live value must return to its owner's pool. The same global value feeds the
+    /// `remaining = cfg.lifespan - age` the client divides by `me.cfg.LIFESPAN`, so the bar drains in
+    /// lock-step with this expiry. Uses the default config only — no global mutation → no test race.
+    #[test]
+    fn worker_expiry_follows_live_lifespan_not_spawn_snapshot() {
+        crate::regions::init();
+        let live = crate::config::cfg().lifespan;
+        assert!(live > 100, "test assumes the default lifespan is large");
+        let mut w = World::new();
+        let pid = 42u32;
+        w.players.insert(pid, Player { id: pid, username: "BEE".into(), ants_avail: 0, ..Default::default() });
+        // Spawn-time snapshot deliberately tiny (as if the slider was far lower when deployed); the
+        // current age sits past that stale snapshot but well under the live lifespan.
+        let mut ant = Ant::new(1, pid, 1000, 1000, 1, 0, 10);
+        ant.age = 50;            // 50 > a.lifespan(10) but 50 ≪ live
+        w.ants.push(ant);
+        tick_world(&mut w);
+        assert_eq!(w.ants.len(), 1, "worker must NOT expire against its stale spawn snapshot");
+        assert_eq!(w.players[&pid].ants_avail, 0, "no premature return to the pool");
+
+        // Age it past the LIVE lifespan → next tick it must return to the owner's pool exactly once.
+        w.ants[0].age = live;    // Phase-3 bumps to live+1 > live → expire
+        tick_world(&mut w);
+        assert_eq!(w.ants.len(), 0, "worker must expire at the live configured age");
+        assert_eq!(w.players[&pid].ants_avail, 1, "expired worker returns to the ready pool");
     }
 
     /// Boundary regression: a brute's 2×2 footprint must never paint (or probe a queen cell)

@@ -789,9 +789,11 @@ pub fn handle_message(
                     .unwrap_or(false);
                 if active { let _ = tx.send(err("Shield already active")); return; }
                 charge(world, pid, price, unlimited_nectar);
+                // Alliance shield buff: tiers extend the shield's duration (× shield_mult).
+                let dur = (SHIELD_MS as f64 * crate::config::alliance_buffs(world.alliance_level(pid)).shield_mult) as u64;
                 if let Some(q) = world.queens.get_mut(&pid) {
                     q.shield = q.max_hp;
-                    q.shield_expiry = Some(now + SHIELD_MS);
+                    q.shield_expiry = Some(now + dur);
                 }
                 let _ = tx.send(json!({"t":"shop-ok","item":"shield"}).to_string());
             }
@@ -799,6 +801,19 @@ pub fn handle_message(
         }
         return;
     }
+
+    // ---- Alliances (open to everyone for testing; economy gated by cfg.alliance_econ_enabled) ----
+    if t == "alliance-get"            { send_alliance_self(world, pid, tx);
+                                        let _ = tx.send(crate::network::build_factions(world)); return; }
+    if t == "alliance-create"         { alliance_create(world, pid, &msg, tx);          return; }
+    if t == "alliance-request"        { alliance_request(world, pid, &msg, tx);         return; }
+    if t == "alliance-cancel-request" { alliance_cancel_request(world, pid, &msg, tx);  return; }
+    if t == "alliance-accept"         { alliance_decide(world, pid, &msg, tx, true);    return; }
+    if t == "alliance-reject"         { alliance_decide(world, pid, &msg, tx, false);   return; }
+    if t == "alliance-invite"         { alliance_invite(world, pid, &msg, tx);          return; }
+    if t == "alliance-invite-accept"  { alliance_invite_accept(world, pid, &msg, tx);   return; }
+    if t == "alliance-invite-decline" { alliance_invite_decline(world, pid, &msg, tx);  return; }
+    if t == "alliance-leave"          { alliance_leave(world, pid, tx);                 return; }
 
     // ---- Admin give nectar ----
     if t == "admin-give-nectar" {
@@ -858,6 +873,389 @@ fn claim_daily(world: &mut World, pid: u32, now: u64) -> Result<i32, &'static st
     Ok(daily)
 }
 
+// ======================================================================================
+// Alliances — server-authoritative create / join / invite / leave + buffs, Mayday, progression.
+// Membership lives in users.json (UserRecord.alliance_id + Auth.alliances), so every mutation ends
+// with `rebuild_player_alliance` (refresh the hot-path index) + `auth.save` (persist). The economy is
+// gated by `cfg.alliance_econ_enabled` — OFF for testing, so create/join are free.
+// ======================================================================================
+
+/// True if `pid` can pay `price` nectar (always true when the alliance economy is off / unlimited).
+fn can_afford(world: &World, pid: u32, price: u64) -> bool {
+    if price == 0 || !cfg().alliance_econ_enabled { return true; }
+    world.players.get(&pid).map(|p| p.unlimited_nectar || p.nectar >= price).unwrap_or(false)
+}
+
+/// Deduct `price` from `pid` (no-op when the economy is off / unlimited / price 0). Returns false if
+/// unaffordable (callers pre-check via `can_afford`, but this keeps the arithmetic safe).
+fn alliance_charge(world: &mut World, pid: u32, price: u64) -> bool {
+    if price == 0 || !cfg().alliance_econ_enabled { return true; }
+    let Some(p) = world.players.get_mut(&pid) else { return false };
+    if p.unlimited_nectar { return true; }
+    if p.nectar < price { return false; }
+    p.nectar = p.nectar.saturating_sub(price);
+    true
+}
+
+/// Refund `price` to `pid` (mirror of `alliance_charge`; the reject/decline path).
+fn alliance_refund(world: &mut World, pid: u32, price: u64) {
+    if price == 0 || !cfg().alliance_econ_enabled { return; }
+    if let Some(p) = world.players.get_mut(&pid) {
+        if !p.unlimited_nectar { p.nectar = p.nectar.saturating_add(price); }
+    }
+}
+
+/// Resolve a target account id from `playerId` (preferred) or a case-insensitive `name`/handle.
+fn resolve_target(world: &World, msg: &Value) -> Option<u32> {
+    if let Some(id) = msg.get("playerId").and_then(Value::as_u64) { return Some(id as u32); }
+    let name = msg.get("name").and_then(Value::as_str)?.trim().to_string();
+    if name.is_empty() { return None; }
+    let nl = name.to_lowercase();
+    world.auth.users.values()
+        .find(|u| u.username.to_lowercase() == nl || u.handle.to_lowercase() == nl)
+        .map(|u| u.id)
+}
+
+/// Set (or clear) a player's persisted `alliance_id` by id → username lookup (works offline too).
+fn set_member_alliance(world: &mut World, pid: u32, aid: Option<u32>) {
+    // Prefer the live Player username (the uppercase auth key); fall back to scanning users by id.
+    let uname = world.players.get(&pid).map(|p| p.username.clone())
+        .or_else(|| world.auth.users.values().find(|u| u.id == pid).map(|u| u.username.clone()));
+    if let Some(u) = uname.and_then(|n| world.auth.users.get_mut(&n)) { u.alliance_id = aid; }
+}
+
+/// Send `pid` their own alliance state (or `{alliance:null}` when unaffiliated).
+fn send_alliance_self(world: &World, pid: u32, tx: &BoundedTx<String>) {
+    let s = match world.alliance_of(pid) {
+        Some(aid) => crate::network::build_alliance_state(world, aid),
+        None      => json!({"t":"alliance-state","alliance":null}).to_string(),
+    };
+    let _ = tx.send(s);
+}
+
+/// Push the full alliance state to every member (after any roster/level change).
+pub fn broadcast_alliance_state(world: &mut World, aid: u32) {
+    let state = crate::network::build_alliance_state(world, aid);
+    let members = world.auth.alliances.get(&aid).map(|a| a.members.clone()).unwrap_or_default();
+    for m in members { world.send_to(m, state.clone()); }
+}
+
+/// Broadcast the faction leaderboard / recolor roster to everyone (small, infrequent).
+fn push_factions(world: &World) { world.broadcast(&crate::network::build_factions(world)); }
+
+fn alliance_create(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<String>) {
+    use crate::config::{PRICE_ALLIANCE_CREATE, valid_hex_color};
+    if world.alliance_of(pid).is_some() { let _ = tx.send(err("You're already in an alliance")); return; }
+    if world.players.get(&pid).map(|p| p.npc || p.guest).unwrap_or(true) {
+        let _ = tx.send(err("An account is required")); return;
+    }
+    let Some(name) = crate::alliance::sanitize_name(msg["name"].as_str().unwrap_or("")) else {
+        let _ = tx.send(err("Pick an alliance name")); return;
+    };
+    let icon = msg["icon"].as_str().unwrap_or("").to_string();
+    if !crate::alliance::valid_icon(&icon) { let _ = tx.send(err("Pick a valid icon")); return; }
+    let color = msg["color"].as_str().unwrap_or("").to_string();
+    if !valid_hex_color(&color) { let _ = tx.send(err("Pick a valid colour")); return; }
+    if !can_afford(world, pid, PRICE_ALLIANCE_CREATE) { let _ = tx.send(err("Not enough nectar")); return; }
+    alliance_charge(world, pid, PRICE_ALLIANCE_CREATE);
+
+    world.auth.next_alliance_id += 1;
+    let aid = world.auth.next_alliance_id;
+    let al = crate::alliance::Alliance {
+        id: aid, name: name.clone(), icon, color, leader_id: pid,
+        members: vec![pid], requests: Vec::new(), invites: Vec::new(),
+        xp: 0.0, created_at: current_ms(),
+    };
+    world.auth.alliances.insert(aid, al);
+    set_member_alliance(world, pid, Some(aid));
+    world.rebuild_player_alliance();
+    world.auth.save();
+    recompute_alliance_auras(world);
+    world.send_to(pid, json!({"t":"event","msg":format!("ALLIANCE \"{name}\" FOUNDED")}).to_string());
+    send_alliance_self(world, pid, tx);
+    broadcast_alliance_state(world, aid);
+    push_factions(world);
+}
+
+fn alliance_request(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<String>) {
+    use crate::config::PRICE_ALLIANCE_JOIN;
+    if world.alliance_of(pid).is_some() { let _ = tx.send(err("You're already in an alliance")); return; }
+    if world.players.get(&pid).map(|p| p.npc || p.guest).unwrap_or(true) {
+        let _ = tx.send(err("An account is required")); return;
+    }
+    let aid = msg["allianceId"].as_u64().unwrap_or(0) as u32;
+    let (full, dup, leader, name) = match world.auth.alliances.get(&aid) {
+        Some(al) => (al.is_full(), al.requests.contains(&pid), al.leader_id, al.name.clone()),
+        None => { let _ = tx.send(err("No such alliance")); return; }
+    };
+    if full { let _ = tx.send(err("That alliance is full")); return; }
+    if dup  { let _ = tx.send(err("Request already pending")); return; }
+    if !can_afford(world, pid, PRICE_ALLIANCE_JOIN) { let _ = tx.send(err("Not enough nectar")); return; }
+    alliance_charge(world, pid, PRICE_ALLIANCE_JOIN);
+    if let Some(al) = world.auth.alliances.get_mut(&aid) { al.requests.push(pid); }
+    world.auth.save();
+    let applicant = world.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
+    world.send_to(pid, json!({"t":"event","msg":format!("Requested to join \"{name}\"")}).to_string());
+    world.send_to(leader, json!({"t":"event","msg":format!("{applicant} wants to join your alliance")}).to_string());
+    send_alliance_self(world, pid, tx);
+    broadcast_alliance_state(world, aid);
+}
+
+fn alliance_cancel_request(world: &mut World, pid: u32, _msg: &Value, tx: &BoundedTx<String>) {
+    use crate::config::PRICE_ALLIANCE_JOIN;
+    // Find any alliance that lists pid as an applicant; remove + refund.
+    let aid = world.auth.alliances.iter()
+        .find(|(_, al)| al.requests.contains(&pid)).map(|(&aid, _)| aid);
+    let Some(aid) = aid else { let _ = tx.send(err("No pending request")); return; };
+    if let Some(al) = world.auth.alliances.get_mut(&aid) { al.requests.retain(|&r| r != pid); }
+    alliance_refund(world, pid, PRICE_ALLIANCE_JOIN);
+    world.auth.save();
+    world.send_to(pid, json!({"t":"event","msg":"Request cancelled"}).to_string());
+    send_alliance_self(world, pid, tx);
+    broadcast_alliance_state(world, aid);
+}
+
+fn alliance_decide(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<String>, accept: bool) {
+    use crate::config::PRICE_ALLIANCE_JOIN;
+    let applicant = msg["playerId"].as_u64().unwrap_or(0) as u32;
+    let Some(aid) = world.alliance_of(pid) else { let _ = tx.send(err("You're not in an alliance")); return; };
+    let (is_leader, has_req, full, name) = match world.auth.alliances.get(&aid) {
+        Some(al) => (al.leader_id == pid, al.requests.contains(&applicant), al.is_full(), al.name.clone()),
+        None => { let _ = tx.send(err("No such alliance")); return; }
+    };
+    if !is_leader { let _ = tx.send(err("Only the leader can do that")); return; }
+    if !has_req   { let _ = tx.send(err("No such request")); return; }
+    if accept {
+        // The applicant may have joined elsewhere meanwhile, or the alliance filled up.
+        if world.alliance_of(applicant).is_some() || full {
+            if let Some(al) = world.auth.alliances.get_mut(&aid) { al.requests.retain(|&r| r != applicant); }
+            alliance_refund(world, applicant, PRICE_ALLIANCE_JOIN);
+            world.auth.save();
+            let _ = tx.send(err(if full { "Alliance is full" } else { "Applicant is unavailable" }));
+            broadcast_alliance_state(world, aid);
+            return;
+        }
+        if let Some(al) = world.auth.alliances.get_mut(&aid) {
+            al.requests.retain(|&r| r != applicant);
+            al.members.push(applicant);
+        }
+        set_member_alliance(world, applicant, Some(aid));
+        world.rebuild_player_alliance();
+        world.auth.save();
+        recompute_alliance_auras(world);
+        world.send_to(applicant, json!({"t":"event","msg":format!("You joined \"{name}\"!")}).to_string());
+        broadcast_alliance_state(world, aid);
+        push_factions(world);
+    } else {
+        if let Some(al) = world.auth.alliances.get_mut(&aid) { al.requests.retain(|&r| r != applicant); }
+        alliance_refund(world, applicant, PRICE_ALLIANCE_JOIN);
+        world.auth.save();
+        world.send_to(applicant, json!({"t":"event","msg":format!("Your request to \"{name}\" was declined")}).to_string());
+        broadcast_alliance_state(world, aid);
+    }
+}
+
+fn alliance_invite(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<String>) {
+    use crate::config::PRICE_ALLIANCE_JOIN;
+    let Some(aid) = world.alliance_of(pid) else { let _ = tx.send(err("You're not in an alliance")); return; };
+    let Some(target) = resolve_target(world, msg) else { let _ = tx.send(err("No such player")); return; };
+    if target == pid { let _ = tx.send(err("You can't invite yourself")); return; }
+    let (is_leader, full, dup, name) = match world.auth.alliances.get(&aid) {
+        Some(al) => (al.leader_id == pid, al.is_full(), al.invites.contains(&target), al.name.clone()),
+        None => return,
+    };
+    if !is_leader { let _ = tx.send(err("Only the leader can invite")); return; }
+    if full       { let _ = tx.send(err("Your alliance is full")); return; }
+    if dup        { let _ = tx.send(err("Already invited")); return; }
+    if world.alliance_of(target).is_some() { let _ = tx.send(err("They're already in an alliance")); return; }
+    if world.auth.users.values().all(|u| u.id != target) { let _ = tx.send(err("No such account")); return; }
+    if !can_afford(world, pid, PRICE_ALLIANCE_JOIN) { let _ = tx.send(err("Not enough nectar")); return; }
+    alliance_charge(world, pid, PRICE_ALLIANCE_JOIN);   // the inviter (leader) pays
+    if let Some(al) = world.auth.alliances.get_mut(&aid) { al.invites.push(target); }
+    world.auth.save();
+    world.send_to(target, json!({"t":"alliance-invite","allianceId":aid,"name":name}).to_string());
+    world.send_to(target, json!({"t":"event","msg":format!("You've been invited to \"{name}\"")}).to_string());
+    world.send_to(pid, json!({"t":"event","msg":"Invite sent"}).to_string());
+    broadcast_alliance_state(world, aid);
+}
+
+fn alliance_invite_accept(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<String>) {
+    let aid = msg["allianceId"].as_u64().unwrap_or(0) as u32;
+    if world.alliance_of(pid).is_some() { let _ = tx.send(err("You're already in an alliance")); return; }
+    let (invited, full, name) = match world.auth.alliances.get(&aid) {
+        Some(al) => (al.invites.contains(&pid), al.is_full(), al.name.clone()),
+        None => { let _ = tx.send(err("That alliance no longer exists")); return; }
+    };
+    if !invited { let _ = tx.send(err("No invite from that alliance")); return; }
+    if full     { let _ = tx.send(err("That alliance is full")); return; }
+    if let Some(al) = world.auth.alliances.get_mut(&aid) {
+        al.invites.retain(|&i| i != pid);
+        al.members.push(pid);
+    }
+    set_member_alliance(world, pid, Some(aid));
+    world.rebuild_player_alliance();
+    world.auth.save();
+    recompute_alliance_auras(world);
+    world.send_to(pid, json!({"t":"event","msg":format!("You joined \"{name}\"!")}).to_string());
+    send_alliance_self(world, pid, tx);
+    broadcast_alliance_state(world, aid);
+    push_factions(world);
+}
+
+fn alliance_invite_decline(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<String>) {
+    use crate::config::PRICE_ALLIANCE_JOIN;
+    let aid = msg["allianceId"].as_u64().unwrap_or(0) as u32;
+    let leader = match world.auth.alliances.get_mut(&aid) {
+        Some(al) => { al.invites.retain(|&i| i != pid); al.leader_id }
+        None => { let _ = tx.send(err("That alliance no longer exists")); return; }
+    };
+    alliance_refund(world, leader, PRICE_ALLIANCE_JOIN);   // the inviter's fee comes back
+    world.auth.save();
+    world.send_to(pid, json!({"t":"event","msg":"Invite declined"}).to_string());
+    send_alliance_self(world, pid, tx);
+    broadcast_alliance_state(world, aid);
+}
+
+fn alliance_leave(world: &mut World, pid: u32, tx: &BoundedTx<String>) {
+    let Some(aid) = world.alliance_of(pid) else { let _ = tx.send(err("You're not in an alliance")); return; };
+    let (disbanded, name) = {
+        let Some(al) = world.auth.alliances.get_mut(&aid) else { return; };
+        al.members.retain(|&m| m != pid);
+        al.requests.retain(|&m| m != pid);
+        al.invites.retain(|&m| m != pid);
+        let name = al.name.clone();
+        if al.members.is_empty() { (true, name) }
+        else { if al.leader_id == pid { al.leader_id = al.members[0]; } (false, name) }
+    };
+    set_member_alliance(world, pid, None);
+    if disbanded { world.auth.alliances.remove(&aid); }
+    world.rebuild_player_alliance();
+    world.auth.save();
+    recompute_alliance_auras(world);   // the leaver loses buffs; survivors may lose a Phalanx stack
+    world.send_to(pid, json!({"t":"event","msg":format!("You left \"{name}\"")}).to_string());
+    send_alliance_self(world, pid, tx);   // pushes {alliance:null} to the leaver
+    if !disbanded { broadcast_alliance_state(world, aid); }
+    push_factions(world);
+}
+
+/// Add combined-contribution XP to `pid`'s alliance. On a (rare) tier change it re-applies member
+/// buffs, notifies the roster, refreshes the faction board, and persists. No-op for the unaffiliated.
+/// XP between tier-ups is intentionally NOT flushed to disk per call (kills can be frequent) — it
+/// rides the next membership change / tier-up save; losing a little progress on a crash is acceptable.
+pub fn award_alliance_xp(world: &mut World, pid: u32, amount: f64) {
+    if amount <= 0.0 { return; }
+    let Some(aid) = world.alliance_of(pid) else { return; };
+    let (old_lvl, new_lvl, name) = {
+        let Some(al) = world.auth.alliances.get_mut(&aid) else { return; };
+        let old = al.level();
+        al.xp += amount;
+        (old, al.level(), al.name.clone())
+    };
+    if new_lvl != old_lvl {
+        world.auth.save();
+        recompute_alliance_auras(world);
+        let msg = json!({"t":"event","msg":format!("ALLIANCE \"{name}\" REACHED TIER {new_lvl}!")}).to_string();
+        let members = world.auth.alliances.get(&aid).map(|a| a.members.clone()).unwrap_or_default();
+        for m in members { world.send_to(m, msg.clone()); }
+        broadcast_alliance_state(world, aid);
+        push_factions(world);
+    }
+}
+
+/// Daily combined-contribution accrual: each alliance gains XP for the tiles its members collectively
+/// hold (`tiles / 100k × alliance_xp_per_100k_day`). Called once per UTC day from the sim loop.
+pub fn accrue_alliance_territory(world: &mut World) {
+    let rate = cfg().alliance_xp_per_100k_day;
+    if rate <= 0.0 { return; }
+    let aids: Vec<u32> = world.auth.alliances.keys().copied().collect();
+    for aid in aids {
+        let members = world.auth.alliances.get(&aid).map(|a| a.members.clone()).unwrap_or_default();
+        let Some(&anchor) = members.first() else { continue };
+        let tiles: u64 = members.iter()
+            .map(|m| world.tiles.counts.get(m).copied().unwrap_or(0).max(0) as u64)
+            .sum();
+        let gain = (tiles as f64 / 100_000.0) * rate;
+        if gain > 0.0 { award_alliance_xp(world, anchor, gain); }
+    }
+    world.auth.save();   // persist the day's XP (award_alliance_xp only saves on a tier change)
+}
+
+/// United Front: recompute every member queen's Phalanx stacks (allied queens within `phalanx_r`)
+/// and buffed `max_hp` (tier hp_mult + Phalanx hp bonus), and reset any non-member queen back to its
+/// level base. Runs on the holders cadence + immediately after a membership change. Bounded work
+/// (≤ member cap per alliance; one O(queens) reset sweep).
+pub fn recompute_alliance_auras(world: &mut World) {
+    let c = cfg().clone();
+    let pr2 = (c.phalanx_r * c.phalanx_r) as i64;
+    let per = c.phalanx_per_stack;
+    let cap = c.phalanx_cap;
+    world.phalanx_stacks.clear();
+
+    let alliances: Vec<(u16, Vec<u32>)> = world.auth.alliances.values()
+        .map(|al| (al.level(), al.members.clone())).collect();
+
+    for (level, members) in &alliances {
+        let buffs = crate::config::alliance_buffs(*level);
+        // (id, centre x, centre y) of each live member queen.
+        let qpos: Vec<(u32, i32, i32)> = members.iter().filter_map(|&m| {
+            world.queens.get(&m).filter(|q| !q.dead)
+                .map(|q| (m, q.x + q.size as i32 / 2, q.y + q.size as i32 / 2))
+        }).collect();
+        if buffs.phalanx {
+            for &(id, x, y) in &qpos {
+                let mut stacks = 0u8;
+                for &(oid, ox, oy) in &qpos {
+                    if oid == id { continue; }
+                    let dx = (x - ox) as i64; let dy = (y - oy) as i64;
+                    if dx * dx + dy * dy <= pr2 { stacks = stacks.saturating_add(1); }
+                }
+                if stacks > 0 { world.phalanx_stacks.insert(id, stacks); }
+            }
+        }
+        for &(id, _, _) in &qpos {
+            let stacks = world.phalanx_stacks.get(&id).copied().unwrap_or(0) as f64;
+            let phalanx_hp = if buffs.phalanx { (stacks * per).min(cap) } else { 0.0 };
+            let mult = buffs.hp_mult + phalanx_hp;
+            if let Some(q) = world.queens.get_mut(&id) {
+                let target = (((crate::config::max_hp_for_level(q.level, &c) as f64) * mult).round() as i32).max(1);
+                if q.max_hp != target { q.max_hp = target; if q.hp > q.max_hp { q.hp = q.max_hp; } }
+            }
+        }
+    }
+
+    // Reset queens that are NOT in any alliance back to their level base (they may carry a stale buff
+    // from before they left).
+    let mut buffed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (_, members) in &alliances { for &m in members { buffed.insert(m); } }
+    for (&id, q) in world.queens.iter_mut() {
+        if buffed.contains(&id) || q.dead { continue; }
+        let base = crate::config::max_hp_for_level(q.level, &c);
+        if q.max_hp != base { q.max_hp = base; if q.hp > q.max_hp { q.hp = q.max_hp; } }
+    }
+}
+
+/// MAYDAY: when a member queen under enemy fire drops to/below `cfg.mayday_hp_pct`, ping the whole
+/// alliance (shared-map marker + events line). Throttled to one alert per queen per 30 s. No-op for
+/// unaffiliated queens or when the feature is disabled (pct == 0).
+pub fn maybe_mayday(world: &mut World, queen_id: u32, qx: i32, qy: i32) {
+    let pct = cfg().mayday_hp_pct;
+    if pct <= 0.0 { return; }
+    let Some(aid) = world.alliance_of(queen_id) else { return; };
+    let (hp, maxhp) = match world.queens.get(&queen_id) {
+        Some(q) if !q.dead => (q.hp as f64, q.max_hp.max(1) as f64),
+        _ => return,
+    };
+    if hp / maxhp > pct { return; }
+    let now = current_ms();
+    if now.saturating_sub(world.mayday_last.get(&queen_id).copied().unwrap_or(0)) < 30_000 { return; }
+    world.mayday_last.insert(queen_id, now);
+    let name = world.players.get(&queen_id).map(|p| p.username.clone()).unwrap_or_default();
+    let hp_pct = ((hp / maxhp) * 100.0).round() as i32;
+    let msg = json!({"t":"mayday","queenId":queen_id,"x":qx,"y":qy,"name":name,"allianceId":aid,"hpPct":hp_pct}).to_string();
+    let members = world.auth.alliances.get(&aid).map(|a| a.members.clone()).unwrap_or_default();
+    for m in members { world.send_to(m, msg.clone()); }
+}
+
 /// Validate a worker placement at (`x`,`y`) heading (`vdx`,`vdy`) for `pid`, given their live
 /// queen's footprint. Returns the resolved cardinal direction, or a client-facing error string.
 /// Shared verbatim by place-ant and the shop brute (identical legality rules).
@@ -882,9 +1280,13 @@ fn validate_worker_placement(
     let dyq = (y - (qy + qs as i32 / 2)) as i64;
     let in_bubble = ((dxq * dxq + dyq * dyq) as f64).sqrt() <= bubble_r;
     let tile = world.tiles.get(x as u32, y as u32);
+    // Allied tiles count as your own ground (cross-placement): an ally's territory is placeable
+    // anywhere, and an ally's tile inside your bubble is fine too.
     if in_bubble {
-        if tile != 0 && tile != pid { return Err("Enemy tile inside bubble"); }
-    } else if tile != pid {
+        if tile != 0 && !world.is_friendly(pid, tile) {
+            return Err("Enemy tile inside bubble");
+        }
+    } else if !world.is_friendly(pid, tile) {
         return Err("Place inside your bubble or on your territory");
     }
     const DIRS: [(i8, i8); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];

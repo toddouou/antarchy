@@ -1,3 +1,4 @@
+mod alliance;
 mod api;
 mod auth;
 mod config;
@@ -79,6 +80,10 @@ async fn main() {
         let n = persist::replay_wal(&mut w, &persist::wal_path(&save_file));
         if n > 0 { println!("[persist] WAL replay: {n} chunk deltas applied"); }
     }
+    // Build the runtime player→alliance index from the persisted roster (users.json) now that both
+    // accounts and the world are loaded. Drops any membership pointing at an account that no longer
+    // exists (e.g. a wipe-orphaned id), so the hot-path index can't reference a ghost.
+    w.rebuild_player_alliance();
     let world: WorldState = Arc::new(RwLock::new(w));
 
     // Scope the config read-guard so it is provably dropped before the `.await` below

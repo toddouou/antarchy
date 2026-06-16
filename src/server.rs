@@ -517,6 +517,9 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             if today != last_accrual_day && !w.metro_holders.is_empty() {
                 last_accrual_day = today;
                 if crate::simulation::accrue_metro_nectar(&mut w, now) > 0 { w.auth.save(); }
+                // Alliance combined-contribution: pay each alliance XP for its members' held tiles,
+                // once per UTC day (alongside the metro-nectar accrual).
+                crate::handlers::accrue_alliance_territory(&mut w);
             }
 
             // beta-v2: GC expired pending registrations + reset tokens (cheap; throttled ~40 s).
@@ -694,6 +697,14 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                             }
                         }
                     }
+
+                    // Faction board (alliances): refresh on the leaderboard heartbeat so live tile/
+                    // score numbers tick and the banner-recolour map stays current for everyone.
+                    // Membership/tier changes push it instantly from handlers; this is steady-state.
+                    if !w.auth.alliances.is_empty() {
+                        let f = crate::network::build_factions(&w);
+                        w.broadcast(&f);
+                    }
                 }
 
                 // Server stats (~1 Hz) — header bar + admin cards for every client. Small (~150 B);
@@ -740,11 +751,14 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     // `me` reads its own slice instead of rescanning the whole ant vec — that was
                     // O(players × total_ants) under this read lock at 1 Hz.
                     let ants_by_owner: Option<FxHashMap<u32, Vec<serde_json::Value>>> = if send_me {
+                        // remaining = LIVE global lifespan − age (not the spawn-time `a.lifespan`), so the
+                        // WORKERS bar drains at the current admin "WORKER RETURN" rate and matches Phase-6 expiry.
+                        let life = crate::config::cfg().lifespan;
                         let mut m: FxHashMap<u32, Vec<serde_json::Value>> = FxHashMap::default();
                         for a in &w.ants {
                             let e = m.entry(a.owner).or_default();
                             if e.len() < 120 {
-                                e.push(serde_json::json!([a.id, a.lifespan.saturating_sub(a.age), a.kind]));
+                                e.push(serde_json::json!([a.id, life.saturating_sub(a.age), a.kind]));
                             }
                         }
                         Some(m)

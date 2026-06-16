@@ -8,6 +8,7 @@ use argon2::password_hash::SaltString;
 use rand::RngCore;
 use subtle::ConstantTimeEq;
 
+use crate::alliance::Alliance;
 use crate::config::{cfg, argon2_lanes, argon2_mem_kib, argon2_time, ADMIN_USERNAME, ADMIN_PASSWORD,
                     TEST_USERNAME, TEST_PASSWORD, HUES};
 
@@ -55,6 +56,11 @@ pub struct UserRecord {
     /// home as `last_claim_day` — NOT the bincode snapshot.
     #[serde(default)]
     pub last_accrual_day: u64,
+    /// Alliance this account belongs to (id into `Auth.alliances`), or `None`. Wipe-proof home like
+    /// `gems`/`peak_level` — survives a world (season) wipe; NOT the bincode snapshot. The runtime
+    /// `World.player_alliance` index is rebuilt from the roster, but this is the durable source.
+    #[serde(default)]
+    pub alliance_id:   Option<u32>,
 }
 
 impl UserRecord {
@@ -68,6 +74,11 @@ impl UserRecord {
 pub struct Auth {
     pub users:  HashMap<String, UserRecord>,  // keyed by UPPERCASE username
     pub banned: HashSet<String>,
+    /// Alliances, keyed by alliance id. Persisted in users.json (wipe-proof). The `World` mirrors a
+    /// player→alliance index from this for the hot path; this map is the durable source of truth.
+    pub alliances: HashMap<u32, Alliance>,
+    /// Monotonic alliance-id allocator. 0 → the first `create_alliance` mints id 1.
+    pub next_alliance_id: u32,
 }
 
 /// On-disk form of `Auth` (users.json). Carries both accounts and the ban list so a restart
@@ -77,6 +88,10 @@ struct AuthSave {
     users:  HashMap<String, UserRecord>,
     #[serde(default)]
     banned: HashSet<String>,
+    #[serde(default)]
+    alliances: HashMap<u32, Alliance>,
+    #[serde(default)]
+    next_alliance_id: u32,
 }
 
 /// LEGACY password hash — SHA-256 with a fixed string salt. **Do not use for new hashes.** Kept only
@@ -180,6 +195,8 @@ impl Auth {
     pub fn reset_to_admin_only(&mut self) {
         self.users.clear();
         self.banned.clear();
+        self.alliances.clear();
+        self.next_alliance_id = 0;
         self.users.insert(ADMIN_USERNAME.to_string(), Self::admin_record());
         self.users.insert(TEST_USERNAME.to_string(), Self::test_record());
     }
@@ -189,7 +206,12 @@ impl Auth {
             let c = cfg();
             c.save_file.replace("world.snapshot", "users.json")
         };
-        let data = AuthSave { users: self.users.clone(), banned: self.banned.clone() };
+        let data = AuthSave {
+            users:  self.users.clone(),
+            banned: self.banned.clone(),
+            alliances: self.alliances.clone(),
+            next_alliance_id: self.next_alliance_id,
+        };
         let json = match serde_json::to_string_pretty(&data) {
             Ok(j)  => j,
             Err(e) => { eprintln!("[auth] serialize users.json failed: {e}"); return; }
@@ -213,6 +235,8 @@ impl Auth {
             if let Ok(saved) = serde_json::from_str::<AuthSave>(&data) {
                 auth.users  = saved.users;
                 auth.banned = saved.banned;
+                auth.alliances = saved.alliances;
+                auth.next_alliance_id = saved.next_alliance_id;
                 auth.users.entry(ADMIN_USERNAME.to_string())
                     .or_insert_with(Self::admin_record);
                 auth.users.entry(TEST_USERNAME.to_string())

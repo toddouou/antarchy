@@ -22,7 +22,7 @@ pub const MAX_PAD: i32 = 224;
 #[allow(clippy::too_many_arguments)]
 pub fn compute_fog_field_slice(
     owners: &[u32], pw: usize, ph: usize, pad: usize, w: usize, h: usize, owner_id: u32,
-    clear_r: f32, grad_r: f32,
+    allies: &[u32], clear_r: f32, grad_r: f32,
 ) -> Vec<u8> {
     let n = pw * ph;
     // Guard against a degenerate band (grad ≤ clear); always keep at least a 1-cell feather.
@@ -30,9 +30,11 @@ pub fn compute_fog_field_slice(
     let big: f32 = grad_r + 5.0;
     let mut dist = vec![big; n];
 
-    // Seed: own tiles → distance 0
+    // Seed: own tiles → distance 0. SHARED FOG — an alliance member's tiles seed the transform too,
+    // so the whole alliance reveals one combined field (`allies` is bounded to ≤ the member cap).
     for i in 0..n {
-        if owners[i] == owner_id { dist[i] = 0.0; }
+        let o = owners[i];
+        if o == owner_id || (o != 0 && allies.contains(&o)) { dist[i] = 0.0; }
     }
 
     const D1: f32 = 1.0;
@@ -97,7 +99,7 @@ mod tests {
     fn field(dim: usize, owner: u32, clear_r: f32, grad_r: f32) -> Vec<u8> {
         let mut owners = vec![0u32; dim * dim];
         owners[(dim / 2) * dim + dim / 2] = owner;
-        compute_fog_field_slice(&owners, dim, dim, 0, dim, dim, owner, clear_r, grad_r)
+        compute_fog_field_slice(&owners, dim, dim, 0, dim, dim, owner, &[], clear_r, grad_r)
     }
 
     #[test]

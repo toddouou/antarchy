@@ -33,6 +33,20 @@ pub const DEFENDER_MS: u64 = 3600 * 1000;        // 1h defender decay
 pub const DEFENDER_RANGE: i32 = 10;   // enemy worker proximity (tiles) that triggers a defender
 pub const BRUTE_DMG_MULT: f32 = 10.0;  // brute queen-damage multiplier
 
+// ---- Alliances (late-game co-op layer) -------------------------------------
+// Costs are in nectar; the whole economy is gated by `alliance_econ_enabled` (OFF by default for
+// testing → create/join are free). Membership + roster persist in users.json (wipe-proof), never in
+// the bincode world.snapshot. See src/alliance.rs.
+pub const PRICE_ALLIANCE_CREATE: u64 = 50;   // creator pays (when econ enabled)
+pub const PRICE_ALLIANCE_JOIN:   u64 = 10;   // applicant pays on request (refunded on reject) / inviter pays on invite
+pub const ALLIANCE_MAX_MEMBERS: usize = 10;
+pub const ALLIANCE_LEVEL_CAP:   u16 = 5;
+// Combined-contribution XP curve (5 tiers). Geometric, like the queen curve but tiny. The XP
+// *sources* are tunable in Config (alliance_xp_kill / alliance_xp_per_100k_day); these shape the
+// ladder: cumulative L2=50, L3=150, L4=350, L5=750.
+pub const ALLIANCE_XP_BASE: f64 = 50.0;   // XP to reach L2
+pub const ALLIANCE_XP_EXP:  f64 = 2.0;    // per-tier growth multiplier
+
 // ---- Progressive unlock gates (by peak level — see auth::UserRecord::peak_level) ----
 // Each feature/shop item is INVISIBLE + unbuyable until the player's peak level reaches its gate.
 // KEEP IN LOCKSTEP with the `GATES` table in public/client.html.
@@ -129,6 +143,24 @@ pub struct Config {
     /// Passive nectar granted per real day per 100,000 metro tiles a player holds (leads). Paid once
     /// per 00:00-UTC window in the sim loop. 0 disables passive accrual.
     pub nectar_per_100k_day: f64,
+    // ---- Alliances ----
+    /// Master switch for alliance nectar costs. OFF by default so create/join are FREE for testing;
+    /// flip on for the intended late-game pricing (PRICE_ALLIANCE_*).
+    pub alliance_econ_enabled: bool,
+    /// United Front / Phalanx: an allied queen within this radius (tiles) of another contributes one
+    /// aura stack to it. Only active at alliance L4+.
+    pub phalanx_r: f64,
+    /// Phalanx bonus per nearby allied queen (fraction; added to both damage and effective HP),
+    /// capped at `phalanx_cap`.
+    pub phalanx_per_stack: f64,
+    pub phalanx_cap: f64,
+    /// Mayday fires to all alliance members when a member queen under attack drops below this HP
+    /// fraction. 0 disables the auto-alert.
+    pub mayday_hp_pct: f64,
+    /// Alliance XP granted when a member's queen kills a rival queen.
+    pub alliance_xp_kill: f64,
+    /// Alliance XP per real day per 100,000 tiles the alliance's members collectively hold.
+    pub alliance_xp_per_100k_day: f64,
 }
 
 impl Default for Config {
@@ -171,6 +203,13 @@ impl Default for Config {
             // season via the slider (apply_admin_param) if desired.
             season_secs:       0,
             nectar_per_100k_day: 1.0,
+            alliance_econ_enabled: false,
+            phalanx_r:              600.0,
+            phalanx_per_stack:        0.05,
+            phalanx_cap:              0.25,
+            mayday_hp_pct:            0.5,
+            alliance_xp_kill:        10.0,
+            alliance_xp_per_100k_day: 5.0,
         }
     }
 }
@@ -228,6 +267,13 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("army_cap",          1.0, 1_000_000.0),
     ("season_secs",       0.0, 31_536_000.0),   // 0 (off) … 365 days
     ("nectar_per_100k_day", 0.0,   1_000.0),
+    ("alliance_econ_enabled", 0.0,          1.0),
+    ("phalanx_r",             0.0,     50_000.0),
+    ("phalanx_per_stack",     0.0,          1.0),
+    ("phalanx_cap",           0.0,          2.0),
+    ("mayday_hp_pct",         0.0,          1.0),
+    ("alliance_xp_kill",      0.0,  1_000_000.0),
+    ("alliance_xp_per_100k_day", 0.0,  100_000.0),
 ];
 
 /// Returns the clamped value, or None if key is unknown.
@@ -261,6 +307,13 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "army_cap"          => c.army_cap           = v as i32,
         "season_secs"       => c.season_secs        = v as u64,
         "nectar_per_100k_day" => c.nectar_per_100k_day = v,
+        "alliance_econ_enabled" => c.alliance_econ_enabled = v != 0.0,
+        "phalanx_r"             => c.phalanx_r             = v,
+        "phalanx_per_stack"     => c.phalanx_per_stack     = v,
+        "phalanx_cap"           => c.phalanx_cap           = v,
+        "mayday_hp_pct"         => c.mayday_hp_pct         = v,
+        "alliance_xp_kill"      => c.alliance_xp_kill      = v,
+        "alliance_xp_per_100k_day" => c.alliance_xp_per_100k_day = v,
         _ => return None,
     }
     // A tunable changed → flag for the next off-lock persist (server.rs autosave / shutdown), so
@@ -714,6 +767,13 @@ fn params_of(c: &Config) -> Vec<(&'static str, f64)> {
         ("army_cap",          c.army_cap as f64),
         ("season_secs",       c.season_secs as f64),
         ("nectar_per_100k_day", c.nectar_per_100k_day),
+        ("alliance_econ_enabled", if c.alliance_econ_enabled { 1.0 } else { 0.0 }),
+        ("phalanx_r",             c.phalanx_r),
+        ("phalanx_per_stack",     c.phalanx_per_stack),
+        ("phalanx_cap",           c.phalanx_cap),
+        ("mayday_hp_pct",         c.mayday_hp_pct),
+        ("alliance_xp_kill",      c.alliance_xp_kill),
+        ("alliance_xp_per_100k_day", c.alliance_xp_per_100k_day),
     ]
 }
 
@@ -868,6 +928,54 @@ pub fn level_for_xp(xp: f64, cfg: &Config) -> u16 {
     while lvl < cfg.xp_level_cap && total_xp_for_level(lvl + 1, cfg) <= xp {
         lvl += 1;
     }
+    lvl
+}
+
+// ---- Alliance progression & buffs ------------------------------------------
+
+/// Per-tier passive buffs applied to every member's queen/ants. `level == 0` = not in an alliance
+/// (neutral identity), so callers can always look up by a player's alliance level unconditionally.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AllianceBuffs {
+    pub dmg_mult: f64,       // × ant bite damage
+    pub hp_mult: f64,        // × queen max-HP
+    pub shield_mult: f64,    // × shield duration on cast
+    pub defender_bonus: i32, // + defender trigger range (tiles)
+    pub phalanx: bool,       // United Front aura active (L4+)
+}
+
+impl Default for AllianceBuffs {
+    fn default() -> Self {
+        AllianceBuffs { dmg_mult: 1.0, hp_mult: 1.0, shield_mult: 1.0, defender_bonus: 0, phalanx: false }
+    }
+}
+
+/// The 5-tier buff ladder. L1 "Pact" is mostly the unlock of the four co-op rules (the cooperation
+/// *is* the reward); raw stats back-load toward L5 "Sovereign". Numbers are intentionally modest —
+/// stacked on level-scaled queens they still matter, and Phalanx multiplies them inside a cluster.
+pub fn alliance_buffs(level: u16) -> AllianceBuffs {
+    match level {
+        0 => AllianceBuffs::default(),
+        1 => AllianceBuffs { dmg_mult: 1.00, hp_mult: 1.05, shield_mult: 1.00, defender_bonus: 0, phalanx: false },
+        2 => AllianceBuffs { dmg_mult: 1.08, hp_mult: 1.10, shield_mult: 1.00, defender_bonus: 0, phalanx: false },
+        3 => AllianceBuffs { dmg_mult: 1.12, hp_mult: 1.15, shield_mult: 1.25, defender_bonus: 0, phalanx: false },
+        4 => AllianceBuffs { dmg_mult: 1.18, hp_mult: 1.20, shield_mult: 1.50, defender_bonus: 2, phalanx: true },
+        _ => AllianceBuffs { dmg_mult: 1.25, hp_mult: 1.30, shield_mult: 2.00, defender_bonus: 4, phalanx: true },
+    }
+}
+
+/// Cumulative alliance XP required to *reach* tier `n` (geometric, like the queen curve but tiny;
+/// capped at ALLIANCE_LEVEL_CAP). `n ≤ 1 → 0`.
+pub fn alliance_total_xp_for_level(n: u16) -> f64 {
+    if n <= 1 { return 0.0; }
+    let steps = (n - 1) as f64;
+    (ALLIANCE_XP_BASE * (ALLIANCE_XP_EXP.powf(steps) - 1.0) / (ALLIANCE_XP_EXP - 1.0)).floor()
+}
+
+/// Alliance tier (1..=ALLIANCE_LEVEL_CAP) for a cumulative XP total.
+pub fn alliance_level_for_xp(xp: f64) -> u16 {
+    let mut lvl = 1u16;
+    while lvl < ALLIANCE_LEVEL_CAP && alliance_total_xp_for_level(lvl + 1) <= xp { lvl += 1; }
     lvl
 }
 

@@ -8,8 +8,6 @@
 <title>antarchy — the ants are revolting</title>
 <link rel="icon" href="/favicon.png" type="image/png">
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<!-- Google AdSense — passive bottom banner on /play (loader mirrors landing.html; CSP whitelists googlesyndication). -->
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8322666756328568" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #f5f3ec; --bg2: #ffffff; --ink: #0d0d0d;
@@ -54,6 +52,7 @@
     background:var(--inkbar); color:var(--yel); border:1px solid var(--ink); display:none; }
   body.admin-on .admin-badge { display:inline-block; }
   .hstats { margin-left:auto; display:flex; }
+  body:not(.is-admin) .hstats { display:none; }   /* server stats moved to the admin panel — admins only */
   .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 11px;
     border-left:1px solid var(--line); }
   .hstat .l { font-family:'Press Start 2P',monospace; color:var(--dim); font-size:7px; }
@@ -256,17 +255,6 @@
 
   /* CANVAS */
   .canvas-area { grid-area:c; position:relative; background:var(--bg2); overflow:hidden; touch-action:none; }
-  /* C2 — passive bottom ad banner. Anchored INSIDE the canvas cell so it never overlaps the sidebar
-     or the desktop footer. z-index 40: above the basemap/attribution but BELOW the killfeed (60),
-     mobile-nav (70), app windows (500) and the death/unlock/welcome modals (880-910). The future
-     events-log popup (E3, centered over the queen) takes a higher lane, so this thin bottom strip
-     won't collide with it. Shown only when in-game (see updateAdbarVis); click-through while placing
-     so it can never block a map click. */
-  #play-adbar { position:absolute; left:50%; transform:translateX(-50%); bottom:8px; z-index:40;
-    width:min(728px,94%); display:none; pointer-events:none; }
-  #play-adbar.vis { display:block; }
-  #play-adbar ins { display:block; pointer-events:auto; min-height:50px; }
-  #map.placing ~ #play-adbar ins { pointer-events:none; }   /* don't eat clicks during placement */
 canvas { display:block; width:100%; height:100%; cursor:grab;
     image-rendering:pixelated; image-rendering:crisp-edges;
     touch-action: none; }
@@ -412,6 +400,34 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .evt-row { display:flex; gap:9px; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:4px 0; border-bottom:1px solid var(--line); }
   .evt-ts { color:var(--dim); flex:0 0 auto; }
   .evt-msg { color:var(--ink); word-break:break-word; }
+  /* ALLIANCE window */
+  .al-sec { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--ink); border-bottom:2px solid var(--ink); padding-bottom:6px; margin:16px 0 8px; }
+  .al-row { display:flex; align-items:center; gap:9px; padding:6px 2px; border-bottom:1px solid var(--line); }
+  .al-rname { flex:1; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink); }
+  .al-dim { color:var(--dim); font-size:10px; }
+  .al-actions { display:flex; gap:5px; }
+  .al-btn { font-family:'Press Start 2P',monospace; font-size:7px; padding:6px 8px; border:2px solid var(--ink); background:var(--bg2); color:var(--ink); cursor:pointer; }
+  .al-btn.ok { background:var(--ink); color:#fff; } .al-btn.ok:disabled { opacity:.4; cursor:default; }
+  .al-btn.no { color:var(--red); }
+  .al-badge { font-size:15px; line-height:1; } .al-badge.big { font-size:26px; }
+  .al-header { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+  .al-title { font-family:'Press Start 2P',monospace; font-size:11px; color:var(--ink); }
+  .al-bar { height:10px; background:var(--bg2); border:2px solid var(--ink); margin:4px 0; }
+  .al-bar-fill { height:100%; background:var(--ink); }
+  .al-dim.sm { font-size:9px; }
+  .al-buffs { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+  .al-chip { font-family:'IBM Plex Mono',monospace; font-size:11px; border:2px solid var(--ink); padding:4px 7px; background:var(--bg2); }
+  .al-chip b { color:var(--dim); margin-right:5px; font-size:9px; }
+  .al-create, .al-invite { display:flex; gap:8px; }
+  .al-create { flex-direction:column; }
+  .al-input { font-family:'IBM Plex Mono',monospace; font-size:13px; padding:8px; border:2px solid var(--ink); background:var(--bg2); color:var(--ink); flex:1; }
+  .al-icons, .al-colors { display:flex; flex-wrap:wrap; gap:5px; }
+  .al-ic { font-size:16px; padding:4px 6px; border:2px solid var(--line); background:var(--bg2); cursor:pointer; }
+  .al-ic.on { border-color:var(--ink); }
+  .al-col { width:26px; height:26px; border:2px solid var(--line); cursor:pointer; }
+  .al-col.on { border-color:var(--ink); box-shadow:0 0 0 2px var(--ink); }
+  .al-create-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:2px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; margin-top:6px; }
+  .al-leave-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:2px solid var(--ink); background:var(--bg2); color:var(--red); cursor:pointer; width:100%; margin-top:14px; }
   .shop-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
   .shop-card { border:2px solid var(--ink); background:var(--bg2); padding:14px 12px; display:flex;
     flex-direction:column; align-items:center; text-align:center; gap:7px; box-shadow:3px 3px 0 0 var(--ink); }
@@ -702,8 +718,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     /* --- Layout: one full-bleed canvas under a compact header --- */
     body {
       grid-template-columns: 1fr;
-      grid-template-rows: calc(46px + env(safe-area-inset-top)) 1fr;
-      grid-template-areas: "h" "c";
+      grid-template-rows: calc(46px + env(safe-area-inset-top)) 1fr auto;
+      grid-template-areas: "h" "c" "n";
     }
     body.admin-on { grid-template-columns: 1fr; }   /* no admin column on phones */
     footer { display: none; }                        /* status line: not core-loop */
@@ -749,7 +765,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
     /* --- Bottom nav (thumb zone) --- */
     #mobile-nav {
-      display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+      display: flex; grid-area: n; position: relative; z-index: 70;
       background: var(--bg2); border-top: 2px solid var(--ink);
       padding-bottom: env(safe-area-inset-bottom);
       padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right);
@@ -774,8 +790,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     /* Canvas overlays clear of the header inset and the bottom nav --- */
     #killfeed { top: calc(env(safe-area-inset-top) + 52px); right: 10px; }
     .toast { top: calc(env(safe-area-inset-top) + 58px); }
-    .place-prompt { bottom: calc(66px + env(safe-area-inset-bottom)); }
-    #play-adbar { bottom: calc(60px + env(safe-area-inset-bottom)); }   /* ride above the bottom nav */
+    .place-prompt { bottom: 12px; }   /* canvas-area now ends above the nav row, so a small offset clears it */
 
     /* --- Windows / modals at narrow width --- */
     .win { width: 96vw; max-height: 86vh; }
@@ -824,6 +839,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   <div class="hdr-actions">
     <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
     <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><span class="ic">🧭</span><span class="lb">DISCOVER</span></button>
+    <button class="hbtn" id="hbtn-alliance" title="Alliance" onclick="openAllianceWindow()"><span class="ic">🛡</span><span class="lb">ALLIANCE</span></button>
     <button class="hbtn" id="hbtn-events" title="Events log" onclick="openEventsWindow()"><span class="ic">📜</span><span class="lb">EVENTS</span></button>
     <button class="hbtn" id="hbtn-help" title="Help" onclick="openHelpWindow()"><span class="ic">❓</span><span class="lb">HELP</span></button>
     <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><span class="ic">⚙</span><span class="lb">SETTINGS</span></button>
@@ -924,15 +940,6 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
 <main class="canvas-area">
   <canvas id="map"></canvas>
-  <!-- C2 — passive display banner (shown in-game; see #play-adbar CSS + updateAdbarVis).
-       TODO: replace data-ad-slot with a real /play banner slot id from the AdSense dashboard. -->
-  <div id="play-adbar">
-    <ins class="adsbygoogle" style="display:block"
-         data-ad-client="ca-pub-8322666756328568"
-         data-ad-slot="0000000000"
-         data-ad-format="auto"
-         data-full-width-responsive="true"></ins>
-  </div>
   <!-- OSM attribution (ODbL/usage-policy requirement). Shown whenever the basemap is visible. -->
   <a id="osm-attrib" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener"
      style="position:absolute;bottom:2px;right:4px;z-index:30;font:11px/1.4 system-ui,sans-serif;
@@ -1429,6 +1436,11 @@ const CFG_SLIDER_MAP = {
   ANT_HZ:            { sid:'s-ah',   vid:'v-ah'   },
 };
 function applyCfgSlider(key, val) {
+  // Mirror the live value into me.cfg so anything reading it mid-session tracks admin slider
+  // changes, not just the login snapshot — notably the WORKERS lifespan-bar denominator
+  // (renderAntList: rem/me.cfg.LIFESPAN), which must stay in lock-step with the server's live
+  // cfg().lifespan now that worker expiry + remaining-time both read the global value.
+  if (me) { if (!me.cfg) me.cfg = {}; me.cfg[key] = val; }
   const m = CFG_SLIDER_MAP[key]; if (!m) return;
   const s=$(m.sid), v=$(m.vid); if (!s||!v) return;
   // Don't yank a slider the admin is actively dragging back to the (slightly stale) ~1 Hz server
@@ -1451,6 +1463,8 @@ let zoomTarget=1;       // smooth zoom lerp target
 let panTarget=null;     // {x,y} smooth camera fly target, null when idle
 let vw=null;
 let palette={0:'#ffffff'};
+// Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
+let myAlliance=null, factionsAll=[], factionColor={}, factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
 let knownNames={};      // playerId -> username; every queen seen this life stays identified until our queen dies
 let WORLD={w:2048, h:2048, geo:null, spawnX:1024, spawnY:1024, spawnPan:100};
 // Camera "home" used pre-spawn (and whenever geolocation is unavailable / denied / blocked):
@@ -1488,9 +1502,9 @@ let fogImg=null, fogBuiltVw=null;  // reveal-mask ImageData + last-built vw (reb
 const fogScreen=document.createElement('canvas');
 const fogScreenCtx=fogScreen.getContext('2d',{alpha:true});
 const FOG_SCREEN_SCALE=0.5;        // shroud composited at half-res (mist is soft → no visible loss)
-// Seamless value-noise cloud tiles (built once): `mistTile` = opaque blue clouds (LO..HI) for the
-// shroud layers; `hazeTile` = translucent blue wisps for the faint mist drifting over revealed land.
-let mistTile=null, hazeTile=null, mistPattern=null, hazePattern=null;
+// Seamless value-noise cloud tile (built once): `mistTile` = opaque blue clouds (LO..HI) for the
+// drifting-mist shroud layers.
+let mistTile=null, mistPattern=null;
 // Bit-packed (placing|mapVisible|browsable) the textures were last FULLY rasterized for. -1 forces a
 // full re-raster on the next render (login / wipe / palette change / admin fog toggle).
 let cacheRenderMode=-1;
@@ -1671,7 +1685,7 @@ function rasterizeCache(lx, ly, lw, lh){
       const ci=rowC+rx, o=ci*4;
       const t=tileCache[ci];
       if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; continue; }
-      const rgb=toRGB(palette[t]||'#9b3027');
+      const rgb=toRGB(factionColor[t]||palette[t]||'#9b3027');   // alliance banner recolour
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
       // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
       td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
@@ -2152,10 +2166,12 @@ function handle(msg) {
         tog.classList.add('vis');
         chk.checked=true;
         document.body.classList.add('admin-on');
+        document.body.classList.add('is-admin');   // server-stats header block is gated on this
         $('admin-badge').style.display='inline-block';
       } else {
         tog.classList.remove('vis');
         document.body.classList.remove('admin-on');
+        document.body.classList.remove('is-admin');
       }
       if (me.queen && !me.queen.dead) {
         view.x=me.queen.x+1; view.y=me.queen.y+1; panLocked=false;
@@ -2306,6 +2322,21 @@ function handle(msg) {
       spawnFloatingText('+'+Math.round(msg.amount), msg.hx, msg.hy, '#00b86b'); break;
     }
     case 'leaderboard': lbAll=msg.entries||[]; renderLeaderboard(); if(winIsOpen('lb')) renderLbWindow(); break;
+    case 'alliance-state':
+      myAlliance=msg.alliance||null;
+      if(myAlliance) incomingInvites=incomingInvites.filter(iv=>iv.allianceId!==myAlliance.id);
+      if(winIsOpen('alliance')) renderAllianceWindow();
+      break;
+    case 'factions':
+      applyFactions(msg.entries);
+      if(winIsOpen('alliance')&&_allianceTab==='factions') renderAllianceWindow();
+      break;
+    case 'alliance-invite':
+      if(!(myAlliance&&myAlliance.id===msg.allianceId) && !incomingInvites.some(x=>x.allianceId===msg.allianceId))
+        incomingInvites.push({allianceId:msg.allianceId, name:msg.name});
+      if(winIsOpen('alliance')) renderAllianceWindow();
+      break;
+    case 'mayday': handleMayday(msg); break;
   }
 }
 
@@ -2324,7 +2355,7 @@ function openWindow(title, kind){
 }
 function closeWindow(){ $('win-bg').style.display='none'; _winKind=null; syncHdrBtns(); }
 function syncHdrBtns(){
-  const map={shop:'hbtn-shop', disc:'hbtn-disc', events:'hbtn-events', help:'hbtn-help', settings:'hbtn-settings'};
+  const map={shop:'hbtn-shop', disc:'hbtn-disc', alliance:'hbtn-alliance', events:'hbtn-events', help:'hbtn-help', settings:'hbtn-settings'};
   for (const k in map){ const b=$(map[k]); if(b) b.classList.toggle('on', _winKind===k); }
 }
 function winIsOpen(kind){ const bg=$('win-bg'); return !!bg && bg.style.display!=='none' && (!kind || _winKind===kind); }
@@ -2676,6 +2707,130 @@ function renderEventsWindow(){
   el.innerHTML=html+'</div>';
 }
 
+// ---- Alliances (panel + faction board + banner recolour + mayday) ----
+const ALLIANCE_ICONS=['🐜','🐝','🦂','🕷','🐛','🦗','🐞','🦋','👑','⚔','🛡','🔥','⚡','🌟','💀','🍯'];
+let _alForm={ icon:'🐜', color:(HUES&&HUES[0])||'#b5524a' };
+
+function applyFactions(entries){
+  factionsAll=entries||[];
+  factionColor={}; factionIcon={};
+  for(const f of factionsAll){ for(const id of (f.members||[])){ factionColor[id]=f.color; factionIcon[id]=f.icon; } }
+}
+function handleMayday(m){
+  maydayPings.push({x:m.x,y:m.y,t:performance.now(),name:m.name||'ally',hp:m.hpPct});
+  if(maydayPings.length>10) maydayPings.shift();
+  pushEventLog('⚠ MAYDAY — '+(m.name||'ally')+' under siege ('+(m.hpPct||0)+'% HP)');
+  toast('⚠ MAYDAY: '+(m.name||'ally')+' under siege');
+  try{ AudioEngine.click(); }catch(e){}
+}
+
+function openAllianceWindow(){ AudioEngine.click(); openWindow('ALLIANCE — FACTIONS','alliance'); send({t:'alliance-get'}); renderAllianceWindow(); }
+function allianceTab(n){ if(n===_allianceTab) return; _allianceTab=n; AudioEngine.click(); renderAllianceWindow(); }
+function alPickIcon(i){ _alForm.icon=i; renderAllianceWindow(); }
+function alPickColor(c){ _alForm.color=c; renderAllianceWindow(); }
+function allianceCreate(){ const nm=(($('al-name')||{}).value||'').trim(); if(!nm){ toast('Enter an alliance name'); return; } send({t:'alliance-create', name:nm, icon:_alForm.icon, color:_alForm.color}); }
+function allianceRequest(id){ AudioEngine.click(); send({t:'alliance-request', allianceId:id}); }
+function allianceAccept(pid){ send({t:'alliance-accept', playerId:pid}); }
+function allianceReject(pid){ send({t:'alliance-reject', playerId:pid}); }
+function allianceInvite(){ const n=(($('al-invite')||{}).value||'').trim(); if(!n){ toast('Enter a player name'); return; } send({t:'alliance-invite', name:n}); if($('al-invite')) $('al-invite').value=''; }
+function allianceLeave(){ if(confirm('Leave your alliance?')) send({t:'alliance-leave'}); }
+function allianceInviteAccept(id){ send({t:'alliance-invite-accept', allianceId:id}); incomingInvites=incomingInvites.filter(x=>x.allianceId!==id); }
+function allianceInviteDecline(id){ send({t:'alliance-invite-decline', allianceId:id}); incomingInvites=incomingInvites.filter(x=>x.allianceId!==id); }
+function _buffChip(k,v){ return `<span class="al-chip"><b>${k}</b>${v}</span>`; }
+
+function renderAllianceWindow(){
+  const el=$('win-body'); if(!el) return;
+  let html=`<div class="shop-tabs">
+      <button class="shop-tab${_allianceTab==='mine'?' active':''}" onclick="allianceTab('mine')">MY ALLIANCE</button>
+      <button class="shop-tab${_allianceTab==='factions'?' active':''}" onclick="allianceTab('factions')">FACTIONS</button>
+    </div>`;
+  if(_allianceTab==='factions') html+=_renderFactionsTab();
+  else if(myAlliance)           html+=_renderMyAlliance();
+  else                          html+=_renderNoAlliance();
+  el.innerHTML=html;
+}
+
+function _renderFactionsTab(){
+  let h='<div class="lbw-head"><span class="lbw-rank">#</span><span class="lbw-sw"></span><span class="lbw-name">ALLIANCE</span><span class="lbw-c">TIER</span><span class="lbw-c">MEM</span><span class="lbw-c">TILES</span><span class="lbw-c">SCORE</span></div><div class="lbw-list">';
+  if(!factionsAll.length) h+='<div class="lb-empty">NO ALLIANCES YET</div>';
+  factionsAll.forEach((f,i)=>{
+    const mine=myAlliance&&f.id===myAlliance.id;
+    h+=`<div class="lbw-row${mine?' lb-me':''}"><span class="lbw-rank">#${i+1}</span>
+      <span class="al-badge" style="color:${safeColor(f.color)}">${esc(f.icon||'🛡')}</span>
+      <span class="lbw-name">${esc(f.name)}</span>
+      <span class="lbw-c">T${f.level}</span><span class="lbw-c">${f.memberCount}/10</span>
+      <span class="lbw-c">${fmtBig(f.tiles||0)}</span><span class="lbw-c">${fmtBig(f.score||0)}</span></div>`;
+  });
+  return h+'</div>';
+}
+
+function _renderNoAlliance(){
+  let h='';
+  if(incomingInvites.length){
+    h+='<div class="al-sec">INVITATIONS</div>';
+    for(const iv of incomingInvites)
+      h+=`<div class="al-row"><span class="al-rname">${esc(iv.name)}</span>
+        <span class="al-actions"><button class="al-btn ok" onclick="allianceInviteAccept(${iv.allianceId})">JOIN</button>
+        <button class="al-btn no" onclick="allianceInviteDecline(${iv.allianceId})">✕</button></span></div>`;
+  }
+  h+='<div class="al-sec">FOUND AN ALLIANCE</div><div class="al-create">';
+  h+='<input id="al-name" class="al-input" maxlength="24" placeholder="Alliance name">';
+  h+='<div class="al-icons">'+ALLIANCE_ICONS.map(i=>`<button class="al-ic${_alForm.icon===i?' on':''}" onclick="alPickIcon('${i}')">${i}</button>`).join('')+'</div>';
+  h+='<div class="al-colors">'+(HUES||[]).map(c=>`<button class="al-col${_alForm.color===c?' on':''}" style="background:${c}" onclick="alPickColor('${c}')"></button>`).join('')+'</div>';
+  h+='<button class="al-create-btn" onclick="allianceCreate()">FOUND ALLIANCE (FREE)</button></div>';
+  h+='<div class="al-sec">JOIN AN ALLIANCE</div>';
+  if(!factionsAll.length) h+='<div class="disc-empty">No alliances yet — found the first.</div>';
+  for(const f of factionsAll){
+    const full=(f.memberCount>=10);
+    h+=`<div class="al-row"><span class="al-badge" style="color:${safeColor(f.color)}">${esc(f.icon||'🛡')}</span>
+      <span class="al-rname">${esc(f.name)} <span class="al-dim">T${f.level} · ${f.memberCount}/10</span></span>
+      <span class="al-actions"><button class="al-btn ok" ${full?'disabled':''} onclick="allianceRequest(${f.id})">${full?'FULL':'REQUEST'}</button></span></div>`;
+  }
+  return h;
+}
+
+function _renderMyAlliance(){
+  const a=myAlliance; let h='';
+  h+=`<div class="al-header"><span class="al-badge big" style="color:${safeColor(a.color)}">${esc(a.icon||'🛡')}</span>
+    <div><div class="al-title">${esc(a.name)}</div>
+    <div class="al-dim">TIER ${a.level}/${a.levelCap} · ${a.members.length}/${a.maxMembers} MEMBERS</div></div></div>`;
+  if(a.nextTierXp!=null){
+    const span=Math.max(1,a.nextTierXp-a.tierStartXp), pct=Math.max(0,Math.min(100,(a.xp-a.tierStartXp)/span*100));
+    h+=`<div class="al-bar"><div class="al-bar-fill" style="width:${pct}%"></div></div>
+      <div class="al-dim sm">${Math.floor(a.xp)} / ${Math.floor(a.nextTierXp)} XP TO TIER ${a.level+1}</div>`;
+  } else h+='<div class="al-dim sm">★ MAX TIER REACHED</div>';
+  const b=a.buffs||{};
+  h+='<div class="al-buffs">'+_buffChip('DMG','×'+(b.dmg||1).toFixed(2))+_buffChip('HP','×'+(b.hp||1).toFixed(2))+_buffChip('SHIELD','×'+(b.shield||1).toFixed(2));
+  if(b.defenderBonus) h+=_buffChip('DEF','+'+b.defenderBonus);
+  if(b.phalanx) h+=_buffChip('PHALANX','★ ON');
+  h+='</div>';
+  h+='<div class="al-sec">MEMBERS</div>';
+  for(const m of a.members){
+    const meRow=me&&m.id===me.id;
+    const stat=m.alive?('LV'+m.level+' · '+fmtBig(m.tiles)+'t · '+m.kills+'k'):'no queen';
+    h+=`<div class="al-row"><span class="al-badge" style="color:${safeColor(factionColor[m.id]||a.color)}">${m.leader?'★':'•'}</span>
+      <span class="al-rname">${esc(m.name)}${meRow?' <span class="al-dim">(you)</span>':''}
+      <span class="al-dim">${stat}${m.online?'':' · offline'}</span></span></div>`;
+  }
+  const isLeader=me&&a.leaderId===me.id;
+  if(isLeader){
+    if((a.requests||[]).length){
+      h+='<div class="al-sec">JOIN REQUESTS</div>';
+      for(const r of a.requests)
+        h+=`<div class="al-row"><span class="al-rname">${esc(r.name)}</span>
+          <span class="al-actions"><button class="al-btn ok" onclick="allianceAccept(${r.id})">ACCEPT</button>
+          <button class="al-btn no" onclick="allianceReject(${r.id})">✕</button></span></div>`;
+    }
+    if((a.invites||[]).length){
+      h+='<div class="al-sec">PENDING INVITES</div>';
+      for(const iv of a.invites) h+=`<div class="al-row"><span class="al-rname">${esc(iv.name)}</span><span class="al-dim">invited</span></div>`;
+    }
+    h+='<div class="al-sec">INVITE A PLAYER</div><div class="al-invite"><input id="al-invite" class="al-input" maxlength="20" placeholder="Player name"><button class="al-btn ok" onclick="allianceInvite()">INVITE</button></div>';
+  }
+  h+='<button class="al-leave-btn" onclick="allianceLeave()">LEAVE ALLIANCE</button>';
+  return h;
+}
+
 // ---- Settings window (sound / music / map / scanlines / volume) ----
 const settings = {
   sfx:   localStorage.getItem('hive-sfx')   !== '0',
@@ -2874,22 +3029,6 @@ function updateHUD() {
   if (wkBrute){
     wkBrute.style.display = isUnlocked('brute')?'':'none';
     if (!isUnlocked('brute') && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
-  }
-  updateAdbarVis();
-}
-
-// C2 — passive bottom ad banner: visible only once the player is in-game (live queen, spawn screen
-// gone). The AdSense slot is pushed exactly once, the first time the bar is actually visible —
-// pushing a display:none unit throws "availableWidth=0". Click-through during placement is pure CSS.
-let _adbarPushed=false;
-function updateAdbarVis(){
-  const bar=$('play-adbar'); if(!bar) return;
-  const ss=$('spawn-screen');
-  const show = !!(me && me.queen && !me.queen.dead) && !(ss && ss.classList.contains('vis'));
-  bar.classList.toggle('vis', show);
-  if (show && !_adbarPushed){
-    _adbarPushed=true;
-    try{ (adsbygoogle=window.adsbygoogle||[]).push({}); }catch(e){}
   }
 }
 
@@ -3499,7 +3638,7 @@ function drawLodTiles(v, cp, W, H) {
       const f=fog?fog[i]:0;
       const t=tiles[i];
       if (t===0 || f>=100) continue;                // unclaimed / fully fogged → transparent (overlay masks)
-      const o=i*4, rgb=toRGB(palette[t]||'#9b3027');
+      const o=i*4, rgb=toRGB(factionColor[t]||palette[t]||'#9b3027');   // alliance banner recolour
       d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2];
       d[o+3]=(t===myId) ? 255 : (mapVisible ? 150 : 255);
     }
@@ -3512,21 +3651,19 @@ function drawLodTiles(v, cp, W, H) {
   if (dw>0 && dh>0) { ctx.imageSmoothingEnabled=false; ctx.drawImage(lodCanvas, sx, sy, dw, dh); }
 }
 
-// Build the seamless value-noise cloud tiles ONCE. A small random grid sampled with wrap-around
-// (row/col G == 0) → a tile that repeats with no seam, smoothstep-bilinear-upscaled into 256². Two
-// outputs from the same field: `mistTile` = opaque clouds coloured between FOG_MIST_LO and HI (shroud
-// layers); `hazeTile` = the lighter tone with alpha = noise (translucent wisps for the over-map haze).
+// Build the seamless value-noise cloud tile ONCE. A small random grid sampled with wrap-around
+// (row/col G == 0) → a tile that repeats with no seam, smoothstep-bilinear-upscaled into 256².
+// `mistTile` = opaque clouds coloured between FOG_MIST_LO and HI (the drifting-mist shroud layers).
 function buildMistTile(){
   const G=8, T=256;
   const grid=new Float32Array((G+1)*(G+1));
   for (let y=0;y<G;y++) for (let x=0;x<G;x++) grid[y*(G+1)+x]=Math.random();
   for (let y=0;y<=G;y++) grid[y*(G+1)+G]=grid[y*(G+1)];            // wrap right = left
   for (let x=0;x<=G;x++) grid[G*(G+1)+x]=grid[x];                  // wrap bottom = top
-  const mk=()=>{ const c=document.createElement('canvas'); c.width=T; c.height=T; return c; };
-  mistTile=mk(); hazeTile=mk();
-  const mctx=mistTile.getContext('2d'), hctx=hazeTile.getContext('2d');
-  const mi=mctx.createImageData(T,T), hi=hctx.createImageData(T,T), md=mi.data, hd=hi.data;
-  const sc=G/T, HAZE_A=110;
+  mistTile=document.createElement('canvas'); mistTile.width=T; mistTile.height=T;
+  const mctx=mistTile.getContext('2d');
+  const mi=mctx.createImageData(T,T), md=mi.data;
+  const sc=G/T;
   for (let py=0;py<T;py++){
     const gy=py*sc, y0=gy|0, fy=gy-y0, sY=fy*fy*(3-2*fy);
     for (let px=0;px<T;px++){
@@ -3538,12 +3675,10 @@ function buildMistTile(){
       md[o+1]=(FOG_MIST_LO[1]+(FOG_MIST_HI[1]-FOG_MIST_LO[1])*v)|0;
       md[o+2]=(FOG_MIST_LO[2]+(FOG_MIST_HI[2]-FOG_MIST_LO[2])*v)|0;
       md[o+3]=255;
-      hd[o]=FOG_MIST_HI[0]; hd[o+1]=FOG_MIST_HI[1]; hd[o+2]=FOG_MIST_HI[2]; hd[o+3]=(v*HAZE_A)|0;
     }
   }
-  mctx.putImageData(mi,0,0); hctx.putImageData(hi,0,0);
+  mctx.putImageData(mi,0,0);
   mistPattern=fogScreenCtx.createPattern(mistTile,'repeat');
-  hazePattern=ctx.createPattern(hazeTile,'repeat');
 }
 // Fill the current context with a repeating mist pattern shifted by (ox,oy) — the seamless tile makes
 // the drift gap-free at any offset. Used for both the shroud layers and the over-map haze.
@@ -3567,11 +3702,10 @@ function fillMistWorld(c, cw, ch, pat, ppw, jcx, jcy, alpha){
 
 // THE FOG. The whole canvas is fogged drifting light-blue mist; each tick we ERASE a reveal mask for
 // what the player sees (so the map can never leak — we reveal INTO fog, we don't cover map WITH fog).
-// Pass 1 (shroud, half-res offscreen): opaque light-blue base + two mist layers drifting different
-// ways (churn + shading variance), then `destination-out` the reveal mask over the served-grid rect —
-// everything outside that rect is never erased → stays fully fogged. Pass 2 (haze): a faint mist
-// drifting the other way over the WHOLE canvas, so even revealed land has subtle atmosphere.
-// Caller gates on fogActive (skip while browsing / admin god-view). Handles lod>1 via `step`.
+// Shroud (half-res offscreen): opaque light-blue base + two mist layers drifting different ways
+// (churn + shading variance), then `destination-out` the reveal mask over the served-grid rect —
+// everything outside that rect is never erased → stays fully fogged; revealed/own land stays crisp
+// (no haze over it). Caller gates on fogActive (skip while browsing / admin god-view). Handles lod>1 via `step`.
 function drawFog(v, cp, W, H) {
   if (!mistTile) buildMistTile();
   const now=performance.now();
@@ -3581,7 +3715,6 @@ function drawFog(v, cp, W, H) {
   const J=FOG_JIGGLE_CELLS;
   const jAx=Math.sin(now*0.00050)*J,      jAy=Math.cos(now*0.00041)*J;
   const jBx=Math.cos(now*0.00043+1.7)*J,  jBy=Math.sin(now*0.00055+0.6)*J;
-  const jHx=Math.sin(now*0.00037+2.3)*J,  jHy=Math.cos(now*0.00047+0.9)*J;
 
   // Reveal mask (rebuild only when the frame changes): alpha = erase amount = (100-fog)/100.
   if (gw && gh && fog) {
@@ -3599,7 +3732,7 @@ function drawFog(v, cp, W, H) {
     }
   }
 
-  // Pass 1 — shroud at half-res.
+  // Shroud at half-res.
   const sw=Math.max(1,(W*FOG_SCREEN_SCALE)|0), sh=Math.max(1,(H*FOG_SCREEN_SCALE)|0);
   if (fogScreen.width!==sw || fogScreen.height!==sh) { fogScreen.width=sw; fogScreen.height=sh; }
   const fctx=fogScreenCtx;
@@ -3621,8 +3754,6 @@ function drawFog(v, cp, W, H) {
   }
   ctx.imageSmoothingEnabled=true;
   ctx.drawImage(fogScreen, 0, 0, W, H);                                          // blit shroud up over the map
-  // Pass 2 — faint over-map haze (whole canvas, full-res), world-anchored, dancing on its own phase.
-  fillMistWorld(ctx, W, H, hazePattern, cp, jHx, jHy, 1.0);
   ctx.imageSmoothingEnabled=false;
 }
 
@@ -3775,7 +3906,7 @@ function render() {
   //     (the server hides others' bubbleR), so it marks where YOU can still place.
   for (const q of v.queens) {
     if (!q.bubbleR) continue;
-    const col = q.color;                          // "#rrggbb"
+    const col = safeColor(factionColor[q.id]||q.color); // alliance banner colour overrides own
     if (col.length !== 7) continue;               // need 6-digit hex for the alpha-suffix stops
     const cx2 = offX + (q.x + q.size/2 - v.x0) * cp;
     const cy2 = offY + (q.y + q.size/2 - v.y0) * cp;
@@ -3807,10 +3938,12 @@ function render() {
       ctx.strokeRect(px-2,py-2,qw+4,qw+4);
       ctx.restore();
     }
-    ctx.fillStyle=q.color;
+    ctx.fillStyle=factionColor[q.id]||q.color;     // alliance banner recolour
     ctx.fillRect(px,py,qw,qw);
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
     ctx.strokeRect(px,py,qw,qw);
+    const _fic=factionIcon[q.id];                  // alliance emblem above the queen
+    if (_fic && cp>=2) { ctx.save(); ctx.font=`${Math.max(9,qw*0.5)}px serif`; ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText(_fic, px+qw/2, py-(cp>=4?8:3)); ctx.restore(); }
     if (qw>=12) {
       ctx.fillStyle='#0d0d0d';
       ctx.font=`${qw*.5}px serif`;
@@ -3829,6 +3962,25 @@ function render() {
         ctx.fillStyle='#4488ff';
         ctx.fillRect(px,(hpFrac<1?py-9:py-5),qw*shFrac,3);
       }
+    }
+  }
+
+  // 6b) Mayday pings — pulsing red rings at besieged allied queens (decay ~10 s). Drawn over queens.
+  if (maydayPings.length) {
+    const nowp=performance.now();
+    maydayPings = maydayPings.filter(p=> nowp - p.t < 10000);
+    for (const p of maydayPings) {
+      const age=(nowp-p.t)/10000, pulse=(nowp/250)%1;
+      const mx=offX+(p.x-v.x0)*cp, my=offY+(p.y-v.y0)*cp;
+      const R=(10+pulse*26)*Math.min(Math.max(cp,0.6),6);
+      ctx.save();
+      ctx.globalAlpha=(1-age)*(1-pulse);
+      ctx.strokeStyle='#ff2e3f'; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.arc(mx,my,R,0,Math.PI*2); ctx.stroke();
+      ctx.globalAlpha=(1-age);
+      ctx.font='14px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle='#ff2e3f'; ctx.fillText('⚠', mx, my);
+      ctx.restore();
     }
   }
 
@@ -4267,12 +4419,16 @@ cvs.addEventListener('touchstart', e=>{
       mode='shop-brute'; dragFrom=null;
     }
     _tpFrom=null; _tpTapStart=null;
+    const r=cvs.getBoundingClientRect();
     const t1=e.touches[0], t2=e.touches[1];
     const mid=_midpoint(t1,t2);
     _pinch={
       dist: Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY),
       zoom: view.zoom,
-      midX: mid.x, midY: mid.y,
+      // CANVAS-LOCAL midpoint: clientX/Y are viewport-relative, but the anchor math below uses
+      // W/2,H/2 (canvas backing-store centre). On mobile a 46px+ header sits above the canvas, so
+      // r.top≠0 — without subtracting it the view drifts vertically on every pinch.
+      midX: mid.x - r.left, midY: mid.y - r.top,
       viewX: view.x, viewY: view.y,
     };
   }
@@ -4283,17 +4439,19 @@ cvs.addEventListener('touchmove', e=>{
   const W=cvs.width, H=cvs.height;
 
   if (e.touches.length===2 && _pinch) {
+    const r=cvs.getBoundingClientRect();
     const t1=e.touches[0], t2=e.touches[1];
     const mid=_midpoint(t1,t2);
+    const mx=mid.x-r.left, my=mid.y-r.top;   // canvas-local — must match _pinch.midX/Y + W/2,H/2
     const dist=Math.hypot(t2.clientX-t1.clientX, t2.clientY-t1.clientY);
-    const newZoom=clamp(_pinch.zoom*(dist/_pinch.dist), 0.0001, 8);  // clampView() is the real min-zoom authority
+    const newZoom=clamp(_pinch.zoom*(dist/_pinch.dist), 0.0001, 16);  // clampView() is the real min-zoom authority; 16 = desktop wheel max
     // Keep the world point under the initial pinch midpoint fixed
     const cp0=CELL*_pinch.zoom, cp1=CELL*newZoom;
     const anchorWX=_pinch.viewX+(_pinch.midX-W/2)/cp0;
     const anchorWY=_pinch.viewY+(_pinch.midY-H/2)/cp0;
     view.zoom=newZoom; zoomTarget=newZoom;
-    view.x=anchorWX-(mid.x-W/2)/cp1;
-    view.y=anchorWY-(mid.y-H/2)/cp1;
+    view.x=anchorWX-(mx-W/2)/cp1;
+    view.y=anchorWY-(my-H/2)/cp1;
     clampView();
 
   } else if (e.touches.length===1) {

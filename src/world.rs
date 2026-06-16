@@ -352,6 +352,15 @@ pub struct World {
     /// Per-account login throttle (OWASP A07): `ident → (window_start_ms, attempts)`. Bounds password
     /// brute-force per account independently of the per-IP `/api/*` limiter. Transient; GC'd in `api::gc`.
     pub login_attempts:  FxHashMap<String, (u64, u32)>,
+    // ---- Alliances (runtime indices; the durable source is `auth.alliances` + `UserRecord.alliance_id`) ----
+    /// player id → alliance id. Rebuilt from `auth.alliances` on boot + on every membership change;
+    /// the O(1) friend-vs-foe lookup used all over the tick. Never serialized.
+    pub player_alliance: FxHashMap<u32, u32>,
+    /// United Front: player id → current Phalanx aura stacks (allied queens within range), recomputed
+    /// on the holders cadence. Runtime-only.
+    pub phalanx_stacks:  FxHashMap<u32, u8>,
+    /// Mayday throttle: queen-owner id → last alert timestamp (ms). Runtime-only.
+    pub mayday_last:     FxHashMap<u32, u64>,
 }
 
 /// Base of the reserved guest-spectator id range (disjoint from real player ids, which start at 100
@@ -403,6 +412,9 @@ impl World {
             next_guest_seq:  0,
             last_seq:        FxHashMap::default(),
             login_attempts:  FxHashMap::default(),
+            player_alliance: FxHashMap::default(),
+            phalanx_stacks:  FxHashMap::default(),
+            mayday_last:     FxHashMap::default(),
         }
     }
 
@@ -556,8 +568,64 @@ impl World {
         }
     }
 
-    /// True if (`x`,`y`) lies within any live OTHER queen's bubble. Gates worker placement —
-    /// you can never deploy ants inside an enemy queen's spawn zone.
+    // ---- Alliances (runtime index over auth.alliances) ----
+
+    /// Alliance id for a player, if any (runtime index rebuilt from the persisted roster).
+    pub fn alliance_of(&self, pid: u32) -> Option<u32> { self.player_alliance.get(&pid).copied() }
+
+    /// True if `a` and `b` are DISTINCT players sharing an alliance. The hot-path friend test used
+    /// throughout the tick; `a == b` is intentionally false (callers handle the same-owner case via
+    /// their existing `==` checks).
+    pub fn same_alliance(&self, a: u32, b: u32) -> bool {
+        if a == b { return false; }
+        match (self.player_alliance.get(&a), self.player_alliance.get(&b)) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        }
+    }
+
+    /// True if `b`'s tiles / ants / queen should be treated as FRIENDLY by `a` (same owner OR allied).
+    pub fn is_friendly(&self, a: u32, b: u32) -> bool { a == b || self.same_alliance(a, b) }
+
+    /// Member player-ids of `pid`'s alliance (incl. self), or `[pid]` if unaffiliated.
+    pub fn alliance_member_ids(&self, pid: u32) -> Vec<u32> {
+        match self.alliance_of(pid).and_then(|aid| self.auth.alliances.get(&aid)) {
+            Some(al) => al.members.clone(),
+            None     => vec![pid],
+        }
+    }
+
+    /// Alliance tier (1..=cap) for a player, or 0 if unaffiliated.
+    pub fn alliance_level(&self, pid: u32) -> u16 {
+        self.alliance_of(pid)
+            .and_then(|aid| self.auth.alliances.get(&aid))
+            .map(|a| a.level())
+            .unwrap_or(0)
+    }
+
+    /// Rebuild the `player_alliance` index from `auth.alliances` (full rebuild). Call after any
+    /// membership change and on boot. Also prunes roster ids whose account no longer exists and
+    /// deletes any alliance left empty, so the index can never reference a ghost account.
+    pub fn rebuild_player_alliance(&mut self) {
+        let known: FxHashSet<u32> = self.auth.users.values().map(|u| u.id).collect();
+        self.auth.alliances.retain(|_, al| {
+            al.members.retain(|id| known.contains(id));
+            al.requests.retain(|id| known.contains(id));
+            al.invites.retain(|id| known.contains(id));
+            if al.members.is_empty() { return false; }
+            if !al.members.contains(&al.leader_id) { al.leader_id = al.members[0]; }
+            true
+        });
+        self.player_alliance.clear();
+        let pairs: Vec<(u32, u32)> = self.auth.alliances.iter()
+            .flat_map(|(&aid, al)| al.members.iter().map(move |&pid| (pid, aid)))
+            .collect();
+        for (pid, aid) in pairs { self.player_alliance.insert(pid, aid); }
+    }
+
+    /// True if (`x`,`y`) lies within any live ENEMY (non-allied) queen's bubble. Gates worker
+    /// placement — you can never deploy ants inside a rival queen's spawn zone, but an ALLY's zone is
+    /// free real estate (cross-placement).
     pub fn too_close_to_queen(&self, x: i32, y: i32, exclude: u32) -> bool {
         self.queen_zone_overlaps(x, y, 0.0, exclude)
     }
@@ -568,7 +636,9 @@ impl World {
     /// can never be created overlapping (level growth after placement is allowed).
     pub fn queen_zone_overlaps(&self, x: i32, y: i32, my_r: f64, exclude: u32) -> bool {
         self.queens.iter().filter(|(_, q)| !q.dead).any(|(&qid, q)| {
-            if qid == exclude { return false; }
+            // Skip the placer's own queen AND any ally's — allied zones may overlap and are valid
+            // placement ground (the queens map is keyed by owner id, so `qid` is the owner).
+            if qid == exclude || self.same_alliance(exclude, qid) { return false; }
             let ddx = (q.x + q.size as i32 / 2 - x) as i64;
             let ddy = (q.y + q.size as i32 / 2 - y) as i64;
             ((ddx * ddx + ddy * ddy) as f64).sqrt() < q.bubble_r + my_r

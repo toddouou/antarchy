@@ -51,6 +51,77 @@ pub fn build_leaderboard(world: &World) -> String {
     json!({"t": "leaderboard", "entries": entries}).to_string()
 }
 
+/// Display name for an account id, resolving via the live player first, then the account record.
+fn account_name(world: &World, id: u32) -> String {
+    world.players.get(&id).map(|p| p.username.clone())
+        .or_else(|| world.auth.users.values().find(|u| u.id == id).map(|u| u.display_name().to_string()))
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Full state of one alliance for its members' panel: roster (with per-member live stats), pending
+/// requests/invites, tier + buffs + XP progress. Sent on join/leave/level-change and on `alliance-get`.
+pub fn build_alliance_state(world: &World, aid: u32) -> String {
+    let Some(al) = world.auth.alliances.get(&aid) else {
+        return json!({"t":"alliance-state","alliance":null}).to_string();
+    };
+    let level = al.level();
+    let buffs = crate::config::alliance_buffs(level);
+    let members: Vec<Value> = al.members.iter().map(|&id| {
+        let q = world.queens.get(&id).filter(|q| !q.dead);
+        json!({
+            "id":     id,
+            "name":   account_name(world, id),
+            "level":  q.map(|q| q.level).unwrap_or(0),
+            "tiles":  q.map(|q| q.cached_tiles).unwrap_or(0),
+            "kills":  q.map(|q| q.kills).unwrap_or(0),
+            "online": world.players.get(&id).map(|p| p.tx.is_some()).unwrap_or(false),
+            "alive":  q.is_some(),
+            "leader": id == al.leader_id,
+        })
+    }).collect();
+    let requests: Vec<Value> = al.requests.iter().map(|&id| json!({"id":id,"name":account_name(world,id)})).collect();
+    let invites:  Vec<Value> = al.invites.iter().map(|&id| json!({"id":id,"name":account_name(world,id)})).collect();
+    let cap = crate::config::ALLIANCE_LEVEL_CAP;
+    let next_tier_xp = if level >= cap { Value::Null } else { json!(crate::config::alliance_total_xp_for_level(level + 1)) };
+    json!({
+        "t": "alliance-state",
+        "alliance": {
+            "id": aid, "name": al.name, "icon": al.icon, "color": al.color,
+            "leaderId": al.leader_id, "level": level, "levelCap": cap,
+            "xp": al.xp, "tierStartXp": crate::config::alliance_total_xp_for_level(level), "nextTierXp": next_tier_xp,
+            "maxMembers": crate::config::ALLIANCE_MAX_MEMBERS,
+            "buffs": {
+                "dmg": buffs.dmg_mult, "hp": buffs.hp_mult, "shield": buffs.shield_mult,
+                "defenderBonus": buffs.defender_bonus, "phalanx": buffs.phalanx,
+            },
+            "members": members, "requests": requests, "invites": invites,
+        }
+    }).to_string()
+}
+
+/// Faction leaderboard + recolor roster: one entry per alliance (name/icon/colour/tier, summed member
+/// score/tiles/kills, and the member-id list the client maps to the banner recolour). Ranked by score.
+pub fn build_factions(world: &World) -> String {
+    let mut entries: Vec<Value> = world.auth.alliances.values().map(|al| {
+        let (mut score, mut tiles, mut kills) = (0i64, 0u64, 0u32);
+        for &id in &al.members {
+            if let Some(q) = world.queens.get(&id).filter(|q| !q.dead) {
+                let placed = world.players.get(&id).and_then(|p| p.queen_placed_at);
+                score += calc_score(q.cached_tiles, placed, q.kills) as i64;
+                tiles += q.cached_tiles;
+                kills += q.kills;
+            }
+        }
+        json!({
+            "id": al.id, "name": al.name, "icon": al.icon, "color": al.color,
+            "level": al.level(), "members": al.members, "memberCount": al.members.len(),
+            "tiles": tiles, "kills": kills, "score": score,
+        })
+    }).collect();
+    entries.sort_by(|a, b| b["score"].as_i64().unwrap_or(0).cmp(&a["score"].as_i64().unwrap_or(0)));
+    json!({"t": "factions", "entries": entries}).to_string()
+}
+
 /// Compact roster of live queens — the spectator landing page's "jump between queens" source. Guests
 /// receive NO queens in viewport frames (queens ride tile frames, which guests never get), so this is
 /// how the spectator canvas knows where queens are. Capped to the top N by level so the frame stays
@@ -150,7 +221,9 @@ pub fn build_player_info(
             let mut v: Vec<Value> = Vec::new();
             for a in world.ants.iter() {
                 if a.owner != player_id { continue; }
-                v.push(json!([a.id, a.lifespan.saturating_sub(a.age), a.kind]));
+                // remaining = LIVE global lifespan − age (not the spawn-time `a.lifespan`), so the
+                // WORKERS bar drains at the current admin "WORKER RETURN" rate and matches Phase-6 expiry.
+                v.push(json!([a.id, c.lifespan.saturating_sub(a.age), a.kind]));
                 if v.len() >= 120 { break; }
             }
             v
@@ -266,6 +339,8 @@ pub fn build_player_info(
         "nectar":    p.nectar,
         // Cosmetics currency — sourced from the account record (wipe-proof, like peak_level).
         "gems":      world.auth.users.get(&p.username).map(|u| u.gems).unwrap_or(0),
+        // Alliance membership (id or null) — the client uses it to gate the panel + apply buffs/UI.
+        "allianceId": world.alliance_of(player_id),
         "region":    q.map(|q| q.region.clone()).unwrap_or_default(),
         "defenders": p.defenders.len(),
         "visitedCountries":  visited_countries,
@@ -391,6 +466,9 @@ pub struct RawView {
     /// LOD step: tiles per served grid cell. 1 = normal 1:1; >1 = zoomed-out overview where
     /// each `owners` cell samples one tile every `lod_step` tiles (the territory pyramid).
     lod_step: i32,
+    /// Alliance co-members (player ids, excl. self). Their tiles seed shared fog, and their
+    /// ants/queens are always visible to this viewer. Empty for unaffiliated players.
+    allies: Vec<u32>,
 }
 
 /// Visible-ant cap (Phase 3B): subsample `ants` in place to ≈`cap` by a **stable id-stride**, so an
@@ -523,9 +601,14 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
         (0, 0, 0, Vec::new(), Vec::new())
     };
 
+    // Shared-fog / shared-vision roster: co-members other than self (empty if unaffiliated).
+    let allies: Vec<u32> = world.alliance_member_ids(player_id)
+        .into_iter().filter(|&id| id != player_id).collect();
+
     Some(RawView {
         x0, y0, w, h, tick: world.tick, include_tiles, player_id, skip_fog,
         pad, pw, ph, owners, clear_r: clear_grid, grad_r: grad_grid, ants, queens, lod_step: step,
+        allies,
     })
 }
 
@@ -732,13 +815,13 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
         vec![0u8; raw.w * raw.h]
     } else {
         compute_fog_field_slice(&raw.owners, raw.pw, raw.ph, raw.pad, raw.w, raw.h, raw.player_id,
-                                raw.clear_r, raw.grad_r)
+                                &raw.allies, raw.clear_r, raw.grad_r)
     };
 
-    // Visible ants (own always; others only where fog is not full).
+    // Visible ants (own + allied always; others only where fog is not full).
     let ants: Vec<Value> = raw.ants.iter()
         .filter(|&&(_, x, y, _, _, owner, _)| {
-            if owner == raw.player_id { return true; }
+            if owner == raw.player_id || raw.allies.contains(&owner) { return true; }
             let fi = (y - raw.y0) as usize * raw.w + (x - raw.x0) as usize;
             fog.get(fi).copied().unwrap_or(100) < 100
         })
@@ -748,8 +831,9 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
     // Visible queens.
     let queens: Vec<Value> = raw.queens.iter()
         .filter_map(|q| {
-            if !q.reveal {
-                // Map world → served grid cell (÷ lod_step) before sampling fog.
+            if !q.reveal && !raw.allies.contains(&q.qid) {
+                // Map world → served grid cell (÷ lod_step) before sampling fog. Own + allied queens
+                // skip the cull (shared vision); rivals appear only where the fog field is not full.
                 let gx = (((q.x - raw.x0) / raw.lod_step).max(0) as usize).min(raw.w.saturating_sub(1));
                 let gy = (((q.y - raw.y0) / raw.lod_step).max(0) as usize).min(raw.h.saturating_sub(1));
                 let qi = gy * raw.w + gx;
@@ -860,7 +944,7 @@ mod tests {
         RawView {
             x0: 0, y0: 0, w: 2, h: 2, tick, include_tiles: true, player_id: 999, skip_fog: true,
             pad: 0, pw: 2, ph: 2, owners, clear_r: 0.0, grad_r: 0.0,
-            ants: Vec::new(), queens: Vec::new(), lod_step: 1,
+            ants: Vec::new(), queens: Vec::new(), lod_step: 1, allies: Vec::new(),
         }
     }
 
@@ -1005,7 +1089,7 @@ mod tests {
             x0: 10, y0: 20, w: 4, h: 4, tick: 7, include_tiles: false, player_id: 1, skip_fog: false,
             pad: 0, pw: 0, ph: 0, owners: Vec::new(), clear_r: 0.0, grad_r: 0.0,
             ants: vec![(42, 13, 25, 1, 0, 9, 1), (43, 11, 22, 0, -1, 9, 0)],
-            queens: Vec::new(), lod_step: 1,
+            queens: Vec::new(), lod_step: 1, allies: Vec::new(),
         };
         let (frame, _) = finish_view(&raw, &json!({}), None, true);
         assert_eq!(frame[0], 3, "bin ants-only frame is kind 3");
