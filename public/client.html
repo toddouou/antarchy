@@ -3107,11 +3107,14 @@ function clampView() {
     // box above keeps the full AABB), while locally-fragmented trails sit inside the cap and frame fully.
     // Floor at 2·clearR for a brand-new queen. (We intentionally do NOT relax this floor to a fixed
     // cell-px overview — doing so let a small territory zoom out into the void as a small square.)
+    // Frame on the VISIBLE region (loadOsmR — the basemap reveal ring the renderer actually draws),
+    // not the inner clear ring, so "fully zoomed out" fills the screen with exactly what you can see —
+    // no zooming out past your reveal into a small domain-square floating in the fog.
     const ZOOM_OUT_CAP_MULT = 2.5;    // max zoom-out span = this × the main island (relocations land beyond)
-    const fb = territoryAABB(loadClearR);                 // full territory (+ clear ring)
-    const zb = territoryAABB(loadClearR, zoomBounds);     // main connected island (+ clear ring)
-    const islandSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadClearR);
-    const fullSpan   = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadClearR);
+    const fb = territoryAABB(loadOsmR);                 // full territory (+ visible reveal ring)
+    const zb = territoryAABB(loadOsmR, zoomBounds);     // main connected island (+ visible reveal ring)
+    const islandSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadOsmR);
+    const fullSpan   = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadOsmR);
     const maxSpan    = Math.min(fullSpan, islandSpan * ZOOM_OUT_CAP_MULT);
     minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
   }
