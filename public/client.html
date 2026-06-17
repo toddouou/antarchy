@@ -1321,6 +1321,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   <button class="mnav-btn" id="mnav-shop" style="display:none" onclick="openShopWindow()"><span class="mic">🛒</span><span class="mlb">SHOP</span></button>
   <button class="mnav-btn" onclick="openDiscoveryWindow()"><span class="mic">🧭</span><span class="mlb">DISC</span></button>
   <button class="mnav-btn mnav-deploy" id="mnav-deploy" onclick="document.getElementById('btn-ant').click()"><span class="mic">▲</span><span class="mlb">DEPLOY</span></button>
+  <button class="mnav-btn" onclick="openAllianceWindow()"><span class="mic">🛡</span><span class="mlb">ALLY</span></button>
   <button class="mnav-btn" onclick="openSettingsWindow()"><span class="mic">⚙</span><span class="mlb">SET</span></button>
   <button class="mnav-btn" onclick="openSidebar()"><span class="mic">☰</span><span class="mlb">MENU</span></button>
 </nav>
@@ -3099,22 +3100,20 @@ function clampView() {
   const leash = leashed ? territoryAABB(loadVoidR) : null;   // PAN box (full reveal, split-empire safe)
   if (leashed) {
     // ZOOM-OUT CAP: frame your WHOLE territory (full ownerBounds + clear ring), so at max zoom-out the
-    // entire domain is on screen at once — no trails stranded off-screen, no domain stuck in a tiny
-    // central square. Capped at ZOOM_OUT_CAP_MULT× the queen's main connected island so a post-relocation
-    // split empire can't force a near-planetary auto-fit: a relocated base lands many island-spans away,
-    // so it stays reachable by panning (the PAN box above keeps the full AABB), while locally-fragmented
-    // trails sit inside the cap and frame fully. Floor at 2·clearR for a brand-new queen. Finally, never
-    // force you MORE zoomed-in than a MIN_ZOOM_CELL_PX-cell overview, so even a tiny territory can pull
-    // back to a readable scale (a big domain can still zoom out past it to fit).
+    // entire domain fills the screen — no trails stranded off-screen, and no zooming out PAST your
+    // revealed area into a tiny domain-square floating in the fog/void. Capped at ZOOM_OUT_CAP_MULT× the
+    // queen's main connected island so a post-relocation split empire can't force a near-planetary
+    // auto-fit: a relocated base lands many island-spans away, so it stays reachable by panning (the PAN
+    // box above keeps the full AABB), while locally-fragmented trails sit inside the cap and frame fully.
+    // Floor at 2·clearR for a brand-new queen. (We intentionally do NOT relax this floor to a fixed
+    // cell-px overview — doing so let a small territory zoom out into the void as a small square.)
     const ZOOM_OUT_CAP_MULT = 2.5;    // max zoom-out span = this × the main island (relocations land beyond)
-    const MIN_ZOOM_CELL_PX  = 15;     // always allow zoom-out until cells are this small (screen px / cell)
     const fb = territoryAABB(loadClearR);                 // full territory (+ clear ring)
     const zb = territoryAABB(loadClearR, zoomBounds);     // main connected island (+ clear ring)
     const islandSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadClearR);
     const fullSpan   = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadClearR);
     const maxSpan    = Math.min(fullSpan, islandSpan * ZOOM_OUT_CAP_MULT);
     minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
-    minZoom = Math.min(minZoom, MIN_ZOOM_CELL_PX / CELL); // allow at least a 15px-cell overview
   }
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
