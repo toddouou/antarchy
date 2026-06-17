@@ -71,6 +71,8 @@ pub fn build_alliance_state(world: &World, aid: u32) -> String {
         json!({
             "id":     id,
             "name":   account_name(world, id),
+            // Each member keeps their OWN colour in the panel (no shared alliance colour).
+            "color":  world.players.get(&id).map(|p| p.color.clone()),
             "level":  q.map(|q| q.level).unwrap_or(0),
             "tiles":  q.map(|q| q.cached_tiles).unwrap_or(0),
             "kills":  q.map(|q| q.kills).unwrap_or(0),

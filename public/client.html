@@ -51,7 +51,8 @@
   .admin-badge { font-family:'Press Start 2P',monospace; font-size:8px; padding:4px 8px;
     background:var(--inkbar); color:var(--yel); border:1px solid var(--ink); display:none; }
   body.admin-on .admin-badge { display:inline-block; }
-  .hstats { margin-left:auto; display:flex; }
+  .hdr-spacer { flex:1 1 auto; }   /* pushes stats + action buttons + logout to the right edge */
+  .hstats { display:flex; }
   body:not(.is-admin) .hstats { display:none; }   /* server stats moved to the admin panel — admins only */
   .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 11px;
     border-left:1px solid var(--line); }
@@ -171,6 +172,13 @@
   .lbw-reg { color:var(--blu); font-size:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .lbw-c { text-align:right; }
   .lbw-list { max-height:60vh; overflow:auto; }
+  /* Factions tab: its own 7-column grid (the main .lbw grid has 8), with wide right-aligned
+     TILES/SCORE columns so abbreviated numbers ("1.23 M") fit without overflowing/wrapping. */
+  .fac-head, .fac-row { display:grid; grid-template-columns:30px 18px 1fr 34px 48px 64px 72px;
+    align-items:center; gap:8px; font-family:'Press Start 2P',monospace; font-size:8px; }
+  .fac-head { color:var(--dim); font-size:6px; padding:6px 4px; border-bottom:2px solid var(--ink); margin-top:6px; }
+  .fac-row { padding:7px 4px; border-bottom:1px solid var(--line); }
+  .fac-row.lb-me { background:var(--bg); }
 
   /* SIDEBAR */
   .sidebar { grid-area:s; border-right:2px solid var(--ink); background:var(--bg2);
@@ -421,11 +429,9 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .al-create, .al-invite { display:flex; gap:8px; }
   .al-create { flex-direction:column; }
   .al-input { font-family:'IBM Plex Mono',monospace; font-size:13px; padding:8px; border:2px solid var(--ink); background:var(--bg2); color:var(--ink); flex:1; }
-  .al-icons, .al-colors { display:flex; flex-wrap:wrap; gap:5px; }
+  .al-icons { display:flex; flex-wrap:wrap; gap:5px; }
   .al-ic { font-size:16px; padding:4px 6px; border:2px solid var(--line); background:var(--bg2); cursor:pointer; }
   .al-ic.on { border-color:var(--ink); }
-  .al-col { width:26px; height:26px; border:2px solid var(--line); cursor:pointer; }
-  .al-col.on { border-color:var(--ink); box-shadow:0 0 0 2px var(--ink); }
   .al-create-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:2px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; margin-top:6px; }
   .al-leave-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:2px solid var(--ink); background:var(--bg2); color:var(--red); cursor:pointer; width:100%; margin-top:14px; }
   .shop-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
@@ -824,6 +830,11 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   <div class="logo">antarchy<em>.fun</em></div>
   <div class="region" id="hdr-region">REGION · <b id="hdr-region-name">—</b></div>
   <span class="admin-badge" id="admin-badge">◆ ADMIN</span>
+  <div class="hbal">
+    <div class="hbal-chip" id="hbal-nectar" title="Nectar — spend on powerups in the shop"><span class="hbal-ic nectar"></span><span class="hbal-v" id="hdr-nectar">0</span></div>
+    <div class="hbal-chip" id="hbal-gems" title="Gems — the cosmetics currency"><span class="hbal-ic gems"></span><span class="hbal-v" id="hdr-gems">0</span></div>
+  </div>
+  <div class="hdr-spacer"></div>
   <div class="hstats">
     <div class="hstat"><span class="l">ONLINE</span><span class="v" id="hdr-online">0</span></div>
     <div class="hstat"><span class="l">ANTS</span><span class="v" id="hdr-ants">0</span></div>
@@ -831,10 +842,6 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="hstat sh"><span class="l">TICK</span><span class="v" id="hdr-tick">0</span></div>
     <div class="hstat sh"><span class="l">TPS</span><span class="v" id="hdr-tps">0</span></div>
     <div class="hstat sh"><span class="l">UPTIME</span><span class="v" id="hdr-uptime">--</span></div>
-  </div>
-  <div class="hbal">
-    <div class="hbal-chip" id="hbal-nectar" title="Nectar — spend on powerups in the shop"><span class="hbal-ic nectar"></span><span class="hbal-v" id="hdr-nectar">0</span></div>
-    <div class="hbal-chip" id="hbal-gems" title="Gems — the cosmetics currency"><span class="hbal-ic gems"></span><span class="hbal-v" id="hdr-gems">0</span></div>
   </div>
   <div class="hdr-actions">
     <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
@@ -1464,7 +1471,7 @@ let panTarget=null;     // {x,y} smooth camera fly target, null when idle
 let vw=null;
 let palette={0:'#ffffff'};
 // Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
-let myAlliance=null, factionsAll=[], factionColor={}, factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
+let myAlliance=null, factionsAll=[], factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
 let knownNames={};      // playerId -> username; every queen seen this life stays identified until our queen dies
 let WORLD={w:2048, h:2048, geo:null, spawnX:1024, spawnY:1024, spawnPan:100};
 // Camera "home" used pre-spawn (and whenever geolocation is unavailable / denied / blocked):
@@ -1685,7 +1692,7 @@ function rasterizeCache(lx, ly, lw, lh){
       const ci=rowC+rx, o=ci*4;
       const t=tileCache[ci];
       if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; continue; }
-      const rgb=toRGB(factionColor[t]||palette[t]||'#9b3027');   // alliance banner recolour
+      const rgb=toRGB(palette[t]||'#9b3027');   // each player's own colour (no shared alliance colour)
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
       // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
       td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
@@ -2709,12 +2716,12 @@ function renderEventsWindow(){
 
 // ---- Alliances (panel + faction board + banner recolour + mayday) ----
 const ALLIANCE_ICONS=['🐜','🐝','🦂','🕷','🐛','🦗','🐞','🦋','👑','⚔','🛡','🔥','⚡','🌟','💀','🍯'];
-let _alForm={ icon:'🐜', color:(HUES&&HUES[0])||'#b5524a' };
+let _alForm={ icon:'🐜' };
 
 function applyFactions(entries){
   factionsAll=entries||[];
-  factionColor={}; factionIcon={};
-  for(const f of factionsAll){ for(const id of (f.members||[])){ factionColor[id]=f.color; factionIcon[id]=f.icon; } }
+  factionIcon={};   // emblem-above-queen identity marker only — no shared alliance colour
+  for(const f of factionsAll){ for(const id of (f.members||[])){ factionIcon[id]=f.icon; } }
 }
 function handleMayday(m){
   maydayPings.push({x:m.x,y:m.y,t:performance.now(),name:m.name||'ally',hp:m.hpPct});
@@ -2727,8 +2734,7 @@ function handleMayday(m){
 function openAllianceWindow(){ AudioEngine.click(); openWindow('ALLIANCE — FACTIONS','alliance'); send({t:'alliance-get'}); renderAllianceWindow(); }
 function allianceTab(n){ if(n===_allianceTab) return; _allianceTab=n; AudioEngine.click(); renderAllianceWindow(); }
 function alPickIcon(i){ _alForm.icon=i; renderAllianceWindow(); }
-function alPickColor(c){ _alForm.color=c; renderAllianceWindow(); }
-function allianceCreate(){ const nm=(($('al-name')||{}).value||'').trim(); if(!nm){ toast('Enter an alliance name'); return; } send({t:'alliance-create', name:nm, icon:_alForm.icon, color:_alForm.color}); }
+function allianceCreate(){ const nm=(($('al-name')||{}).value||'').trim(); if(!nm){ toast('Enter an alliance name'); return; } send({t:'alliance-create', name:nm, icon:_alForm.icon}); }
 function allianceRequest(id){ AudioEngine.click(); send({t:'alliance-request', allianceId:id}); }
 function allianceAccept(pid){ send({t:'alliance-accept', playerId:pid}); }
 function allianceReject(pid){ send({t:'alliance-reject', playerId:pid}); }
@@ -2751,12 +2757,12 @@ function renderAllianceWindow(){
 }
 
 function _renderFactionsTab(){
-  let h='<div class="lbw-head"><span class="lbw-rank">#</span><span class="lbw-sw"></span><span class="lbw-name">ALLIANCE</span><span class="lbw-c">TIER</span><span class="lbw-c">MEM</span><span class="lbw-c">TILES</span><span class="lbw-c">SCORE</span></div><div class="lbw-list">';
+  let h='<div class="fac-head"><span class="lbw-rank">#</span><span class="al-badge"></span><span class="lbw-name">ALLIANCE</span><span class="lbw-c">TIER</span><span class="lbw-c">MEM</span><span class="lbw-c">TILES</span><span class="lbw-c">SCORE</span></div><div class="lbw-list">';
   if(!factionsAll.length) h+='<div class="lb-empty">NO ALLIANCES YET</div>';
   factionsAll.forEach((f,i)=>{
     const mine=myAlliance&&f.id===myAlliance.id;
-    h+=`<div class="lbw-row${mine?' lb-me':''}"><span class="lbw-rank">#${i+1}</span>
-      <span class="al-badge" style="color:${safeColor(f.color)}">${esc(f.icon||'🛡')}</span>
+    h+=`<div class="fac-row${mine?' lb-me':''}"><span class="lbw-rank">#${i+1}</span>
+      <span class="al-badge">${esc(f.icon||'🛡')}</span>
       <span class="lbw-name">${esc(f.name)}</span>
       <span class="lbw-c">T${f.level}</span><span class="lbw-c">${f.memberCount}/10</span>
       <span class="lbw-c">${fmtBig(f.tiles||0)}</span><span class="lbw-c">${fmtBig(f.score||0)}</span></div>`;
@@ -2776,13 +2782,12 @@ function _renderNoAlliance(){
   h+='<div class="al-sec">FOUND AN ALLIANCE</div><div class="al-create">';
   h+='<input id="al-name" class="al-input" maxlength="24" placeholder="Alliance name">';
   h+='<div class="al-icons">'+ALLIANCE_ICONS.map(i=>`<button class="al-ic${_alForm.icon===i?' on':''}" onclick="alPickIcon('${i}')">${i}</button>`).join('')+'</div>';
-  h+='<div class="al-colors">'+(HUES||[]).map(c=>`<button class="al-col${_alForm.color===c?' on':''}" style="background:${c}" onclick="alPickColor('${c}')"></button>`).join('')+'</div>';
   h+='<button class="al-create-btn" onclick="allianceCreate()">FOUND ALLIANCE (FREE)</button></div>';
   h+='<div class="al-sec">JOIN AN ALLIANCE</div>';
   if(!factionsAll.length) h+='<div class="disc-empty">No alliances yet — found the first.</div>';
   for(const f of factionsAll){
     const full=(f.memberCount>=10);
-    h+=`<div class="al-row"><span class="al-badge" style="color:${safeColor(f.color)}">${esc(f.icon||'🛡')}</span>
+    h+=`<div class="al-row"><span class="al-badge">${esc(f.icon||'🛡')}</span>
       <span class="al-rname">${esc(f.name)} <span class="al-dim">T${f.level} · ${f.memberCount}/10</span></span>
       <span class="al-actions"><button class="al-btn ok" ${full?'disabled':''} onclick="allianceRequest(${f.id})">${full?'FULL':'REQUEST'}</button></span></div>`;
   }
@@ -2791,13 +2796,13 @@ function _renderNoAlliance(){
 
 function _renderMyAlliance(){
   const a=myAlliance; let h='';
-  h+=`<div class="al-header"><span class="al-badge big" style="color:${safeColor(a.color)}">${esc(a.icon||'🛡')}</span>
+  h+=`<div class="al-header"><span class="al-badge big">${esc(a.icon||'🛡')}</span>
     <div><div class="al-title">${esc(a.name)}</div>
     <div class="al-dim">TIER ${a.level}/${a.levelCap} · ${a.members.length}/${a.maxMembers} MEMBERS</div></div></div>`;
   if(a.nextTierXp!=null){
     const span=Math.max(1,a.nextTierXp-a.tierStartXp), pct=Math.max(0,Math.min(100,(a.xp-a.tierStartXp)/span*100));
     h+=`<div class="al-bar"><div class="al-bar-fill" style="width:${pct}%"></div></div>
-      <div class="al-dim sm">${Math.floor(a.xp)} / ${Math.floor(a.nextTierXp)} XP TO TIER ${a.level+1}</div>`;
+      <div class="al-dim sm">${fmtBig(a.xp)} / ${fmtBig(a.nextTierXp)} XP TO TIER ${a.level+1}</div>`;
   } else h+='<div class="al-dim sm">★ MAX TIER REACHED</div>';
   const b=a.buffs||{};
   h+='<div class="al-buffs">'+_buffChip('DMG','×'+(b.dmg||1).toFixed(2))+_buffChip('HP','×'+(b.hp||1).toFixed(2))+_buffChip('SHIELD','×'+(b.shield||1).toFixed(2));
@@ -2808,7 +2813,7 @@ function _renderMyAlliance(){
   for(const m of a.members){
     const meRow=me&&m.id===me.id;
     const stat=m.alive?('LV'+m.level+' · '+fmtBig(m.tiles)+'t · '+m.kills+'k'):'no queen';
-    h+=`<div class="al-row"><span class="al-badge" style="color:${safeColor(factionColor[m.id]||a.color)}">${m.leader?'★':'•'}</span>
+    h+=`<div class="al-row"><span class="al-badge" style="color:${safeColor(m.color||'#8a8a8a')}">${m.leader?'★':'•'}</span>
       <span class="al-rname">${esc(m.name)}${meRow?' <span class="al-dim">(you)</span>':''}
       <span class="al-dim">${stat}${m.online?'':' · offline'}</span></span></div>`;
   }
@@ -3093,16 +3098,23 @@ function clampView() {
   const leashed = !worldBrowsable();
   const leash = leashed ? territoryAABB(loadVoidR) : null;   // PAN box (full reveal, split-empire safe)
   if (leashed) {
-    // ZOOM-OUT CAP: frame your land + its CLEAR zone (not the full void ring), so at max zoom-out the
-    // territory FILLS the screen with just a thin fog edge — not a tiny queen in a sea of fog. Floor at
-    // 2·clearR so a brand-new queen frames its clear zone. (Pan box is wider, so you can still nudge
-    // into the fog ring; the full-canvas shroud keeps it leak-proof.)
-    // Anchored on `zoomBounds` (the queen's island only) — a post-relocation split empire must never
-    // force a planetary auto-fit. The PAN box above keeps the full AABB, so the far island stays
-    // reachable by panning across the fogged gap.
-    const zb = territoryAABB(loadClearR, zoomBounds);
-    const maxSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadClearR);
+    // ZOOM-OUT CAP: frame your WHOLE territory (full ownerBounds + clear ring), so at max zoom-out the
+    // entire domain is on screen at once — no trails stranded off-screen, no domain stuck in a tiny
+    // central square. Capped at ZOOM_OUT_CAP_MULT× the queen's main connected island so a post-relocation
+    // split empire can't force a near-planetary auto-fit: a relocated base lands many island-spans away,
+    // so it stays reachable by panning (the PAN box above keeps the full AABB), while locally-fragmented
+    // trails sit inside the cap and frame fully. Floor at 2·clearR for a brand-new queen. Finally, never
+    // force you MORE zoomed-in than a MIN_ZOOM_CELL_PX-cell overview, so even a tiny territory can pull
+    // back to a readable scale (a big domain can still zoom out past it to fit).
+    const ZOOM_OUT_CAP_MULT = 2.5;    // max zoom-out span = this × the main island (relocations land beyond)
+    const MIN_ZOOM_CELL_PX  = 15;     // always allow zoom-out until cells are this small (screen px / cell)
+    const fb = territoryAABB(loadClearR);                 // full territory (+ clear ring)
+    const zb = territoryAABB(loadClearR, zoomBounds);     // main connected island (+ clear ring)
+    const islandSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadClearR);
+    const fullSpan   = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadClearR);
+    const maxSpan    = Math.min(fullSpan, islandSpan * ZOOM_OUT_CAP_MULT);
     minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
+    minZoom = Math.min(minZoom, MIN_ZOOM_CELL_PX / CELL); // allow at least a 15px-cell overview
   }
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
@@ -3638,7 +3650,7 @@ function drawLodTiles(v, cp, W, H) {
       const f=fog?fog[i]:0;
       const t=tiles[i];
       if (t===0 || f>=100) continue;                // unclaimed / fully fogged → transparent (overlay masks)
-      const o=i*4, rgb=toRGB(factionColor[t]||palette[t]||'#9b3027');   // alliance banner recolour
+      const o=i*4, rgb=toRGB(palette[t]||'#9b3027');   // each player's own colour (no shared alliance colour)
       d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2];
       d[o+3]=(t===myId) ? 255 : (mapVisible ? 150 : 255);
     }
@@ -3906,7 +3918,7 @@ function render() {
   //     (the server hides others' bubbleR), so it marks where YOU can still place.
   for (const q of v.queens) {
     if (!q.bubbleR) continue;
-    const col = safeColor(factionColor[q.id]||q.color); // alliance banner colour overrides own
+    const col = safeColor(q.color); // queen's own colour (no shared alliance colour)
     if (col.length !== 7) continue;               // need 6-digit hex for the alpha-suffix stops
     const cx2 = offX + (q.x + q.size/2 - v.x0) * cp;
     const cy2 = offY + (q.y + q.size/2 - v.y0) * cp;
@@ -3938,7 +3950,7 @@ function render() {
       ctx.strokeRect(px-2,py-2,qw+4,qw+4);
       ctx.restore();
     }
-    ctx.fillStyle=factionColor[q.id]||q.color;     // alliance banner recolour
+    ctx.fillStyle=q.color;     // queen's own colour (no shared alliance colour)
     ctx.fillRect(px,py,qw,qw);
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
     ctx.strokeRect(px,py,qw,qw);
@@ -4201,6 +4213,7 @@ function loop(t) {
     clampView();
   }
   pushView(); render();
+  tickAntBars();
   requestAnimationFrame(loop);
 }
 
@@ -4704,6 +4717,10 @@ $('btn-ant').onclick=()=>{
 };
 // ---- Active-worker list (expandable, lifespan bars) ----
 let antListOpen=false;
+// Snapshot the WORKERS lifespan bars (fill els + their server `remaining`, plus when it arrived and
+// the live drain rate) so the rAF loop can interpolate them down smoothly between the ~1 Hz `me`
+// updates — a continuous countdown instead of a once-per-second step. See tickAntBars().
+let antBars=null, antBarsAt=0, antBarsLife=1, antBarsRate=15;
 function toggleAntList() {
   AudioEngine.tick();
   antListOpen=!antListOpen;
@@ -4716,6 +4733,7 @@ function renderAntList() {
   const el=$('wk-list'); if (!el) return;
   const ants=me?.ants||[], life=me?.cfg?.LIFESPAN||1;
   if (!ants.length) {
+    antBars=null;
     el.innerHTML='<div style="font-family:\'Press Start 2P\',monospace;font-size:6px;color:var(--dim);padding:8px 2px;text-align:center;">NO ACTIVE WORKERS</div>';
     return;
   }
@@ -4732,6 +4750,27 @@ function renderAntList() {
   const more=(me?.army||0)-shown.length;
   if (more>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);text-align:center;padding:4px;">+${more} MORE</div>`;
   el.innerHTML=html;
+  // Capture the fill els + their server `remaining` so the rAF loop can drain them smoothly between
+  // `me` snapshots. querySelectorAll('.wk-ant-fill') returns exactly the per-worker fills in order
+  // (the "+N MORE" div has none), so they line up with `shown`.
+  antBarsAt   = performance.now();
+  antBarsLife = life;
+  antBarsRate = me?.tickRate || me?.cfg?.TICK_RATE || 15;   // ticks/sec drain rate
+  const fills = el.querySelectorAll('.wk-ant-fill');
+  antBars = shown.map((a,i)=>({ el: fills[i], rem: a[1] })).filter(b=>b.el);
+}
+// Per-frame smooth drain of the WORKERS lifespan bars: locally extrapolate each worker's remaining
+// ticks from the last `me` snapshot (remaining − elapsed·tickRate) so the bar is a continuous
+// countdown, not a 1 Hz step. Cheap + guarded: ≤6 elements, only while the panel is open. The next
+// `me` re-anchors `rem`/`antBarsAt` to the authoritative value (sub-pixel jump at long lifespans).
+function tickAntBars() {
+  if (!antListOpen || !antBars || !antBars.length) return;
+  const elapsed = (performance.now() - antBarsAt) / 1000 * antBarsRate; // ticks since snapshot
+  for (const b of antBars) {
+    const r = Math.max(0, b.rem - elapsed);
+    const frac = Math.max(0, Math.min(1, r / antBarsLife));
+    b.el.style.width = (frac*100).toFixed(2) + '%';
+  }
 }
 $('admin-chk').onchange=e=>{
   AudioEngine.tick();

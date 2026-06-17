@@ -954,8 +954,10 @@ fn alliance_create(world: &mut World, pid: u32, msg: &Value, tx: &BoundedTx<Stri
     };
     let icon = msg["icon"].as_str().unwrap_or("").to_string();
     if !crate::alliance::valid_icon(&icon) { let _ = tx.send(err("Pick a valid icon")); return; }
-    let color = msg["color"].as_str().unwrap_or("").to_string();
-    if !valid_hex_color(&color) { let _ = tx.send(err("Pick a valid colour")); return; }
+    // Alliance colour is no longer user-facing (members keep their own colours); the client sends
+    // none. Keep a neutral stored default so existing readers of `al.color` stay valid.
+    let raw_color = msg["color"].as_str().unwrap_or("").to_string();
+    let color = if valid_hex_color(&raw_color) { raw_color } else { "#8a8a8a".to_string() };
     if !can_afford(world, pid, PRICE_ALLIANCE_CREATE) { let _ = tx.send(err("Not enough nectar")); return; }
     alliance_charge(world, pid, PRICE_ALLIANCE_CREATE);
 

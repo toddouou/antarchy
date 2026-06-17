@@ -709,7 +709,7 @@ pub fn tick_world(world: &mut World) {
     // Phase 3: Paint + commit move
     // =========================================================================
     let highway_xp = c.xp_highway_tick;
-    let pa3 = &world.player_alliance;   // ally tiles are friendly: never captured, never erased
+    let pa3 = &world.player_alliance;   // ally tiles read as the ant's own (erase→repaint, Langton-friendly)
     for ant in world.ants.iter_mut() {
         let cur_key = ant.y as u64 * ww_u64 + ant.x as u64;
         if !world.queen_map.contains_key(&cur_key) {
@@ -738,11 +738,12 @@ pub fn tick_world(world: &mut World) {
                         world.xp_queue.push(XpGrant { player_id: ant.owner, amount: highway_xp, reason: "highway", x: ant.x, y: ant.y });
                         ant.highway_ticks = 0;
                     }
-                } else if cur == ant.owner {
+                } else if cur == ant.owner || allied_in(pa3, ant.owner, cur) {
+                    // Own OR ally tile → erase to white (the move phase already turned CW, the
+                    // friendly rule). The cell repaints to THIS ant's colour on a later pass, so
+                    // allied ants flow through shared territory instead of spinning on tiles they
+                    // couldn't repaint. Net territory stays in the alliance (scores combine).
                     world.tiles.set(ant.x as u32, ant.y as u32, 0);
-                    ant.highway_ticks = 0;
-                } else if allied_in(pa3, ant.owner, cur) {
-                    // An ally's tile: pass through, leaving their ownership intact (no capture/erase).
                     ant.highway_ticks = 0;
                 } else {
                     world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
