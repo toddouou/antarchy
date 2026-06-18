@@ -2309,6 +2309,7 @@ function handle(msg) {
     case 'event': toast(msg.msg); admPushLog(msg.msg); pushEventLog(msg.msg); break;
     case 'logged-in':
       me=msg.me;
+      if (me.catalog) setCatalog(me.catalog);   // cosmetics catalogue rides the full login payload
       applyFowFromMe();   // level-scaled fog-of-war radii + territory AABB
       document.body.classList.add('booted');   // cookie auth resolved → drop the connecting splash
       sessionStorage.setItem('hive-active','1');
