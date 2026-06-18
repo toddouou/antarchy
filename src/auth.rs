@@ -88,6 +88,11 @@ pub struct Auth {
     pub alliances: HashMap<u32, Alliance>,
     /// Monotonic alliance-id allocator. 0 → the first `create_alliance` mints id 1.
     pub next_alliance_id: u32,
+    /// Stripe `checkout.session.id`s already credited — the **payment idempotency** ledger. A webhook
+    /// replay/retry for the same session is a no-op (can't double-credit gems). Persisted in users.json
+    /// (wipe-proof) so a restart still rejects replays. Grows one short id per purchase (bounded; prune
+    /// later if ever needed).
+    pub processed_payments: HashSet<String>,
 }
 
 /// On-disk form of `Auth` (users.json). Carries both accounts and the ban list so a restart
@@ -101,6 +106,8 @@ struct AuthSave {
     alliances: HashMap<u32, Alliance>,
     #[serde(default)]
     next_alliance_id: u32,
+    #[serde(default)]
+    processed_payments: HashSet<String>,
 }
 
 /// LEGACY password hash — SHA-256 with a fixed string salt. **Do not use for new hashes.** Kept only
@@ -220,6 +227,7 @@ impl Auth {
             banned: self.banned.clone(),
             alliances: self.alliances.clone(),
             next_alliance_id: self.next_alliance_id,
+            processed_payments: self.processed_payments.clone(),
         };
         let json = match serde_json::to_string_pretty(&data) {
             Ok(j)  => j,
@@ -246,6 +254,7 @@ impl Auth {
                 auth.banned = saved.banned;
                 auth.alliances = saved.alliances;
                 auth.next_alliance_id = saved.next_alliance_id;
+                auth.processed_payments = saved.processed_payments;
                 auth.users.entry(ADMIN_USERNAME.to_string())
                     .or_insert_with(Self::admin_record);
                 auth.users.entry(TEST_USERNAME.to_string())

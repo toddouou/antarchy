@@ -2,6 +2,7 @@
 /target-dev
 /target-check
 /target-glow
+/target-cosmetics
 users.json
 users.json.tmp
 sessions.json

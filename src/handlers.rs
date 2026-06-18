@@ -841,14 +841,49 @@ pub fn handle_message(
             else { user.equipped.insert(slot.clone(), id.clone()); }
         }
         world.auth.save();
-        // Mirror the tile-fx slot onto the live Player so the FX palette reflects it next tile cycle.
-        if slot == "tile_fx" {
-            if let Some(p) = world.players.get_mut(&pid) {
-                p.tile_fx = if id.is_empty() { None } else { Some(id.clone()) };
+        // Mirror the equipped slot onto the live Player so renders update without a reconnect.
+        // `recolor` overrides the live colour (equip) / reverts to the account base colour (unequip);
+        // the rest feed the fx palette (tile_fx) or the ~1 Hz cosmetics roster (aura/trail/emblem).
+        if slot == "recolor" {
+            let base = world.auth.users.get(&uname).map(|u| u.color.clone()).unwrap_or_default();
+            let new_color = if id.is_empty() { base.clone() }
+                else { crate::cosmetics::get(&id).map(|c| c.params.to_string())
+                       .filter(|s| !s.is_empty()).unwrap_or(base) };
+            // The queen's rendered colour is pulled from the player's colour at snapshot time
+            // (network.rs), so updating `p.color` recolours tiles, ants, AND the queen together.
+            if let Some(p) = world.players.get_mut(&pid) { p.color = new_color; }
+        } else if let Some(p) = world.players.get_mut(&pid) {
+            let val = if id.is_empty() { None } else { Some(id.clone()) };
+            match slot.as_str() {
+                "tile_fx"      => p.tile_fx = val,
+                "aura"         => p.aura = val,
+                "trail"        => p.trail = val,
+                "queen_emblem" => p.emblem = val,
+                _ => {}
             }
         }
         let action = if id.is_empty() { "unequip" } else { "equip" };
         let _ = tx.send(json!({"t":"cosmetic-ok","action":action,"slot":slot,"id":id}).to_string());
+        let _ = tx.send(build_player_info(world, pid, true, None));
+        return;
+    }
+    // Bundle purchase: debit once, grant every (not-already-owned) member atomically.
+    if t == "bundle-buy" {
+        if !check_seq(world, pid, &msg) { return; }
+        let id = msg["id"].as_str().unwrap_or("").to_string();
+        let Some(bundle) = crate::cosmetics::get_bundle(&id) else { let _ = tx.send(err("Unknown bundle")); return; };
+        let Some(uname) = world.players.get(&pid).map(|p| p.username.clone()) else { return; };
+        let Some(user) = world.auth.users.get_mut(&uname) else { let _ = tx.send(err("No account")); return; };
+        if bundle.members.iter().all(|m| user.owned_cosmetics.iter().any(|o| o == m)) {
+            let _ = tx.send(err("Bundle already owned")); return;
+        }
+        if user.gems < bundle.price_gems { let _ = tx.send(err("Not enough gems")); return; }
+        user.gems -= bundle.price_gems;
+        for m in bundle.members {
+            if !user.owned_cosmetics.iter().any(|o| o == m) { user.owned_cosmetics.push(m.to_string()); }
+        }
+        world.auth.save();
+        let _ = tx.send(json!({"t":"cosmetic-ok","action":"bundle","id":id}).to_string());
         let _ = tx.send(build_player_info(world, pid, true, None));
         return;
     }
@@ -1421,9 +1456,19 @@ fn create_or_reconnect_player(
     // Metro list for the header region switcher (name + centre tile to fly to).
     let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
 
-    // Equipped tile-fx cosmetic (wipe-proof account state) → live runtime cache so the per-owner
-    // FX palette shows it to every viewer. Computed before any &mut players borrow.
-    let tile_fx = world.auth.users.get(username).and_then(|u| u.equipped.get("tile_fx").cloned());
+    // Equipped cosmetics (wipe-proof account state) → live runtime caches so they reach every viewer
+    // (tile_fx via the fx palette; aura/trail/emblem via the ~1 Hz roster). A `recolor` overrides the
+    // player's colour. All computed up front in a block so the &auth borrow drops before &mut players.
+    let (tile_fx, aura, trail, emblem, eff_color) = {
+        let eq = world.auth.users.get(username).map(|u| &u.equipped);
+        let get = |slot: &str| eq.and_then(|e| e.get(slot).cloned());
+        let eff_color = eq.and_then(|e| e.get("recolor"))
+            .and_then(|id| crate::cosmetics::get(id))
+            .filter(|c| c.category == "recolor" && !c.params.is_empty())
+            .map(|c| c.params.to_string())
+            .unwrap_or_else(|| color.to_string());
+        (get("tile_fx"), get("aura"), get("trail"), get("queen_emblem"), eff_color)
+    };
 
     if world.players.contains_key(&id) {
         // Reconnect: reattach + bump conn_gen, and take the disconnect snapshot for welcome-back.
@@ -1432,19 +1477,21 @@ fn create_or_reconnect_player(
             p.conn_gen += 1;
             p.tx = Some(tx);
             p.tile_fx = tile_fx;
+            p.aura = aura; p.trail = trail; p.emblem = emblem;
+            p.color = eff_color;
             p.away.take()
         };
         println!("[reconnect] {username} ({})", id);
         return away.and_then(|s| build_welcome_back(world, id, &s, now));
     }
     world.players.insert(id, Player {
-        id, username: username.to_string(), color: color.to_string(),
+        id, username: username.to_string(), color: eff_color,
         hue_idx,
         ants_avail: daily,
         next_refill: now + 24 * 3600 * 1000,
         tx: Some(tx),
         conn_gen: 1,
-        tile_fx,
+        tile_fx, aura, trail, emblem,
         ..Default::default()
     });
     println!("[connect] {username} ({})", id);

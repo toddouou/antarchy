@@ -210,6 +210,14 @@ pub struct Player {
     /// the per-owner tile effect reaches every viewer. NOT persisted — the authoritative source is
     /// `UserRecord.equipped["tile_fx"]` in users.json.
     pub tile_fx:             Option<String>,
+    /// Runtime caches of the equipped `aura` / `trail` / `queen_emblem` cosmetic ids — entity,
+    /// freshly-painted-tile, and queen decorations. Loaded on connect, refreshed on equip. Read by
+    /// `network::build_cosmetics_roster` (~1 Hz, send-on-change) so they reach every viewer without
+    /// any per-tile bytes. NOT persisted — authoritative source is `UserRecord.equipped`. (A `recolor`
+    /// slot is handled differently: it overrides `color` directly, riding the normal owner palette.)
+    pub aura:                Option<String>,
+    pub trail:               Option<String>,
+    pub emblem:              Option<String>,
 }
 
 /// Snapshot of a player's state at disconnect → diffed on reconnect for the welcome-back summary.

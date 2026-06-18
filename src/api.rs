@@ -49,7 +49,7 @@ pub enum AuthOp {
     ResendCode { reg_id: String },
     /// Credit gems to an account (Stripe `checkout.session.completed` webhook). Runs on the sim
     /// thread so it serializes with the `users.json` save like every other auth mutation.
-    GrantGems { uid: u32, gems: u64 },
+    GrantGems { uid: u32, gems: u64, session: String },
 }
 
 /// The sim thread's reply for an [`AuthOp`]. The HTTP handler turns it into JSON and does any sending.
@@ -93,19 +93,33 @@ pub fn apply(world: &mut World, op: AuthOp) -> AuthOutcome {
         AuthOp::Forgot { email }             => forgot(world, &email),
         AuthOp::Reset { token, password }    => reset(world, &token, &password),
         AuthOp::ResendCode { reg_id }        => resend(world, reg_id),
-        AuthOp::GrantGems { uid, gems }      => grant_gems(world, uid, gems),
+        AuthOp::GrantGems { uid, gems, session } => grant_gems(world, uid, gems, &session),
     }
 }
 
 /// Credit `gems` to the account with this numeric id. Persists `users.json` immediately. A `false`
 /// `ok` means the uid didn't match any account (stale/forged metadata) — the webhook still 200s.
-fn grant_gems(world: &mut World, uid: u32, gems: u64) -> AuthOutcome {
+///
+/// **Idempotent on the Stripe `checkout.session.id`** (`session`): a webhook retry/replay for an
+/// already-credited session is a no-op, so a duplicate delivery can never double-grant gems. The
+/// processed-session ledger lives in `users.json` (wipe-proof), so a restart still rejects replays.
+fn grant_gems(world: &mut World, uid: u32, gems: u64, session: &str) -> AuthOutcome {
+    if !session.is_empty() {
+        if world.auth.processed_payments.contains(session) {
+            println!("[stripe] duplicate webhook for session {session} (uid {uid}) — already credited, skipped");
+            return AuthOutcome::GemsGranted;
+        }
+        world.auth.processed_payments.insert(session.to_string());
+    }
     match world.auth.users.values_mut().find(|u| u.id == uid) {
         Some(u) => {
             u.gems = u.gems.saturating_add(gems);
             world.auth.save();
         }
-        None => eprintln!("[stripe] webhook credited unknown uid {uid} ({gems} gems) — ignored"),
+        None => {
+            eprintln!("[stripe] webhook credited unknown uid {uid} ({gems} gems) — ignored");
+            world.auth.save();   // still persist the processed-session id so a replay stays a no-op
+        }
     }
     AuthOutcome::GemsGranted
 }
@@ -551,9 +565,11 @@ pub async fn stripe_webhook(State(app): State<AppState>, headers: HeaderMap, bod
         let meta = event.pointer("/data/object/metadata");
         let uid  = meta.and_then(|m| m.get("uid")).and_then(|v| v.as_str()).and_then(|s| s.parse::<u32>().ok());
         let gems = meta.and_then(|m| m.get("gems")).and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok());
+        // Checkout session id → the idempotency key (rejects webhook replays/retries).
+        let session = event.pointer("/data/object/id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if let (Some(uid), Some(gems)) = (uid, gems) {
             // Credit on the sim thread (serialized with the users.json save), like every auth mutation.
-            let _ = call_sim(&app, AuthOp::GrantGems { uid, gems }).await;
+            let _ = call_sim(&app, AuthOp::GrantGems { uid, gems, session }).await;
         } else {
             eprintln!("[stripe] completed checkout missing uid/gems metadata — skipped");
         }

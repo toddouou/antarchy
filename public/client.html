@@ -1480,8 +1480,115 @@ let panTarget=null;     // {x,y} smooth camera fly target, null when idle
 let vw=null;
 let palette={0:'#ffffff'};
 // Per-owner tile-effect codes (e.g. {id:'glow'}) from the tile-frame palette — parallel to `palette`.
-// Drives the cosmetic glow overlay so a player's effect is visible to EVERY viewer, not just them.
+// Drives the cosmetic tile-fx bloom overlay so a player's effect is visible to EVERY viewer.
 let paletteFx={};
+
+// ===== Cosmetics (render-only) ====================================================================
+// Server-authoritative catalogue (from me.catalog) + the ~1 Hz roster of OTHER players' equipped
+// aura / trail / queen-emblem (the 'cosmetics' broadcast). Everything renders from data the client
+// already holds (tile/entity owner, delta-changed cells) — nothing cosmetic is streamed per tile.
+let CATALOG={items:[],bundles:[]};
+let catItemsById={};               // id -> catalogue item (price/params/category/…)
+let cosmRoster={};                 // ownerId -> {aura,trail,emblem}
+let trailAny=false, auraAny=false; // cheap gates so the common (no-cosmetics) case stays zero-cost
+const trailCells=new Map();        // worldKey -> {t:tick, o:owner} — recent painted cells for trails
+let fxTintCache={};                // tile-fx id -> [r,g,b] bloom tint (white default)
+function setCatalog(cat){
+  CATALOG=cat||{items:[],bundles:[]};
+  catItemsById={}; for (const it of (CATALOG.items||[])) catItemsById[it.id]=it;
+  fxTintCache={};
+}
+function applyCosmRoster(map){
+  cosmRoster=map||{}; trailAny=false; auraAny=false;
+  for (const k in cosmRoster){ const c=cosmRoster[k]; if(c.trail)trailAny=true; if(c.aura)auraAny=true; }
+}
+// Bloom tint for a tile-fx (its `params` hex, or white for the plain GLOW). Cached per id.
+function fxTint(fxId){
+  let t=fxTintCache[fxId];
+  if(!t){ const it=catItemsById[fxId]; const hex=(it&&it.params&&it.params[0]==='#')?it.params:'#ffffff';
+          t=toRGB(hex); fxTintCache[fxId]=t; }
+  return t;
+}
+function lerpHex(a,b,f){ const A=toRGB(a),B=toRGB(b);
+  return `rgb(${(A[0]+(B[0]-A[0])*f)|0},${(A[1]+(B[1]-A[1])*f)|0},${(A[2]+(B[2]-A[2])*f)|0})`; }
+// Ripening trail colour: freshest (t=0)=the effect's birth stop(s); aged (t=1)=the owner's true
+// colour. The catalogue `params` is `>`-separated stops, freshest→aged; the owner colour is appended.
+function trailColorFor(owner, t){
+  const c=cosmRoster[owner]; const id=c&&c.trail; const it=id&&catItemsById[id];
+  const ownerCol=palette[owner]||'#9b3027';
+  if(!it) return ownerCol;
+  const stops=String(it.params||'').split('>').filter(s=>s); stops.push(ownerCol);
+  if(stops.length<=1) return stops[0]||ownerCol;
+  const seg=Math.max(0,Math.min(1,t))*(stops.length-1);
+  const i=Math.min(stops.length-2, seg|0);
+  return lerpHex(stops[i], stops[i+1], seg-i);
+}
+// Trail pass: ripen recently-painted cells (last ~10 ticks) behind their owners' ants. Derived purely
+// from delta-recorded fresh cells — no new wire data. Drawn over territory, under fog. Disabled (and
+// the buffer cleared) when effects are reduced, since the tile already shows its true colour beneath.
+const TRAIL_WIN=10;
+function drawTrail(cp){
+  if (effReduce()){ if(trailCells.size) trailCells.clear(); return; }
+  if (!trailCells.size || !tileCache) return;
+  const curTick=vw?.tick||0;
+  ctx.save(); ctx.imageSmoothingEnabled=false;
+  for (const [key,rec] of trailCells){
+    const age=curTick-rec.t;
+    if (age<0 || age>=TRAIL_WIN){ trailCells.delete(key); continue; }
+    const vx=key%WORLD.w, vy=Math.floor(key/WORLD.w);
+    const ci=(vy-cacheOriY)*TILE_CACHE_W+(vx-cacheOriX);
+    if (ci<0||ci>=tileCache.length||tileCache[ci]!==rec.o){ trailCells.delete(key); continue; }
+    const sx=W/2+(vx-view.x)*cp, sy=H/2+(vy-view.y)*cp;
+    ctx.fillStyle=trailColorFor(rec.o, age/TRAIL_WIN);
+    ctx.fillRect(sx, sy, cp+0.6, cp+0.6);
+  }
+  ctx.restore();
+}
+function auraStaticColor(id){
+  switch(id){ case 'au_halo':return '#FFD166'; case 'au_cyber':return '#00F5D4';
+    case 'au_frost':return '#90E0EF'; case 'au_phantom':return '#cfe3ff';
+    case 'au_prism':return '#ff66cc'; case 'au_sparkle':return '#ffffff'; default:return null; }
+}
+// Draw an entity aura on context `g`, centred at (cx,cy) with radius `rad`. Animated, but every
+// animation is gentle (<3 Hz, small amplitude) and collapses to a single static ring when effects are
+// reduced. Takes the context so both the live map (ctx) and the shop preview sandbox can reuse it.
+function drawAura(g, cx, cy, rad, auraId){
+  if(!auraId) return;
+  if(effReduce()){
+    const col=auraStaticColor(auraId); if(!col) return;
+    g.save(); g.globalAlpha=0.5; g.strokeStyle=col; g.lineWidth=Math.max(1.5,rad*0.12);
+    g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); g.restore(); return;
+  }
+  const t=performance.now();
+  g.save();
+  switch(auraId){
+    case 'au_halo': { const p=0.7+0.3*Math.sin(t/700); g.globalCompositeOperation='lighter';
+      g.shadowColor='#FFD166'; g.shadowBlur=rad*1.2*p;
+      g.strokeStyle='rgba(255,209,102,'+(0.55*p).toFixed(3)+')'; g.lineWidth=Math.max(1.5,rad*0.18);
+      g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); break; }
+    case 'au_cyber': { const p=0.6+0.4*Math.sin(t/420); g.globalCompositeOperation='lighter';
+      g.shadowColor='#00F5D4'; g.shadowBlur=rad*p;
+      g.strokeStyle='rgba(0,245,212,'+(0.7*p).toFixed(3)+')'; g.lineWidth=Math.max(1.2,rad*0.14);
+      g.strokeRect(cx-rad,cy-rad,rad*2,rad*2); break; }
+    case 'au_frost': { const p=0.6+0.4*Math.sin(t/900); g.globalCompositeOperation='lighter';
+      g.shadowColor='#90E0EF'; g.shadowBlur=rad*1.1*p;
+      g.strokeStyle='rgba(144,224,239,'+(0.5*p).toFixed(3)+')'; g.lineWidth=Math.max(1.2,rad*0.14);
+      g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); break; }
+    case 'au_phantom': { g.globalAlpha=0.25; g.strokeStyle='#cfe3ff'; g.lineWidth=Math.max(1,rad*0.1);
+      g.beginPath(); g.arc(cx,cy,rad*(1.0+0.15*Math.sin(t/500)),0,Math.PI*2); g.stroke(); break; }
+    case 'au_prism': { const hue=(t/12)%360; g.globalCompositeOperation='lighter';
+      g.shadowColor=`hsl(${hue},100%,60%)`; g.shadowBlur=rad*1.1;
+      g.strokeStyle=`hsla(${hue},100%,65%,0.6)`; g.lineWidth=Math.max(1.2,rad*0.16);
+      g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); break; }
+    case 'au_sparkle': { g.globalCompositeOperation='lighter'; g.fillStyle='#fff';
+      for(let i=0;i<3;i++){ const a=t/600+i*2.1, rr=rad*(0.9+0.3*Math.sin(t/300+i));
+        const sx=cx+Math.cos(a)*rr, sy=cy+Math.sin(a)*rr;
+        const s=Math.max(1,rad*0.12)*(0.6+0.4*Math.sin(t/200+i*1.7));
+        g.beginPath(); g.arc(sx,sy,s,0,Math.PI*2); g.fill(); } break; }
+    default: break;
+  }
+  g.restore();
+}
 // Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
 let myAlliance=null, factionsAll=[], factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
 let knownNames={};      // playerId -> username; every queen seen this life stays identified until our queen dies
@@ -1694,6 +1801,7 @@ function clearCacheTextures(){
   territoryImg.data.fill(0);
   territoryCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H);
   if (glowImg){ glowImg.data.fill(0); glowCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H); glowAny=false; }
+  trailCells.clear();   // cache anchor changed → fresh-cell indices no longer map; drop them
 }
 // Rasterize a cache-LOCAL pixel region [lx,ly,lw,lh] of tileCache into the persistent TERRITORY
 // texture, uploading ONLY that dirty sub-rect. Pure owner colours — the fog (drawFog) shrouds them at
@@ -1721,8 +1829,11 @@ function rasterizeCache(lx, ly, lw, lh){
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
       // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
       td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
-      // Glow cosmetic: opaque white over this owner's cell; the per-frame blit alpha does the pulse.
-      if (gd){ if (paletteFx[t]==='glow'){ gd[o]=255; gd[o+1]=255; gd[o+2]=255; gd[o+3]=255; } else gd[o+3]=0; }
+      // Tile-fx cosmetic: stamp the effect's bloom TINT over this owner's cell (white for plain GLOW,
+      // gold for GILDED, cyan for NEON, …); the per-frame additive blit applies the gentle pulse.
+      if (gd){ const fx=paletteFx[t];
+               if (fx){ const tn=fxTint(fx); gd[o]=tn[0]; gd[o+1]=tn[1]; gd[o+2]=tn[2]; gd[o+3]=255; }
+               else gd[o+3]=0; }
     }
   }
   territoryCtx.putImageData(territoryImg, 0,0, lx, ly, lw, lh);
@@ -2018,14 +2129,20 @@ function _sameGeom(h,g){ return g && h.x0===g.x0 && h.y0===g.y0 && h.w===g.w && 
 function _mergePalette(ids,colors,fx){
   if(!ids)return;
   for(let i=0;i<ids.length;i++){ if(colors&&colors[i]) palette[ids[i]]=colors[i]; if(fx) paletteFx[ids[i]]=fx[i]||''; }
-  // Gate the glow blit on whether ANY visible owner glows (cheap; paletteFx is bounded by visible owners).
-  if(fx){ glowAny=false; for(const k in paletteFx){ if(paletteFx[k]==='glow'){ glowAny=true; break; } } }
+  // Gate the tile-fx bloom blit on whether ANY visible owner has a tile-fx (cheap; paletteFx is
+  // bounded by visible owners).
+  if(fx){ glowAny=false; for(const k in paletteFx){ if(paletteFx[k]){ glowAny=true; break; } } }
 }
-// Glow pulse: a full colour→white→colour cycle every GLOW_PERIOD ms (medium pace), peaking at
-// GLOW_MAX opacity so tiles strongly whiten without fully losing the owner's colour. The render loop
-// runs every animation frame, so this animates continuously with no incoming data.
-const GLOW_PERIOD=1600, GLOW_MAX=0.85;
-function glowAlpha(){ return GLOW_MAX*(1-Math.cos(performance.now()*(2*Math.PI/GLOW_PERIOD)))/2; }
+// Global "reduce effects" gate — true when the user enabled the Settings toggle OR (its default) the
+// OS requests reduced motion. Every animated cosmetic checks this and holds static when set. Reads
+// `settings` lazily (defined later); only ever called at render time, after settings is initialised.
+function effReduce(){ try { return !!settings.reduce; } catch(_) { return false; } }
+// Glow pulse: a GENTLE additive bloom that breathes within a <10% relative-luminance delta — WCAG
+// 2.3.1 safe (was a 0→0.85 colour↔white wash that read as a strobe). Period ~2200 ms (~0.45 Hz, far
+// under the 3 Hz flash threshold); blitted with the 'lighter' composite (see the draw call) so tiles
+// softly brighten instead of washing to white. Holds at a constant mid value when effects are reduced.
+const GLOW_PERIOD=2200, GLOW_MAX=0.10;
+function glowAlpha(){ if(effReduce()) return GLOW_MAX*0.5; return GLOW_MAX*(1-Math.cos(performance.now()*(2*Math.PI/GLOW_PERIOD)))/2; }
 
 // Compressed binary CONTROL frame (kind >=16: me/leaderboard/stats/region-holders). The deflated
 // payload is the same JSON the legacy text path carried, so we just inflate → dispatch via handle().
@@ -2082,7 +2199,17 @@ async function handleViewBin(ab){
       if (header.nofog) { fog=clientGrid.fog||new Uint8Array(n); coff=4+hlen; }
       else { const fogOff=4+hlen; fog=body.subarray(fogOff, fogOff+n); coff=fogOff+n; }
       const nch=header.nChanged||0, tiles=clientGrid.tiles, tids=clientGrid.tileIds;
-      for (let k=0;k<nch;k++){ const o=coff+k*6; tiles[dv.getUint32(o,true)]=tids[dv.getUint16(o+4,true)]||0; }
+      // Record freshly-painted cells for owners with a TRAIL cosmetic — the only source of trail data
+      // (no new wire bytes; deltas already list exactly which cells changed). Frontier-bounded.
+      const recTrail = trailAny && !effReduce();
+      for (let k=0;k<nch;k++){
+        const o=coff+k*6, ci=dv.getUint32(o,true), owner=tids[dv.getUint16(o+4,true)]||0;
+        tiles[ci]=owner;
+        if (recTrail && owner && cosmRoster[owner] && cosmRoster[owner].trail){
+          const vx=x0+(ci%w), vy=y0+((ci/w)|0);
+          trailCells.set(vy*WORLD.w+vx, {t:tick, o:owner});
+        }
+      }
       clientGrid.seq=seq;
       applyViewFrame({x0,y0,w,h,lod,tick,tiles,fog,ants:header.ants||[],queens:header.queens||[]});
     }
@@ -2237,6 +2364,7 @@ function handle(msg) {
       break;
     case 'me':
       me={...me,...msg};
+      if (msg.catalog) setCatalog(msg.catalog);   // server-authoritative cosmetics catalogue (login)
       applyFowFromMe();   // FoW radii / territory AABB grow live as the player levels + paints
       // Phase-6: epoch flips on a world wipe → cache-bust the snapshot tiles (double-buffer).
       if (msg.epoch!=null && msg.epoch!==SNAP_EPOCH) { SNAP_EPOCH=msg.epoch; snapCache.clear(); }
@@ -2248,6 +2376,9 @@ function handle(msg) {
       if ($('adm-tick')&&me.tick!=null) $('adm-tick').textContent=me.tick;
       break;
     // 'view' (tile/ant) frames are binary now — decoded by handleViewBin → applyViewFrame/applyAntsOnly.
+    case 'cosmetics':   // ~1 Hz roster of every player's equipped aura/trail/queen-emblem (render-only)
+      applyCosmRoster(msg.map);
+      break;
     case 'forbidden-zones':
       forbiddenZones = msg.zones || [];
       forbiddenPlaceR = msg.placeR || 0;
@@ -2655,15 +2786,8 @@ const GEM_PACKS=[
   {id:'hoard',   gems:14000,  usd:'99.99', bonus:40},
 ];
 
-// Cosmetics line — buyable/equippable with GEMS. Items WITH an `id`+`slot` are live (mirror
-// `cosmetics.rs::COSMETICS` — keep ids/slots/prices in sync); id-less rows are design teasers ("SOON").
-const COSMETIC_ITEMS=[
-  {id:'glow', slot:'tile_fx', ic:'💫', nm:'GLOW', pr:500,
-   ds:'Your territory pulses between your colour and white. <span style="color:var(--yel)">Experimental.</span>'},
-  {ic:'🎨', nm:'TILE COLOR',  pr:100, ds:'Recolor the territory your ants paint.'},
-  {ic:'👑', nm:'QUEEN COLOR', pr:150, ds:'Give your queen a signature hue.'},
-  {ic:'✨', nm:'QUEEN AURA',   pr:250, ds:'Wrap your queen in a glowing aura effect.'},
-];
+// Cosmetics are now driven by the server-authoritative catalogue (`me.catalog` → CATALOG/catItemsById),
+// rendered in the COSMETICS tab below. No hand-mirrored item list to keep in sync.
 
 function renderShopWindow(){
   const el=$('win-body'); if(!el) return;
@@ -2708,33 +2832,54 @@ function renderShopWindow(){
     const dCount=me.defenders||0;
     if (dCount>0) html+=`<div class="shop-foot blu">DEFENDERS QUEUED: ${dCount}</div>`;
     if (!haveQ)   html+=`<div class="shop-foot red">DEPLOY A QUEEN TO PURCHASE</div>`;
-  } else {
+  } else {   // ---- COSMETICS (gem-priced; catalogue is server-authoritative via me.catalog) ----
     const owned=me.ownedCosmetics||[], equipped=me.equipped||{};
-    for (const it of COSMETIC_ITEMS){
-      if (!it.id){   // design teaser — not yet implemented
-        html+=`<div class="shop-card wip"><div class="shop-ic">${it.ic}</div>
-          <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
-          <div class="shop-pr gem">${it.pr} GEMS</div>
-          <button class="shop-buy" disabled>SOON</button></div>`;
-        continue;
+    const items=CATALOG.items||[], bundles=CATALOG.bundles||[];
+    const RAR={common:'#9aa6b2',rare:'#3A86FF',epic:'#8338EC',legendary:'#FFB703'};
+    const sec=(label)=>`<div style="grid-column:1/-1;font-family:'Press Start 2P',monospace;font-size:10px;color:var(--red);margin:12px 2px 2px;letter-spacing:.04em">${label}</div>`;
+    if(!items.length){ html+=`<div class="disc-empty">LOADING COSMETICS…</div>`; }
+    // Bundles first — the value anchor (strikethrough sticker → price).
+    if (bundles.length){
+      html+=sec('BUNDLES');
+      for (const b of bundles){
+        const haveAll=(b.members||[]).every(m=>owned.includes(m));
+        const btn = haveAll
+          ? `<button class="shop-buy" style="background:var(--grn);color:var(--ink)" disabled>OWNED</button>`
+          : `<button class="shop-buy" ${gems>=b.price?'':'disabled'} onclick="bundleBuy('${b.id}')">BUY</button>`;
+        html+=`<div class="shop-card shop-hot"><div class="shop-ic">${b.icon}</div>
+          <div class="shop-nm">${b.name}</div><div class="shop-ds">${b.desc}</div>
+          <div class="shop-pr gem"><s style="opacity:.55">${b.sticker.toLocaleString()}</s> ${b.price.toLocaleString()} GEMS</div>
+          <div class="shop-ds" style="opacity:.7;margin-top:-4px">${(b.members||[]).length} items · ${haveAll?'complete':'save '+Math.round(100-100*b.price/b.sticker)+'%'}</div>${btn}</div>`;
       }
-      const isOwned=owned.includes(it.id), isEquipped=equipped[it.slot]===it.id;
-      let priceRow, btn;
-      if (!isOwned){
-        priceRow=`<div class="shop-pr gem">${it.pr} GEMS</div>`;
-        btn=`<button class="shop-buy" ${gems>=it.pr?'':'disabled'} onclick="cosmeticBuy('${it.id}')">BUY</button>`;
-      } else if (isEquipped){
-        priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
-        btn=`<button class="shop-buy" style="background:var(--grn);color:var(--ink)" onclick="cosmeticEquip('${it.slot}','')">EQUIPPED</button>`;
-      } else {
-        priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
-        btn=`<button class="shop-buy" onclick="cosmeticEquip('${it.slot}','${it.id}')">EQUIP</button>`;
-      }
-      html+=`<div class="shop-card${isEquipped?' shop-hot':''}"><div class="shop-ic">${it.ic}</div>
-        <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
-        ${priceRow}${btn}</div>`;
     }
-    html+=`</div><div class="shop-foot">SPEND GEMS TO CUSTOMIZE YOUR HIVE — COSMETICS ARE VISIBLE TO EVERYONE.</div>`;
+    for (const [cat,label] of [['recolor','RECOLORS'],['trail','TRAILS'],['aura','AURAS'],['tile_fx','TILE EFFECTS'],['queen_emblem','QUEEN EMBLEMS']]){
+      // Bundle-exclusive items are hidden from à-la-carte lists unless already owned (so you can equip).
+      const list=items.filter(it=>it.category===cat && (!it.bundleOnly || owned.includes(it.id)));
+      if (!list.length) continue;
+      html+=sec(label);
+      for (const it of list){
+        const isOwned=owned.includes(it.id), isEq=equipped[it.slot]===it.id;
+        const rc=RAR[it.rarity]||'#9aa6b2';
+        const chip=`<span style="display:inline-block;font-size:8px;padding:1px 5px;border:2px solid ${rc};color:${rc};margin:0 0 4px">${(it.rarity||'').toUpperCase()}</span>`;
+        let priceRow, act;
+        if (!isOwned){
+          priceRow=`<div class="shop-pr gem">${it.price.toLocaleString()} GEMS</div>`;
+          act=`<button class="shop-buy" ${gems>=it.price?'':'disabled'} onclick="cosmeticBuy('${it.id}')">BUY</button>`;
+        } else if (isEq){
+          priceRow=`<div class="shop-pr" style="color:var(--grn)">EQUIPPED</div>`;
+          act=`<button class="shop-buy" style="background:var(--grn);color:var(--ink)" onclick="cosmeticEquip('${it.slot}','')">UNEQUIP</button>`;
+        } else {
+          priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
+          act=`<button class="shop-buy" onclick="cosmeticEquip('${it.slot}','${it.id}')">EQUIP</button>`;
+        }
+        html+=`<div class="shop-card${isEq?' shop-hot':''}"><div class="shop-ic">${it.icon}</div>
+          ${chip}<div class="shop-nm">${it.name}</div><div class="shop-ds">${it.desc}</div>
+          ${priceRow}
+          <button class="shop-buy" style="background:#3A86FF;color:#fff" onclick="cosmeticPreview('${it.id}')">👁 PREVIEW</button>
+          ${act}</div>`;
+      }
+    }
+    html+=`</div><div class="shop-foot">PREVIEW BEFORE YOU BUY · COSMETICS ARE VISIBLE TO EVERYONE · GEMS SURVIVE SEASON WIPES</div>`;
   }
   el.innerHTML=html;
 }
@@ -2764,6 +2909,59 @@ async function buyGems(pack){
 // the accompanying `me` refreshes the shop UI + drives the live glow. id='' on equip = unequip slot.
 function cosmeticBuy(id){ AudioEngine.click(); send({t:'cosmetic-buy', id}); }
 function cosmeticEquip(slot,id){ AudioEngine.click(); send({t:'cosmetic-equip', slot, id}); }
+function bundleBuy(id){ AudioEngine.click(); send({t:'bundle-buy', id}); }
+
+// ---- Try-before-buy PREVIEW sandbox -------------------------------------------------------------
+// Renders the cosmetic on a PRIVATE scene (fake tiles + an ant + the queen) inside the window
+// framework — never touches the shared map or other players' views. Self-stops when the window closes.
+let _previewRaf=0;
+function shade(hex,f){ const c=toRGB(hex); return `rgb(${(c[0]*f)|0},${(c[1]*f)|0},${(c[2]*f)|0})`; }
+function cosmeticPreview(id){
+  AudioEngine.click();
+  const it=catItemsById[id]; if(!it||!me) return;
+  const isOwned=(me.ownedCosmetics||[]).includes(id);
+  const act = isOwned ? `cosmeticEquip('${it.slot}','${id}');closeWindow()` : `cosmeticBuy('${id}');closeWindow()`;
+  const actLabel = isOwned ? 'EQUIP' : ('BUY · '+it.price.toLocaleString()+' GEMS');
+  openWindow('PREVIEW — '+it.name,'preview');
+  $('win-body').innerHTML=
+    `<canvas id="cos-prev" width="340" height="190" style="width:100%;max-width:340px;display:block;margin:0 auto;image-rendering:pixelated;border:3px solid var(--ink);background:#0d0d0d"></canvas>
+     <div class="shop-ds" style="text-align:center;margin:10px 4px">${it.desc}</div>
+     <div style="text-align:center"><button class="shop-buy" style="display:inline-block;width:auto;padding:9px 20px" onclick="${act}">${actLabel}</button></div>`;
+  cancelAnimationFrame(_previewRaf);
+  const cv=$('cos-prev'); if(!cv) return; const g=cv.getContext('2d'); const t0=performance.now();
+  (function frame(now){
+    if(!winIsOpen('preview')){ cancelAnimationFrame(_previewRaf); return; }
+    drawPreviewScene(g, cv.width, cv.height, it, now-t0);
+    _previewRaf=requestAnimationFrame(frame);
+  })(t0);
+}
+function drawPreviewScene(g, W2, H2, it, t){
+  const myCol=(me&&me.color)||'#E63946';
+  const fillCol=(it.category==='recolor'&&it.params&&it.params[0]==='#')?it.params:myCol;
+  g.clearRect(0,0,W2,H2);
+  const cell=15;
+  for(let y=0;y<H2;y+=cell) for(let x=0;x<W2;x+=cell){ g.fillStyle=fillCol; g.fillRect(x,y,cell-1,cell-1); }
+  if (it.category==='tile_fx'){
+    const tint=(it.params&&it.params[0]==='#')?it.params:'#ffffff';
+    g.save(); g.globalCompositeOperation='lighter';
+    g.globalAlpha=effReduce()?0.06:(0.10*(1-Math.cos(t*2*Math.PI/2200))/2+0.02);
+    g.fillStyle=tint; g.fillRect(0,0,W2,H2); g.restore();
+  }
+  const ax=W2*0.12 + ((t/16)%(W2*0.62)), ay=H2*0.55;
+  if (it.category==='trail'){
+    const stops=String(it.params||'').split('>').filter(s=>s); stops.push(fillCol);
+    for(let k=TRAIL_WIN-1;k>=0;k--){ const tx=ax-k*7; if(tx<0)continue; const f=k/TRAIL_WIN;
+      let col; if(stops.length<=1) col=stops[0]||fillCol; else { const seg=f*(stops.length-1),i=Math.min(stops.length-2,seg|0); col=lerpHex(stops[i],stops[i+1],seg-i); }
+      g.fillStyle=col; g.fillRect((tx-7)|0,(ay-7)|0,14,14); }
+  }
+  const qs=28, qx=W2*0.8, qy=H2*0.5;
+  if (it.category==='aura'){ drawAura(g, ax, ay, 13, it.id); drawAura(g, qx+qs/2, qy, qs*0.8, it.id); }
+  g.fillStyle=shade(fillCol,0.45); g.fillRect((ax-6)|0,(ay-6)|0,12,12);
+  g.fillStyle=fillCol; g.fillRect(qx,qy-qs/2,qs,qs);
+  g.strokeStyle='#0d0d0d'; g.lineWidth=2; g.strokeRect(qx,qy-qs/2,qs,qs);
+  g.fillStyle='#0d0d0d'; g.font='17px serif'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('♛',qx+qs/2,qy);
+  if (it.category==='queen_emblem' && it.params){ g.font='20px serif'; g.textBaseline='bottom'; g.fillText(it.params, qx+qs/2, qy-qs/2-3); }
+}
 
 // After returning from Stripe checkout (success_url/cancel_url land back here with ?gems=…), show a
 // toast and strip the param so a refresh doesn't repeat it. The balance refreshes via the next `me`.
@@ -2961,6 +3159,10 @@ const settings = {
   sfx:   localStorage.getItem('hive-sfx')   !== '0',
   music: localStorage.getItem('hive-music') !== '0',
   scan:  localStorage.getItem('hive-scan')  !== '0',
+  // Reduce effects: no stored choice → follow the OS prefers-reduced-motion default (accessibility);
+  // an explicit toggle wins thereafter. Read by effReduce() to calm every animated cosmetic.
+  reduce:(()=>{ const s=localStorage.getItem('hive-reduce'); if(s==='1')return true; if(s==='0')return false;
+                try{ return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(_){ return false; } })(),
   vol:   (()=>{ const v=parseFloat(localStorage.getItem('hive-vol')); return isNaN(v)?0.6:v; })(),
 };
 function applySettings(){
@@ -2968,6 +3170,7 @@ function applySettings(){
   AudioEngine.setMusic(settings.music);
   AudioEngine.setMasterVolume(settings.vol);
   document.body.classList.toggle('no-scan', !settings.scan);
+  document.body.classList.toggle('reduce-fx', !!settings.reduce);
 }
 // THEME — light by default; the pre-paint <head> script applied any saved choice before first paint.
 function applyTheme(t){ const th=(t==='light')?'light':'dark'; document.documentElement.dataset.theme=th;
@@ -2986,6 +3189,7 @@ function renderSettingsWindow(){
   html+=tog('MUSIC','Looping chiptune soundtrack.', settings.music, "toggleSetting('music')");
   html+=tog('BASE MAP','OpenStreetMap geography under your territory.', mapVisible, "toggleSetting('map')");
   html+=tog('SCANLINES','Retro CRT scanline overlay.', settings.scan, "toggleSetting('scan')");
+  html+=tog('REDUCE EFFECTS','Calm cosmetic animations — gentle glow, no pulsing or flashing. On by default if your system requests reduced motion.', settings.reduce, "toggleSetting('reduce')");
   html+=`<div class="set-row"><div class="set-info"><div class="set-name">MASTER VOLUME</div>
     <div class="set-desc">Overall loudness of the game.</div></div>
     <div class="set-vol"><input type="range" min="0" max="100" value="${Math.round(settings.vol*100)}"
@@ -3000,6 +3204,7 @@ function toggleSetting(key){
   if (key==='sfx'){ AudioEngine.setSfx(settings.sfx); localStorage.setItem('hive-sfx', settings.sfx?'1':'0'); }
   else if (key==='music'){ AudioEngine.setMusic(settings.music); localStorage.setItem('hive-music', settings.music?'1':'0'); }
   else if (key==='scan'){ document.body.classList.toggle('no-scan', !settings.scan); localStorage.setItem('hive-scan', settings.scan?'1':'0'); }
+  else if (key==='reduce'){ document.body.classList.toggle('reduce-fx', !!settings.reduce); localStorage.setItem('hive-reduce', settings.reduce?'1':'0'); }
   renderSettingsWindow();
 }
 function setVolume(v){ settings.vol=(+v)/100; AudioEngine.setMasterVolume(settings.vol); localStorage.setItem('hive-vol', String(settings.vol)); }
@@ -3950,10 +4155,14 @@ function render() {
       const sx=ix0-cacheOriX, sy=iy0-cacheOriY, sw=ix1-ix0, sh=iy1-iy0;             // src px (cache-local)
       const dx=W/2+(ix0-view.x)*cp, dy=H/2+(iy0-view.y)*cp, dw=sw*cp, dh=sh*cp;     // dst px (screen)
       ctx.drawImage(territoryCanvas, sx, sy, sw, sh, dx, dy, dw, dh);   // crisp pixelated territory
-      // GLOW cosmetic overlay — white over glowing owners' tiles at the pulsing alpha. Same src/dst
-      // rect as territory; under the fog (drawn next) so distant glow still fades into the shroud.
-      if (glowAny) { ctx.save(); ctx.globalAlpha=glowAlpha(); ctx.imageSmoothingEnabled=false;
+      // GLOW cosmetic overlay — soft ADDITIVE bloom over glowing owners' tiles at the (gentle) pulsing
+      // alpha. 'lighter' brightens rather than washing to white. Same src/dst rect as territory; under
+      // the fog (drawn next) so distant glow still fades into the shroud.
+      if (glowAny) { ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=glowAlpha();
+                     ctx.imageSmoothingEnabled=false;
                      ctx.drawImage(glowCanvas, sx, sy, sw, sh, dx, dy, dw, dh); ctx.restore(); }
+      // TRAIL cosmetic — ripen recently-painted cells over the owner's true colour (under the fog).
+      if (trailAny) drawTrail(cp);
     }
     if ($('d-tiles')) $('d-tiles').textContent = (Math.max(0,ix1-ix0)*Math.max(0,iy1-iy0))|0;
   }
@@ -4076,8 +4285,14 @@ function render() {
     ctx.fillRect(px,py,qw,qw);
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
     ctx.strokeRect(px,py,qw,qw);
+    // Queen AURA cosmetic — ringed around the body (queens are few → always drawn).
+    { const ar=cosmRoster[q.id]; if (ar&&ar.aura) drawAura(ctx, px+qw/2, py+qw/2, qw*0.9, ar.aura); }
     const _fic=factionIcon[q.id];                  // alliance emblem above the queen
     if (_fic && cp>=2) { ctx.save(); ctx.font=`${Math.max(9,qw*0.5)}px serif`; ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText(_fic, px+qw/2, py-(cp>=4?8:3)); ctx.restore(); }
+    // Queen EMBLEM cosmetic — accessory glyph above the queen (stacked above any alliance icon).
+    { const er=cosmRoster[q.id]; const em=er&&er.emblem&&catItemsById[er.emblem]&&catItemsById[er.emblem].params;
+      if (em && cp>=2){ ctx.save(); ctx.font=`${Math.max(10,qw*0.6)}px serif`; ctx.textAlign='center';
+        ctx.textBaseline='bottom'; ctx.fillText(em, px+qw/2, py-(_fic?(cp>=4?22:14):(cp>=4?8:3))); ctx.restore(); } }
     if (qw>=12) {
       ctx.fillStyle='#0d0d0d';
       ctx.font=`${qw*.5}px serif`;
@@ -4181,6 +4396,9 @@ function render() {
         ctx.fill();
       }
     }
+    // Ant AURA cosmetic — only when zoomed in (cp>=4 ⇒ bounded ant count on screen) to stay in budget.
+    if (auraAny && cp>=4){ const ar=cosmRoster[owner];
+      if (ar&&ar.aura){ const half=(kind===1?cp:cp/2); drawAura(ctx, px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura); } }
   }
 
   // 8) Floating texts (+XP, damage numbers)

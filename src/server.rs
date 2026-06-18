@@ -636,6 +636,8 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
     let mut last_lb_tick:   u64 = 0;
     let mut last_lb_sig:    u64 = u64::MAX; // Phase-5: leaderboard send-on-change signature
     let mut last_lb_sent:   u64 = 0;        // tick of the last leaderboard broadcast (force-refresh)
+    let mut last_cos_sig:   u64 = u64::MAX; // cosmetics roster send-on-change signature
+    let mut last_cos_sent:  u64 = 0;        // tick of the last cosmetics roster broadcast (heartbeat)
     let mut last_stats_tick: u64 = 0;
     // Per-client tile state for the keyframe/delta protocol. Lives here (not in World) so the
     // sim thread never touches it; the viewport thread is its sole owner.
@@ -704,6 +706,21 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     if !w.auth.alliances.is_empty() {
                         let f = crate::network::build_factions(&w);
                         w.broadcast(&f);
+                    }
+
+                    // Cosmetics roster (aura/trail/queen-emblem): send-on-change + ~5 s heartbeat so a
+                    // late joiner catches up. Tiny + equips are rare → near-zero steady-state bytes.
+                    // Render-only: lets a player's auras/trail/emblem show for EVERY viewer with no
+                    // per-tile data (the client keys it by entity / changed-cell owner id).
+                    {
+                        let sig   = crate::network::cosmetics_signature(&w);
+                        let force = tick.saturating_sub(last_cos_sent) >= tr * 5;
+                        if sig != last_cos_sig || force {
+                            let cos = crate::network::build_cosmetics_roster(&w);
+                            w.broadcast(&cos);
+                            last_cos_sig  = sig;
+                            last_cos_sent = tick;
+                        }
                     }
                 }
 

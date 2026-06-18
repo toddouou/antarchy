@@ -449,8 +449,46 @@ pub fn build_player_info(
         // Phase-6 lever B: super-tile span in game cells (S×256). The client keys snapshot tiles by
         // `floor(gx / snapTileCells)`, which must equal the server's `(sx,sy)` super-tile index.
         info["snapTileCells"] = json!(crate::config::snapshot_tile_chunks() * 256);
+        // Cosmetics catalogue (server-authoritative) — the client renders the shop from this, so there
+        // is no hand-mirrored list to drift. Static → only in the full `logged-in` payload.
+        info["catalog"] = crate::cosmetics::build_catalog();
     }
     info.to_string()
+}
+
+/// Low-rate **cosmetics roster** broadcast: `{ "t":"cosmetics", "map": { "<id>": {aura,trail,emblem} } }`
+/// for every player with one of those equipped. Sent on the leaderboard cadence (~1 Hz, send-on-change)
+/// so a player's entity/trail/queen decorations reach every viewer **without any per-tile bytes** — the
+/// client renders them from data it already holds (entity owner, delta-changed cell owner). `tile_fx`
+/// rides the per-frame fx palette instead; `recolor` rides the owner colour palette.
+pub fn build_cosmetics_roster(world: &World) -> String {
+    let mut map = serde_json::Map::new();
+    for (id, p) in &world.players {
+        if p.aura.is_none() && p.trail.is_none() && p.emblem.is_none() { continue; }
+        let mut e = serde_json::Map::new();
+        if let Some(a) = &p.aura   { e.insert("aura".into(),   json!(a)); }
+        if let Some(t) = &p.trail  { e.insert("trail".into(),  json!(t)); }
+        if let Some(m) = &p.emblem { e.insert("emblem".into(), json!(m)); }
+        map.insert(id.to_string(), Value::Object(e));
+    }
+    json!({ "t": "cosmetics", "map": Value::Object(map) }).to_string()
+}
+
+/// Order-independent signature of the cosmetics roster, so the broadcast fires only when an equip
+/// actually changes the entity/trail/queen decorations (XOR of per-player field hashes).
+pub fn cosmetics_signature(world: &World) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut acc: u64 = 0;
+    for (id, p) in &world.players {
+        if p.aura.is_none() && p.trail.is_none() && p.emblem.is_none() { continue; }
+        let mut h = rustc_hash::FxHasher::default();
+        id.hash(&mut h);
+        p.aura.hash(&mut h);
+        p.trail.hash(&mut h);
+        p.emblem.hash(&mut h);
+        acc ^= h.finish();
+    }
+    acc
 }
 
 /// One visible queen, snapshotted with the strings it needs so `finish_view` can run
