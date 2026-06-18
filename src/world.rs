@@ -205,6 +205,11 @@ pub struct Player {
     pub kills_of:            FxHashMap<String, u32>,
     /// Snapshot taken at disconnect; diffed on reconnect for the welcome-back summary.
     pub away:                Option<AwaySnapshot>,
+    /// Runtime cache of the equipped `tile_fx` cosmetic id (e.g. `Some("glow")`), loaded from the
+    /// account record on connect and refreshed on equip. Read by `get_fx_palette` each tile cycle so
+    /// the per-owner tile effect reaches every viewer. NOT persisted — the authoritative source is
+    /// `UserRecord.equipped["tile_fx"]` in users.json.
+    pub tile_fx:             Option<String>,
 }
 
 /// Snapshot of a player's state at disconnect → diffed on reconnect for the welcome-back summary.

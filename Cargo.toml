@@ -16,6 +16,9 @@ rayon             = "1"
 rustc-hash        = "1"
 base64            = "0.22"
 sha2              = "0.10"
+# HMAC-SHA256 for verifying Stripe webhook signatures (the `Stripe-Signature` header). Pairs with
+# the existing `sha2` digest + `subtle` constant-time compare; no system libs.
+hmac              = "0.12"
 hex               = "0.4"
 # Password hashing (OWASP A07): Argon2id KDF + constant-time compare for the legacy SHA-256 fallback.
 # Pure-Rust, no system libs; argon2 re-exports the `password_hash` PHC types it needs.

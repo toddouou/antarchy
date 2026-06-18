@@ -2,6 +2,7 @@ mod alliance;
 mod api;
 mod auth;
 mod config;
+mod cosmetics;
 mod email;
 mod fog;
 mod handlers;
@@ -14,6 +15,7 @@ mod session;
 mod simulation;
 mod sms;
 mod snapshot;
+mod stripe;
 mod tile_map;
 mod world;
 

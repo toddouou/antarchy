@@ -339,8 +339,8 @@ pub fn handle_message(
             None => return,
         };
         if !unlimited_ants && ants_avail <= 0 { let _ = tx.send(err("No ants available")); return; }
-        let army = world.ant_counts.get(&pid).copied().unwrap_or(0) as i32;
-        if !unlimited_ants && army >= c.army_cap { let _ = tx.send(err("Army at capacity")); return; }
+        // Army is uncapped — deployment is bounded only by `ants_avail` (the worker inventory the
+        // player actually owns), not a hard ceiling.
         let queen_data = world.queens.get(&pid)
             .filter(|q| !q.dead)
             .map(|q| (q.x, q.y, q.size, q.bubble_r));
@@ -675,6 +675,7 @@ pub fn handle_message(
         let players: Vec<serde_json::Value> = world.players.iter()
             .map(|(id, p)| {
                 let q = world.queens.get(id);
+                let acct = world.auth.users.get(&p.username);
                 json!({
                     "id":       id,
                     "username": p.username,
@@ -687,6 +688,9 @@ pub fn handle_message(
                     "ants":     p.ants_avail,
                     "prestige": p.prestige,
                     "nectar":   p.nectar,
+                    // Account currency + cosmetics (users.json) — for the admin gem/cosmetic controls.
+                    "gems":      acct.map(|u| u.gems).unwrap_or(0),
+                    "cosmetics": acct.map(|u| u.owned_cosmetics.len()).unwrap_or(0),
                     "unlimitedNectar":  p.unlimited_nectar,
                     "unlimitedAnts":    p.unlimited_ants,
                     "qx":       q.map(|q| q.x).unwrap_or(-1),
@@ -802,6 +806,53 @@ pub fn handle_message(
         return;
     }
 
+    // ---- Cosmetics: buy with gems + equip per slot (account-level, wipe-proof) ----
+    if t == "cosmetic-buy" {
+        if !check_seq(world, pid, &msg) { return; }
+        let id = msg["id"].as_str().unwrap_or("").to_string();
+        let Some(cos) = crate::cosmetics::get(&id) else { let _ = tx.send(err("Unknown cosmetic")); return; };
+        let Some(uname) = world.players.get(&pid).map(|p| p.username.clone()) else { return; };
+        let Some(user) = world.auth.users.get_mut(&uname) else { let _ = tx.send(err("No account")); return; };
+        if user.owned_cosmetics.iter().any(|c| c == &id) { let _ = tx.send(err("Already owned")); return; }
+        if user.gems < cos.price_gems { let _ = tx.send(err("Not enough gems")); return; }
+        user.gems -= cos.price_gems;
+        user.owned_cosmetics.push(id.clone());
+        world.auth.save();
+        let _ = tx.send(json!({"t":"cosmetic-ok","action":"buy","id":id}).to_string());
+        let _ = tx.send(build_player_info(world, pid, true, None)); // push fresh gems/owned immediately
+        return;
+    }
+    if t == "cosmetic-equip" {
+        if !check_seq(world, pid, &msg) { return; }
+        let slot = msg["slot"].as_str().unwrap_or("").to_string();
+        let id   = msg["id"].as_str().unwrap_or("").to_string();   // "" = unequip the slot
+        if slot.is_empty() { let _ = tx.send(err("Bad slot")); return; }
+        let Some(uname) = world.players.get(&pid).map(|p| p.username.clone()) else { return; };
+        // Equipping (non-empty id) must name an OWNED cosmetic whose registry slot matches.
+        if !id.is_empty() {
+            let Some(cos) = crate::cosmetics::get(&id) else { let _ = tx.send(err("Unknown cosmetic")); return; };
+            if cos.slot != slot { let _ = tx.send(err("Wrong slot")); return; }
+            let owned = world.auth.users.get(&uname)
+                .map(|u| u.owned_cosmetics.iter().any(|c| c == &id)).unwrap_or(false);
+            if !owned { let _ = tx.send(err("Not owned")); return; }
+        }
+        if let Some(user) = world.auth.users.get_mut(&uname) {
+            if id.is_empty() { user.equipped.remove(&slot); }
+            else { user.equipped.insert(slot.clone(), id.clone()); }
+        }
+        world.auth.save();
+        // Mirror the tile-fx slot onto the live Player so the FX palette reflects it next tile cycle.
+        if slot == "tile_fx" {
+            if let Some(p) = world.players.get_mut(&pid) {
+                p.tile_fx = if id.is_empty() { None } else { Some(id.clone()) };
+            }
+        }
+        let action = if id.is_empty() { "unequip" } else { "equip" };
+        let _ = tx.send(json!({"t":"cosmetic-ok","action":action,"slot":slot,"id":id}).to_string());
+        let _ = tx.send(build_player_info(world, pid, true, None));
+        return;
+    }
+
     // ---- Alliances (open to everyone for testing; economy gated by cfg.alliance_econ_enabled) ----
     if t == "alliance-get"            { send_alliance_self(world, pid, tx);
                                         let _ = tx.send(crate::network::build_factions(world)); return; }
@@ -842,6 +893,41 @@ pub fn handle_message(
                 let _ = ttx.send(json!({"t":"event","msg":format!("NECTAR SET TO {amount} (ADMIN)")}).to_string());
             }
         }
+        return;
+    }
+
+    // ---- Admin give gems (account currency → users.json, like the cosmetic handlers) ----
+    if t == "admin-give-gems" || t == "admin-set-gems" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let tid    = msg["targetId"].as_u64().unwrap_or(0) as u32;
+        let amount = msg["amount"].as_u64().unwrap_or(0);
+        let Some(uname) = world.players.get(&tid).map(|p| p.username.clone()) else { return; };
+        let new_total = if let Some(u) = world.auth.users.get_mut(&uname) {
+            u.gems = if t == "admin-give-gems" { u.gems.saturating_add(amount) } else { amount };
+            u.gems
+        } else { return };   // NPC / no account → no-op
+        world.auth.save();
+        let verb = if t == "admin-give-gems" { format!("+{amount} GEMS (ADMIN) · total {new_total}") }
+                   else { format!("GEMS SET TO {amount} (ADMIN)") };
+        world.send_to(tid, json!({"t":"event","msg":verb}).to_string());
+        // Push a fresh `me` so the target's balance/shop reflect it immediately (covers self-grants).
+        world.send_to(tid, build_player_info(world, tid, true, None));
+        return;
+    }
+
+    // ---- Admin grant all cosmetics (one-click test-bed: seed the whole catalogue on a target) ----
+    if t == "admin-grant-cosmetics" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let tid = msg["targetId"].as_u64().unwrap_or(0) as u32;
+        let Some(uname) = world.players.get(&tid).map(|p| p.username.clone()) else { return; };
+        if let Some(u) = world.auth.users.get_mut(&uname) {
+            for c in crate::cosmetics::COSMETICS {
+                if !u.owned_cosmetics.iter().any(|o| o == c.id) { u.owned_cosmetics.push(c.id.to_string()); }
+            }
+        } else { return };   // NPC / no account → no-op
+        world.auth.save();
+        world.send_to(tid, json!({"t":"event","msg":"ALL COSMETICS GRANTED (ADMIN)"}).to_string());
+        world.send_to(tid, build_player_info(world, tid, true, None));
         return;
     }
 
@@ -1335,12 +1421,17 @@ fn create_or_reconnect_player(
     // Metro list for the header region switcher (name + centre tile to fly to).
     let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
 
+    // Equipped tile-fx cosmetic (wipe-proof account state) → live runtime cache so the per-owner
+    // FX palette shows it to every viewer. Computed before any &mut players borrow.
+    let tile_fx = world.auth.users.get(username).and_then(|u| u.equipped.get("tile_fx").cloned());
+
     if world.players.contains_key(&id) {
         // Reconnect: reattach + bump conn_gen, and take the disconnect snapshot for welcome-back.
         let away = {
             let p = world.players.get_mut(&id).unwrap();
             p.conn_gen += 1;
             p.tx = Some(tx);
+            p.tile_fx = tile_fx;
             p.away.take()
         };
         println!("[reconnect] {username} ({})", id);
@@ -1353,6 +1444,7 @@ fn create_or_reconnect_player(
         next_refill: now + 24 * 3600 * 1000,
         tx: Some(tx),
         conn_gen: 1,
+        tile_fx,
         ..Default::default()
     });
     println!("[connect] {username} ({})", id);

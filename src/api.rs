@@ -31,9 +31,9 @@ use tokio::sync::oneshot;
 use crate::auth::{hash_pw_argon2, needs_rehash, verify_pw, UserRecord};
 use crate::config::{
     auth_rate_per_min, current_ms, secure_cookies, session_cookie_name, session_ttl_hours,
-    sms_enabled, ADMIN_USERNAME, HUES,
+    sms_enabled, stripe_secret_key, ADMIN_USERNAME, HUES,
 };
-use crate::server::{origin_allowed, AppState, Cmd};
+use crate::server::{origin_allowed, session_uid_from_cookie, AppState, Cmd};
 use crate::world::{PendingReg, ResetToken, World};
 
 // ---- Operations + outcomes (cross the sim-thread boundary via Cmd::AuthApi) ---------------------
@@ -47,6 +47,9 @@ pub enum AuthOp {
     Forgot { email: String },
     Reset { token: String, password: String },
     ResendCode { reg_id: String },
+    /// Credit gems to an account (Stripe `checkout.session.completed` webhook). Runs on the sim
+    /// thread so it serializes with the `users.json` save like every other auth mutation.
+    GrantGems { uid: u32, gems: u64 },
 }
 
 /// The sim thread's reply for an [`AuthOp`]. The HTTP handler turns it into JSON and does any sending.
@@ -70,6 +73,9 @@ pub enum AuthOutcome {
     ResetOk,
     /// A resend-code request matched a live pending registration; the handler re-sends the email code.
     ResendResult { email: String, email_code: String },
+    /// Gems credited (or no-op if the uid didn't resolve — logged in `grant_gems`). The webhook
+    /// returns 200 regardless so Stripe stops retrying.
+    GemsGranted,
     Error { msg: String },
 }
 
@@ -87,7 +93,21 @@ pub fn apply(world: &mut World, op: AuthOp) -> AuthOutcome {
         AuthOp::Forgot { email }             => forgot(world, &email),
         AuthOp::Reset { token, password }    => reset(world, &token, &password),
         AuthOp::ResendCode { reg_id }        => resend(world, reg_id),
+        AuthOp::GrantGems { uid, gems }      => grant_gems(world, uid, gems),
     }
+}
+
+/// Credit `gems` to the account with this numeric id. Persists `users.json` immediately. A `false`
+/// `ok` means the uid didn't match any account (stale/forged metadata) — the webhook still 200s.
+fn grant_gems(world: &mut World, uid: u32, gems: u64) -> AuthOutcome {
+    match world.auth.users.values_mut().find(|u| u.id == uid) {
+        Some(u) => {
+            u.gems = u.gems.saturating_add(gems);
+            world.auth.save();
+        }
+        None => eprintln!("[stripe] webhook credited unknown uid {uid} ({gems} gems) — ignored"),
+    }
+    AuthOutcome::GemsGranted
 }
 
 fn do_register(world: &mut World, handle: String, email: String, phone: String,
@@ -174,7 +194,9 @@ fn verify(world: &mut World, reg_id: String, code: String, is_email: bool) -> Au
         email_verified: true, phone_verified: pr.phone_ok,
         // The signup starter inventory counts as day one's portion — first CLAIM at next 00:00 UTC.
         last_claim_day: crate::config::utc_day(crate::config::current_ms()),
-        gems: 0,   // cosmetics currency — no earn path yet (Group C UI only)
+        gems: 0,   // cosmetics currency — credited via Stripe gem purchases
+        owned_cosmetics: Vec::new(),
+        equipped: std::collections::HashMap::new(),
         last_accrual_day: 0,
         alliance_id: None,
     });
@@ -479,6 +501,65 @@ pub async fn roster(State(app): State<AppState>) -> impl IntoResponse {
         json!({ "queens": queens }).to_string()
     };
     ([(CONTENT_TYPE, "application/json"), (CACHE_CONTROL, "public, max-age=5")], body)
+}
+
+// ---- gem purchasing (Stripe hosted Checkout) ---------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct BuyGemsBody { pack: String }
+
+/// `POST /api/buy-gems` — start a Stripe Checkout Session for the logged-in player to buy a gem pack.
+/// Cookie-authenticated (the buyer is the session owner, NOT anything in the body). Pricing + gem
+/// amount are resolved server-side from `stripe::GEM_PACKS`; the client only names a pack `id`.
+/// Returns `{ok:true, url}` to redirect to, or `{ok:false, devMode:true}` when Stripe is unconfigured.
+pub async fn buy_gems(State(app): State<AppState>, headers: HeaderMap, Json(b): Json<BuyGemsBody>) -> Response {
+    if !origin_allowed(&headers) { return reject_csrf(); }
+    if !app.rate.check(&client_ip(&headers)) { return reject_rate(); }
+
+    let Some(uid) = session_uid_from_cookie(&headers, &app.sessions) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "ok": false, "error": "Please log in to buy gems" }))).into_response();
+    };
+    let Some(pack) = crate::stripe::pack(&b.pack) else { return bad("Unknown gem pack"); };
+
+    // Dormant until the secret key is set — never charge, just tell the client payments aren't live.
+    if stripe_secret_key().is_none() {
+        println!("[stripe:DEV] uid={uid} would buy '{}' ({} gems / {}¢)  \
+                  (set HIVE_STRIPE_SECRET_KEY + HIVE_STRIPE_WEBHOOK_SECRET to charge)",
+                 pack.id, pack.gems, pack.cents);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        return Json(json!({ "ok": false, "devMode": true })).into_response();
+    }
+
+    match crate::stripe::create_checkout_session(uid, pack).await {
+        Ok(url) => Json(json!({ "ok": true, "url": url })).into_response(),
+        Err(msg) => bad(&msg),
+    }
+}
+
+/// `POST /api/stripe-webhook` — Stripe calls this on payment events. **Intentionally exempt from the
+/// Origin / cookie / rate guards** (Stripe is a server, not a browser, and has no session); the
+/// `Stripe-Signature` HMAC is its sole authentication. On a verified `checkout.session.completed`,
+/// credit the gems named in the session metadata. Always 200s on a valid signature so Stripe stops
+/// retrying; 400s a bad/unsigned request (and credits nothing).
+pub async fn stripe_webhook(State(app): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    let sig = headers.get("stripe-signature").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let Some(event) = crate::stripe::verify_webhook(body.as_bytes(), sig) else {
+        return (StatusCode::BAD_REQUEST, "invalid signature").into_response();
+    };
+
+    if event.get("type").and_then(|t| t.as_str()) == Some("checkout.session.completed") {
+        let meta = event.pointer("/data/object/metadata");
+        let uid  = meta.and_then(|m| m.get("uid")).and_then(|v| v.as_str()).and_then(|s| s.parse::<u32>().ok());
+        let gems = meta.and_then(|m| m.get("gems")).and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok());
+        if let (Some(uid), Some(gems)) = (uid, gems) {
+            // Credit on the sim thread (serialized with the users.json save), like every auth mutation.
+            let _ = call_sim(&app, AuthOp::GrantGems { uid, gems }).await;
+        } else {
+            eprintln!("[stripe] completed checkout missing uid/gems metadata — skipped");
+        }
+    }
+    // Acknowledge any other event type too, so Stripe doesn't retry events we don't act on.
+    (StatusCode::OK, "ok").into_response()
 }
 
 // ---- small helpers -----------------------------------------------------------------------------

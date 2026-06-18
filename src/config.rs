@@ -531,6 +531,20 @@ pub fn email_from() -> Option<String> {
     V.get_or_init(|| std::env::var("HIVE_EMAIL_FROM").ok().filter(|s| !s.trim().is_empty())).clone()
 }
 
+/// Stripe secret API key (`sk_live_…` / `sk_test_…`) for creating Checkout Sessions. `None` → gem
+/// purchasing is **dormant**: `/api/buy-gems` returns a dev-mode response and charges nothing.
+pub fn stripe_secret_key() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_STRIPE_SECRET_KEY").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
+/// Stripe webhook signing secret (`whsec_…`) used to verify the `Stripe-Signature` header on
+/// `/api/stripe-webhook`. `None` → incoming webhooks are rejected (no unverified gem crediting).
+pub fn stripe_webhook_secret() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_STRIPE_WEBHOOK_SECRET").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
 /// SMS/phone verification master switch. Default **off** → the phone-code step is optional (accounts
 /// finalize on email verification alone) and `sms::send_code` just logs. Flip on once a provider is
 /// wired so phone verification becomes required.

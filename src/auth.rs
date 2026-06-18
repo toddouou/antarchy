@@ -51,6 +51,15 @@ pub struct UserRecord {
     /// balance survives the season wipe, matching `peak_level` / `last_claim_day`.
     #[serde(default)]
     pub gems: u64,
+    /// Cosmetic ids this account has purchased (spends `gems`). Lives here (users.json, additive
+    /// serde default) so cosmetics survive the season wipe, matching `gems`. Source of truth is
+    /// `cosmetics::COSMETICS`; this just records ownership.
+    #[serde(default)]
+    pub owned_cosmetics: Vec<String>,
+    /// Equipped cosmetics keyed by **slot** (e.g. `tile_fx` → `glow`) — one cosmetic per slot, so
+    /// equipping replaces. Additive serde default; wipe-proof home like `owned_cosmetics`.
+    #[serde(default)]
+    pub equipped: HashMap<String, String>,
     /// UTC day number (`config::utc_day`) of the last passive metro-nectar accrual; 0 = never.
     /// Idempotency guard for the once-per-00:00-UTC accrual (server.rs sim loop). Same wipe-proof
     /// home as `last_claim_day` — NOT the bincode snapshot.

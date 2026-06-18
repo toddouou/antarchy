@@ -20,6 +20,20 @@ pub fn get_palette(world: &World) -> Value {
     Value::Object(p)
 }
 
+/// Per-owner tile-effect map `{ idStr: "glow" }` for owners with an equipped `tile_fx` cosmetic.
+/// Built once per tile cycle (beside `get_palette`) and shared via `Arc` across every client's
+/// `finish_view`. Owners with no tile-fx are simply absent (→ `fx_for` yields `""`). This is what
+/// makes a player's cosmetic visible to *every* viewer, not just themselves.
+pub fn get_fx_palette(world: &World) -> Value {
+    let mut p = serde_json::Map::new();
+    for (id, pl) in &world.players {
+        if let Some(fx) = pl.tile_fx.as_deref() {
+            if !fx.is_empty() { p.insert(id.to_string(), json!(fx)); }
+        }
+    }
+    Value::Object(p)
+}
+
 pub fn build_leaderboard(world: &World) -> String {
     let mut entries: Vec<Value> = world.queens.iter()
         .filter(|(_, q)| !q.dead)
@@ -341,6 +355,9 @@ pub fn build_player_info(
         "nectar":    p.nectar,
         // Cosmetics currency — sourced from the account record (wipe-proof, like peak_level).
         "gems":      world.auth.users.get(&p.username).map(|u| u.gems).unwrap_or(0),
+        // Owned + equipped cosmetics (same wipe-proof account source) — drive the shop UI + glow.
+        "ownedCosmetics": world.auth.users.get(&p.username).map(|u| u.owned_cosmetics.clone()).unwrap_or_default(),
+        "equipped":  world.auth.users.get(&p.username).map(|u| json!(u.equipped)).unwrap_or_else(|| json!({})),
         // Alliance membership (id or null) — the client uses it to gate the panel + apply buffs/UI.
         "allianceId": world.alliance_of(player_id),
         "region":    q.map(|q| q.region.clone()).unwrap_or_default(),
@@ -638,6 +655,7 @@ pub struct PrevGrid {
     id_to_local: FxHashMap<u32, u16>,
     tile_ids: Vec<u32>,                  // local -> global owner id
     tile_colors: Vec<String>,            // local -> colour (parallel to tile_ids)
+    tile_fx: Vec<String>,                // local -> tile-fx code ("" = none; parallel to tile_ids)
     seq: u32,
     frames_since_kf: u32,
 }
@@ -649,6 +667,7 @@ impl PrevGrid {
         self.local.len() * 2
             + self.tile_ids.len() * 4
             + self.tile_colors.iter().map(|c| c.len() + 24).sum::<usize>()
+            + self.tile_fx.iter().map(|c| c.len() + 24).sum::<usize>()
             + self.id_to_local.len() * 24
     }
 }
@@ -689,6 +708,12 @@ fn color_for(palette: &Value, id: u32) -> String {
     palette.get(id.to_string()).and_then(|v| v.as_str()).unwrap_or(DEFAULT_COLOR).to_string()
 }
 
+/// Equipped tile-effect code for an owner (`""` when none) — sibling of `color_for`, read from the
+/// per-cycle FX palette built by `get_fx_palette`.
+fn fx_for(fx_palette: &Value, id: u32) -> String {
+    fx_palette.get(id.to_string()).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
 /// Keyframe body: `[u32 LE headerLen][header (padded even)][tiles u16 LE * n][fog u8 * n]`.
 /// The header is padded to an even length so the client's `Uint16Array` view over `tiles` (which
 /// starts at `4 + headerLen`) is 2-byte aligned.
@@ -720,12 +745,14 @@ fn body_delta(header: &str, fog: &[u8], changed: &[(u32, u16)]) -> Vec<u8> {
 
 /// Build a full keyframe (kind 1): a fresh sticky local palette + the whole served grid.
 fn build_keyframe(
-    raw: &RawView, palette: &Value, fog: &[u8], ants: &[Value], queens: &[Value], prev_seq: Option<u32>,
+    raw: &RawView, palette: &Value, fx_palette: &Value, fog: &[u8], ants: &[Value], queens: &[Value],
+    prev_seq: Option<u32>,
 ) -> (Vec<u8>, PrevGrid) {
     let mut id_to_local: FxHashMap<u32, u16> = FxHashMap::default();
     id_to_local.insert(0, 0);
     let mut tile_ids: Vec<u32> = vec![0];
     let mut tile_colors: Vec<String> = vec!["#ffffff".to_string()];
+    let mut tile_fx: Vec<String> = vec![String::new()];   // index 0 = unclaimed, never has an effect
     let mut local: Vec<u16> = Vec::with_capacity(raw.w * raw.h);
     for yi in 0..raw.h {
         let row = (yi + raw.pad) * raw.pw + raw.pad;
@@ -739,6 +766,7 @@ fn build_keyframe(
                     id_to_local.insert(id, l);
                     tile_ids.push(id);
                     tile_colors.push(color_for(palette, id));
+                    tile_fx.push(fx_for(fx_palette, id));
                     l
                 }
             };
@@ -749,7 +777,7 @@ fn build_keyframe(
     let header = json!({
         "x0": raw.x0, "y0": raw.y0, "w": raw.w, "h": raw.h, "lod": raw.lod_step, "tick": raw.tick,
         "seq": seq, "ants": ants, "queens": queens,
-        "tileIds": tile_ids, "tileColors": tile_colors,
+        "tileIds": tile_ids, "tileColors": tile_colors, "tileFx": tile_fx,
     }).to_string();
     let deflated = deflate_raw(&body_keyframe(&header, &local, fog));
     let mut frame = Vec::with_capacity(deflated.len() + 1);
@@ -757,7 +785,7 @@ fn build_keyframe(
     frame.extend_from_slice(&deflated);
     let np = PrevGrid {
         geom: (raw.x0, raw.y0, raw.w, raw.h, raw.lod_step),
-        local, id_to_local, tile_ids, tile_colors, seq, frames_since_kf: 0,
+        local, id_to_local, tile_ids, tile_colors, tile_fx, seq, frames_since_kf: 0,
     };
     (frame, np)
 }
@@ -768,7 +796,7 @@ fn build_keyframe(
 /// so deltaing it isn't worth it) plus — for deltas — only the cells that changed since `prev`.
 /// Returns the frame and the tile state to retain for this client's next cycle (ants-only frames
 /// pass `prev` through untouched).
-pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: bool) -> (Vec<u8>, Option<PrevGrid>) {
+pub fn finish_view(raw: &RawView, palette: &Value, fx_palette: &Value, prev: Option<PrevGrid>, bin: bool) -> (Vec<u8>, Option<PrevGrid>) {
     if !raw.include_tiles {
         if bin {
             // kind 3: packed binary + deflate (Phase 3). Body (LE):
@@ -867,6 +895,7 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
         // Current grid against the sticky local palette, recording any newly-appeared owners.
         let mut ids_add: Vec<u32> = Vec::new();
         let mut colors_add: Vec<String> = Vec::new();
+        let mut fx_add: Vec<String> = Vec::new();
         let mut cur: Vec<u16> = Vec::with_capacity(n);
         for yi in 0..raw.h {
             let row = (yi + raw.pad) * raw.pw + raw.pad;
@@ -881,8 +910,11 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
                         p.tile_ids.push(id);
                         let c = color_for(palette, id);
                         p.tile_colors.push(c.clone());
+                        let fx = fx_for(fx_palette, id);
+                        p.tile_fx.push(fx.clone());
                         ids_add.push(id);
                         colors_add.push(c);
+                        fx_add.push(fx);
                         l
                     }
                 };
@@ -901,7 +933,8 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
             let header = json!({
                 "x0": raw.x0, "y0": raw.y0, "w": raw.w, "h": raw.h, "lod": raw.lod_step, "tick": raw.tick,
                 "seq": seq, "baseSeq": p.seq, "ants": ants, "queens": queens,
-                "tileIdsAdd": ids_add, "tileColorsAdd": colors_add, "nChanged": changed.len(),
+                "tileIdsAdd": ids_add, "tileColorsAdd": colors_add, "tileFxAdd": fx_add,
+                "nChanged": changed.len(),
                 "nofog": if bin { 1 } else { 0 },
             }).to_string();
             let deflated = deflate_raw(&body_delta(&header, send_fog, &changed));
@@ -910,17 +943,17 @@ pub fn finish_view(raw: &RawView, palette: &Value, prev: Option<PrevGrid>, bin: 
             frame.extend_from_slice(&deflated);
             let np = PrevGrid {
                 geom, local: cur, id_to_local: p.id_to_local, tile_ids: p.tile_ids,
-                tile_colors: p.tile_colors, seq, frames_since_kf: p.frames_since_kf + 1,
+                tile_colors: p.tile_colors, tile_fx: p.tile_fx, seq, frames_since_kf: p.frames_since_kf + 1,
             };
             return (frame, Some(np));
         }
         // Too much changed → keyframe instead (seq stays monotonic).
-        let (frame, np) = build_keyframe(raw, palette, &fog, &ants, &queens, Some(p.seq));
+        let (frame, np) = build_keyframe(raw, palette, fx_palette, &fog, &ants, &queens, Some(p.seq));
         return (frame, Some(np));
     }
 
     let prev_seq = prev.as_ref().map(|p| p.seq);
-    let (frame, np) = build_keyframe(raw, palette, &fog, &ants, &queens, prev_seq);
+    let (frame, np) = build_keyframe(raw, palette, fx_palette, &fog, &ants, &queens, prev_seq);
     (frame, Some(np))
 }
 
@@ -957,7 +990,8 @@ mod tests {
         let owners = vec![0u32, 70_000, 65_535, 70_000];
         let raw = raw2x2(owners.clone(), 1);
 
-        let (frame, prev) = finish_view(&raw, &json!({}), None, false);
+        // 70_000 has glow equipped → its tileFx code must round-trip alongside the colour palette.
+        let (frame, prev) = finish_view(&raw, &json!({}), &json!({"70000": "glow"}), None, false);
         assert_eq!(frame[0], 1, "first tile frame is a keyframe");
         let body = inflate(&frame[1..]);
         let (header, toff) = header_of(&body);
@@ -973,6 +1007,14 @@ mod tests {
         }
         assert!(tile_ids.contains(&70_000), "the >65,535 owner survived end-to-end");
 
+        // tileFx parallels tileIds: the glowing owner carries "glow", index 0 (unclaimed) is "".
+        let tile_fx: Vec<String> = header["tileFx"].as_array().unwrap()
+            .iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        assert_eq!(tile_fx.len(), tile_ids.len(), "tileFx is parallel to tileIds");
+        assert_eq!(tile_fx[0], "", "unclaimed local index carries no effect");
+        let gi = tile_ids.iter().position(|&id| id == 70_000).unwrap();
+        assert_eq!(tile_fx[gi], "glow", "the glowing owner's fx code round-trips on the keyframe");
+
         let foff = toff + owners.len() * 2;     // fog follows the tiles
         assert_eq!(body.len(), foff + owners.len(), "fog is the full w*h tail");
         assert_eq!(prev.unwrap().seq, 0);
@@ -982,12 +1024,12 @@ mod tests {
     /// only the changed cell, the new owner's colour patch, and a matching baseSeq.
     #[test]
     fn delta_encodes_only_changed_cells() {
-        let (kf, prev) = finish_view(&raw2x2(vec![0, 5, 5, 0], 1), &json!({"5": "#abcdef"}), None, false);
+        let (kf, prev) = finish_view(&raw2x2(vec![0, 5, 5, 0], 1), &json!({"5": "#abcdef"}), &json!({}), None, false);
         assert_eq!(kf[0], 1);
 
-        // Change cell index 2 from owner 5 → new owner 7.
+        // Change cell index 2 from owner 5 → new owner 7, who has glow equipped.
         let palette = json!({"5": "#abcdef", "7": "#123456"});
-        let (df, _prev2) = finish_view(&raw2x2(vec![0, 5, 7, 0], 2), &palette, prev, false);
+        let (df, _prev2) = finish_view(&raw2x2(vec![0, 5, 7, 0], 2), &palette, &json!({"7": "glow"}), prev, false);
         assert_eq!(df[0], 2, "same geometry + small change ⇒ delta");
 
         let body = inflate(&df[1..]);
@@ -1000,6 +1042,12 @@ mod tests {
             .iter().map(|x| x.as_u64().unwrap() as u32).collect();
         assert!(add.contains(&7), "the newly-appeared owner is appended to the sticky palette");
 
+        // tileFxAdd parallels tileIdsAdd: the new owner's glow rides the delta.
+        let fx_add: Vec<String> = header["tileFxAdd"].as_array().unwrap()
+            .iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        let pos = add.iter().position(|&id| id == 7).unwrap();
+        assert_eq!(fx_add[pos], "glow", "the new owner's fx code rides the delta");
+
         // Layout after the header: full fog (w*h = 4), then the changed-cell record (index u32).
         let coff = after_hdr + 4;
         let idx = u32::from_le_bytes([body[coff], body[coff + 1], body[coff + 2], body[coff + 3]]);
@@ -1010,11 +1058,11 @@ mod tests {
     /// `nofog:1`, so the changed-cell records start immediately after the header (no w*h tail).
     #[test]
     fn bin_delta_omits_fog() {
-        let (kf, prev) = finish_view(&raw2x2(vec![0, 5, 5, 0], 1), &json!({"5": "#abcdef"}), None, true);
+        let (kf, prev) = finish_view(&raw2x2(vec![0, 5, 5, 0], 1), &json!({"5": "#abcdef"}), &json!({}), None, true);
         assert_eq!(kf[0], 1, "keyframe still carries fog regardless of bin");
 
         let palette = json!({"5": "#abcdef", "7": "#123456"});
-        let (df, _) = finish_view(&raw2x2(vec![0, 5, 7, 0], 2), &palette, prev, true);
+        let (df, _) = finish_view(&raw2x2(vec![0, 5, 7, 0], 2), &palette, &json!({}), prev, true);
         assert_eq!(df[0], 2);
         let body = inflate(&df[1..]);
         let (header, after_hdr) = header_of(&body);
@@ -1093,7 +1141,7 @@ mod tests {
             ants: vec![(42, 13, 25, 1, 0, 9, 1), (43, 11, 22, 0, -1, 9, 0)],
             queens: Vec::new(), lod_step: 1, allies: Vec::new(),
         };
-        let (frame, _) = finish_view(&raw, &json!({}), None, true);
+        let (frame, _) = finish_view(&raw, &json!({}), &json!({}), None, true);
         assert_eq!(frame[0], 3, "bin ants-only frame is kind 3");
         let body = inflate(&frame[1..]);
         assert_eq!(u32::from_le_bytes([body[20], body[21], body[22], body[23]]), 2, "n ants");

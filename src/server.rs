@@ -136,7 +136,7 @@ pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// Resolve the session cookie on a request to its (unexpired) user id, or `None`.
-fn session_uid_from_cookie(headers: &HeaderMap, sessions: &crate::session::SessionStore) -> Option<u32> {
+pub(crate) fn session_uid_from_cookie(headers: &HeaderMap, sessions: &crate::session::SessionStore) -> Option<u32> {
     let tok = cookie_value(headers, crate::config::session_cookie_name())?;
     sessions.validate(&tok).map(|s| s.user_id)
 }
@@ -645,7 +645,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
         let cycle_start = Instant::now();
 
         // ---- Phase A: snapshot under a short read lock ----
-        let batch: Option<(Vec<ClientJob>, Arc<serde_json::Value>)> = {
+        let batch: Option<(Vec<ClientJob>, Arc<serde_json::Value>, Arc<serde_json::Value>)> = {
             let w = world.blocking_read();
             let tick = w.tick;
             if tick == last_tick {
@@ -747,6 +747,9 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     // Palette (owner→colour) is consulted ONLY by tile frames; on ants-only cycles
                     // finish_view never touches it, so skip the O(players) map build then.
                     let palette = Arc::new(if include_tiles { get_palette(&w) } else { serde_json::Value::Null });
+                    // Per-owner tile-FX (e.g. glow) — built once per tile cycle beside the colour
+                    // palette and shared by every client's finish_view. Skipped on ants-only cycles.
+                    let fx_palette = Arc::new(if include_tiles { crate::network::get_fx_palette(&w) } else { serde_json::Value::Null });
                     // Precompute owner→ant-list ONCE per me-cycle (capped 120/owner) so each player's
                     // `me` reads its own slice instead of rescanning the whole ant vec — that was
                     // O(players × total_ants) under this read lock at 1 Hz.
@@ -795,13 +798,13 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                             prev:    None,
                         }
                     }).collect());
-                    Some((jobs, palette))
+                    Some((jobs, palette, fx_palette))
                 }
             }
         };
 
         // ---- Phase B: serialize + send, no lock held ----
-        if let Some((mut jobs, palette)) = batch {
+        if let Some((mut jobs, palette, fx_palette)) = batch {
             // Attach each client's retained tile state, then drop grids for clients that are no
             // longer connected (pids = the full connected set whenever a batch is produced).
             let pid_set: FxHashSet<u32> = jobs.iter().map(|j| j.pid).collect();
@@ -821,7 +824,7 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
             let fv_start = Instant::now();
             let results: Vec<Out> = pool.install(move || jobs.into_par_iter().map(|job| {
                 let (frame, new_prev) = match &job.raw {
-                    Some(r) => { let (f, np) = finish_view(r, palette.as_ref(), job.prev, job.bin); (Some(f), np) }
+                    Some(r) => { let (f, np) = finish_view(r, palette.as_ref(), fx_palette.as_ref(), job.prev, job.bin); (Some(f), np) }
                     None    => (None, job.prev),
                 };
                 (job.pid, job.view_tx, frame, job.tx, job.ctl_tx, job.bin, job.me, new_prev)
@@ -1179,6 +1182,8 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/api/reset-password",  post(crate::api::reset_password))
         .route("/api/logout",          post(crate::api::logout))
         .route("/api/roster",          get(crate::api::roster)) // cached spectator fallback (free path)
+        .route("/api/buy-gems",        post(crate::api::buy_gems))      // start a Stripe gem-pack checkout
+        .route("/api/stripe-webhook",  post(crate::api::stripe_webhook)) // Stripe payment events → credit gems
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(AppState {
             world, cmd_tx,

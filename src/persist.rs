@@ -146,6 +146,7 @@ impl PlayerSnapshot {
             killed_by:           self.killed_by,
             kills_of:            self.kills_of,
             away:                None,
+            tile_fx:             None,   // runtime cache; reloaded from the account on connect
         }
     }
 }

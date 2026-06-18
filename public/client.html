@@ -115,9 +115,6 @@
   .wk-l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
   .wk-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:4px; color:var(--red); }
   .wk-v.sm { font-size:8px; color:var(--blu); }
-  .wk-cap { font-size:6px; color:var(--dim); margin-left:1px; }
-  .wk-army-bar { height:6px; background:var(--bg); border:1px solid var(--ink); margin-bottom:8px; }
-  .wk-army-fill { height:100%; width:0%; background:var(--blu); transition:width .3s; }
   .wk-hint { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:6px; line-height:1.5; }
   .wk-toggle { width:100%; margin-top:8px; font-family:'Press Start 2P',monospace; font-size:7px;
     background:var(--bg2); border:2px solid var(--ink); color:var(--ink); padding:6px 7px;
@@ -126,10 +123,11 @@
   .wk-list { margin-top:6px; overflow:hidden; display:flex; flex-direction:column; gap:3px; }
   .wk-ant { display:flex; align-items:center; gap:5px; font-family:'Press Start 2P',monospace; font-size:6px; }
   .wk-ant-ic { width:9px; text-align:center; color:var(--grn); }
-  .wk-ant.brute .wk-ant-ic { color:var(--yel); }
-  .wk-ant-bar { flex:1; height:6px; background:var(--bg); border:1px solid var(--line); }
-  .wk-ant-fill { height:100%; background:var(--grn); }
-  .wk-ant.brute .wk-ant-fill { background:var(--yel); }
+  .wk-ant-bar { flex:1; height:6px; background:var(--bg); border:1px solid var(--line); overflow:hidden; }
+  /* THE FIX: the fill is a <span> (inline) — without display:block the browser ignores width/height,
+     so the fill box was always 0×0 and NOTHING ever painted (it was never "green", it was invisible).
+     Colour is set inline to the player's queen/tile colour; --grn is only a fallback. */
+  .wk-ant-fill { display:block; height:100%; width:0; background:var(--grn); }
 
   /* Leaderboard extras (region col, tabs, expand, my-rank pin) */
   .lb-reg { display:block; font-family:'Press Start 2P',monospace; font-size:5px; color:var(--blu); margin-top:2px; }
@@ -905,10 +903,9 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       </div>
       <div class="wk-grid">
         <div class="wk-cell"><div class="wk-l">READY</div><div class="wk-v" id="ants-avail">0</div></div>
-        <div class="wk-cell"><div class="wk-l">ARMY</div><div class="wk-v" id="wk-army">0<span class="wk-cap" id="wk-cap"></span></div></div>
+        <div class="wk-cell"><div class="wk-l">ARMY</div><div class="wk-v" id="wk-army">0</div></div>
         <div class="wk-cell"><div class="wk-l">DAILY</div><div class="wk-v sm" id="refill-timer">--:--:--</div></div>
       </div>
-      <div class="wk-army-bar"><div class="wk-army-fill" id="wk-army-fill"></div></div>
       <button class="btn" id="btn-ant" disabled>+ DEPLOY WORKER</button>
       <div id="drag-hint" class="wk-hint" style="display:none;">◆ Click &amp; drag to aim · click again to stop</div>
       <button class="wk-toggle" id="wk-list-toggle" onclick="toggleAntList()"><span id="wk-list-caret">▸</span> ACTIVE WORKERS · <span id="wk-list-count">0</span></button>
@@ -1090,6 +1087,16 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
         <input class="adm-in-sm" id="atgt-setcr" type="number" min="0" placeholder="0">
         <button class="btn-sm" onclick="admSetNectar()">SET</button>
       </div>
+      <div class="adm-input-row">
+        <span class="adm-il">💎+</span>
+        <input class="adm-in-sm" id="atgt-givegems" type="number" min="0" placeholder="0">
+        <button class="btn-sm" onclick="admGiveGems()">ADD</button>
+      </div>
+      <div class="adm-input-row">
+        <span class="adm-il">💎=</span>
+        <input class="adm-in-sm" id="atgt-setgems" type="number" min="0" placeholder="0">
+        <button class="btn-sm" onclick="admSetGems()">SET</button>
+      </div>
       <div class="adm-subsec">GOD MODE</div>
       <div class="btn-row" style="margin-bottom:6px;">
         <button class="btn-sm" id="atgt-unlim-cr" onclick="admToggleUnlim('nectar')">∞ NEC: OFF</button>
@@ -1097,6 +1104,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       </div>
       <div class="adm-subsec">ACTIONS</div>
       <button class="btn-sm" id="atgt-place-ant" style="width:100%;margin-bottom:4px;">♟ PLACE ANTS</button>
+      <button class="btn-sm" id="atgt-grant-cos" style="width:100%;margin-bottom:4px;" onclick="admGrantCosmetics()">✨ GRANT ALL COSMETICS</button>
       <div class="btn-row" style="margin-bottom:4px;">
         <button class="btn-sm" id="atgt-center">⊙ CENTER</button>
         <button class="btn-sm" id="atgt-move">⊕ MOVE</button>
@@ -1471,6 +1479,9 @@ let zoomTarget=1;       // smooth zoom lerp target
 let panTarget=null;     // {x,y} smooth camera fly target, null when idle
 let vw=null;
 let palette={0:'#ffffff'};
+// Per-owner tile-effect codes (e.g. {id:'glow'}) from the tile-frame palette — parallel to `palette`.
+// Drives the cosmetic glow overlay so a player's effect is visible to EVERY viewer, not just them.
+let paletteFx={};
 // Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
 let myAlliance=null, factionsAll=[], factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
 let knownNames={};      // playerId -> username; every queen seen this life stays identified until our queen dies
@@ -1499,6 +1510,14 @@ let prevAntPos=new Map(), lastVwAt=0, antFrameDt=0; // antFrameDt: smoothed ms b
 const territoryCanvas=document.createElement('canvas');
 const territoryCtx=territoryCanvas.getContext('2d',{alpha:true});
 let territoryImg=null;             // full-cache ImageData backing (TILE_CACHE_W×H), edited in place
+// GLOW overlay (cosmetic): a parallel full-cache buffer holding WHITE pixels exactly where a visible
+// owner has the `glow` tile-fx equipped, transparent elsewhere. Written in the same pass as the
+// territory texture; blitted each frame at a pulsing alpha so those tiles oscillate colour↔white.
+// `glowAny` skips the blit entirely when nobody visible is glowing (the common case = zero cost).
+const glowCanvas=document.createElement('canvas');
+const glowCtx=glowCanvas.getContext('2d',{alpha:true});
+let glowImg=null;
+let glowAny=false;
 // Fog-of-war — the whole canvas is fogged by default; each tick we ERASE a REVEAL MASK for what the
 // player can see (so a leak is structurally impossible). `fogCanvas`/`fogImg` is the per-frame reveal
 // MASK (served grid v.w×v.h, 1px/cell, alpha = how much to erase = (100-fog)/100); rebuilt only when
@@ -1664,6 +1683,9 @@ function getNearColored(v) {
 function allocCacheTextures(){
   territoryCanvas.width=TILE_CACHE_W; territoryCanvas.height=TILE_CACHE_H;
   territoryImg=territoryCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
+  glowCanvas.width=TILE_CACHE_W; glowCanvas.height=TILE_CACHE_H;   // parallel glow overlay buffer
+  glowImg=glowCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
+  glowAny=false;
   cacheRenderMode=-1;
 }
 // Wipe the territory texture (on cache re-anchor / world wipe). Re-fills as frames arrive.
@@ -1671,6 +1693,7 @@ function clearCacheTextures(){
   if (!territoryImg) return;
   territoryImg.data.fill(0);
   territoryCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H);
+  if (glowImg){ glowImg.data.fill(0); glowCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H); glowAny=false; }
 }
 // Rasterize a cache-LOCAL pixel region [lx,ly,lw,lh] of tileCache into the persistent TERRITORY
 // texture, uploading ONLY that dirty sub-rect. Pure owner colours — the fog (drawFog) shrouds them at
@@ -1687,19 +1710,23 @@ function rasterizeCache(lx, ly, lw, lh){
   const browsable = worldBrowsable();
   const showMap = mapVisible;
   const td=territoryImg.data;
+  const gd=glowImg?glowImg.data:null;   // parallel glow overlay (white where owner has glow equipped)
   for (let ry=0; ry<lh; ry++){
     const rowC=(ly+ry)*TILE_CACHE_W + lx;
     for (let rx=0; rx<lw; rx++){
       const ci=rowC+rx, o=ci*4;
       const t=tileCache[ci];
-      if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; continue; }
+      if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; if(gd)gd[o+3]=0; continue; }
       const rgb=toRGB(palette[t]||'#9b3027');   // each player's own colour (no shared alliance colour)
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
       // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
       td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
+      // Glow cosmetic: opaque white over this owner's cell; the per-frame blit alpha does the pulse.
+      if (gd){ if (paletteFx[t]==='glow'){ gd[o]=255; gd[o+1]=255; gd[o+2]=255; gd[o+3]=255; } else gd[o+3]=0; }
     }
   }
   territoryCtx.putImageData(territoryImg, 0,0, lx, ly, lw, lh);
+  if (glowImg) glowCtx.putImageData(glowImg, 0,0, lx, ly, lw, lh);
 }
 
 /* ===================================================================
@@ -1988,7 +2015,17 @@ async function inflateRaw(u8){
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 function _sameGeom(h,g){ return g && h.x0===g.x0 && h.y0===g.y0 && h.w===g.w && h.h===g.h && (h.lod||1)===(g.lod||1); }
-function _mergePalette(ids,colors){ if(!ids)return; for(let i=0;i<ids.length;i++){ if(colors&&colors[i]) palette[ids[i]]=colors[i]; } }
+function _mergePalette(ids,colors,fx){
+  if(!ids)return;
+  for(let i=0;i<ids.length;i++){ if(colors&&colors[i]) palette[ids[i]]=colors[i]; if(fx) paletteFx[ids[i]]=fx[i]||''; }
+  // Gate the glow blit on whether ANY visible owner glows (cheap; paletteFx is bounded by visible owners).
+  if(fx){ glowAny=false; for(const k in paletteFx){ if(paletteFx[k]==='glow'){ glowAny=true; break; } } }
+}
+// Glow pulse: a full colour→white→colour cycle every GLOW_PERIOD ms (medium pace), peaking at
+// GLOW_MAX opacity so tiles strongly whiten without fully losing the owner's colour. The render loop
+// runs every animation frame, so this animates continuously with no incoming data.
+const GLOW_PERIOD=1600, GLOW_MAX=0.85;
+function glowAlpha(){ return GLOW_MAX*(1-Math.cos(performance.now()*(2*Math.PI/GLOW_PERIOD)))/2; }
 
 // Compressed binary CONTROL frame (kind >=16: me/leaderboard/stats/region-holders). The deflated
 // payload is the same JSON the legacy text path carried, so we just inflate → dispatch via handle().
@@ -2028,7 +2065,7 @@ async function handleViewBin(ab){
       const toff=4+hlen;
       const local=new Uint16Array(body.buffer, body.byteOffset+toff, n);
       const tileIds=header.tileIds||[0];
-      _mergePalette(tileIds, header.tileColors);
+      _mergePalette(tileIds, header.tileColors, header.tileFx);
       const tiles=new Uint32Array(n);
       for (let i=0;i<n;i++) tiles[i]=tileIds[local[i]]||0;
       const fog=body.subarray(toff+n*2, toff+n*2+n);
@@ -2039,7 +2076,7 @@ async function handleViewBin(ab){
       // Delta — patch the prior grid; needs an exact base + matching geometry, else wait for a keyframe.
       if (!clientGrid || !_sameGeom(header,clientGrid) || header.baseSeq!==clientGrid.seq) return;
       if (header.tileIdsAdd) for (const id of header.tileIdsAdd) clientGrid.tileIds.push(id);
-      _mergePalette(header.tileIdsAdd, header.tileColorsAdd);
+      _mergePalette(header.tileIdsAdd, header.tileColorsAdd, header.tileFxAdd);
       // Fog: `bin` deltas omit it (nofog) → reuse the retained keyframe fog; legacy deltas carry it.
       let fog, coff;
       if (header.nofog) { fog=clientGrid.fog||new Uint8Array(n); coff=4+hlen; }
@@ -2294,6 +2331,14 @@ function handle(msg) {
         lastViewKey=null; pendingViewKey=null; clampView(); pushView(true);
       }
       break;
+    case 'cosmetic-ok': {
+      // Server applied a cosmetic buy/equip; the accompanying `me` refreshes balances + the shop.
+      AudioEngine.plop();
+      const verb = msg.action==='buy' ? 'PURCHASED' : (msg.action==='unequip' ? 'UNEQUIPPED' : 'EQUIPPED');
+      const what = (msg.id || msg.slot || 'cosmetic').toString().toUpperCase();
+      toast(`${what} ${verb}`);
+      break;
+    }
     case 'ant-placed':
       AudioEngine.plop(); break;
     case 'clash': {
@@ -2595,12 +2640,26 @@ const SHOP_ITEMS=[
   {id:'relocate',ic:'📍', nm:'RELOCATE', pr:20, gate:50, ds:'Teleport your queen to a new tile you pick.'},
 ];
 function openShopWindow(){ AudioEngine.click(); openWindow('SHOP — REQUISITIONS','shop'); renderShopWindow(); }
-// Shop tabs: COSMETICS is the DEFAULT (D3) even before it's functional; POWERUPS holds the live items.
-let _shopTab='cosmetics';
+// Shop tabs: GEMS (buy gems for real $) is the DEFAULT; COSMETICS spends gems (soon); POWERUPS = nectar.
+let _shopTab='gems';
 function shopTab(name){ if(name===_shopTab) return; _shopTab=name; AudioEngine.click(); renderShopWindow(); }
 
-// Cosmetics line (tile/queen color & effects) — placeholder teasers priced in GEMS, not yet buyable.
+// Gem packs — DISPLAY ONLY. The server (`stripe.rs::GEM_PACKS`) is authoritative for gems + price;
+// the client sends just the pack `id` to /api/buy-gems. Keep ids/amounts in sync with that table.
+const GEM_PACKS=[
+  {id:'pouch',   gems:100,    usd:'0.99',  bonus:0},
+  {id:'handful', gems:550,    usd:'4.99',  bonus:10},
+  {id:'stack',   gems:1200,   usd:'9.99',  bonus:20},
+  {id:'chest',   gems:2500,   usd:'19.99', bonus:25},
+  {id:'vault',   gems:6500,   usd:'49.99', bonus:30},
+  {id:'hoard',   gems:14000,  usd:'99.99', bonus:40},
+];
+
+// Cosmetics line — buyable/equippable with GEMS. Items WITH an `id`+`slot` are live (mirror
+// `cosmetics.rs::COSMETICS` — keep ids/slots/prices in sync); id-less rows are design teasers ("SOON").
 const COSMETIC_ITEMS=[
+  {id:'glow', slot:'tile_fx', ic:'💫', nm:'GLOW', pr:500,
+   ds:'Your territory pulses between your colour and white. <span style="color:var(--yel)">Experimental.</span>'},
   {ic:'🎨', nm:'TILE COLOR',  pr:100, ds:'Recolor the territory your ants paint.'},
   {ic:'👑', nm:'QUEEN COLOR', pr:150, ds:'Give your queen a signature hue.'},
   {ic:'✨', nm:'QUEEN AURA',   pr:250, ds:'Wrap your queen in a glowing aura effect.'},
@@ -2615,11 +2674,22 @@ function renderShopWindow(){
       <div class="shop-bal"><span class="bal-ic gems"></span>GEMS<b>${gems.toLocaleString()}</b></div>
     </div>
     <div class="shop-tabs">
+      <button class="shop-tab${_shopTab==='gems'?' active':''}" onclick="shopTab('gems')">GEMS</button>
       <button class="shop-tab${_shopTab==='cosmetics'?' active':''}" onclick="shopTab('cosmetics')">COSMETICS</button>
       <button class="shop-tab${_shopTab==='powerups'?' active':''}" onclick="shopTab('powerups')">POWERUPS</button>
     </div>
     <div class="shop-grid">`;
-  if (_shopTab==='powerups'){
+  if (_shopTab==='gems'){
+    for (const p of GEM_PACKS){
+      const bonus = p.bonus>0 ? `<span style="color:var(--grn)">+${p.bonus}% bonus</span>` : 'Starter pack';
+      html+=`<div class="shop-card"><div class="shop-ic">💎</div>
+        <div class="shop-nm">${p.gems.toLocaleString()} GEMS</div>
+        <div class="shop-ds">${bonus}</div>
+        <div class="shop-pr">$${p.usd}</div>
+        <button class="shop-buy" onclick="buyGems('${p.id}')">BUY</button></div>`;
+    }
+    html+=`</div><div class="shop-foot">SECURE CHECKOUT BY STRIPE · GEMS SURVIVE SEASON WIPES</div>`;
+  } else if (_shopTab==='powerups'){
     let any=false;
     for (const it of SHOP_ITEMS){
       if (peakLvl() < (it.gate||0)) continue;   // locked → fully omitted (no card, no hint)
@@ -2639,13 +2709,32 @@ function renderShopWindow(){
     if (dCount>0) html+=`<div class="shop-foot blu">DEFENDERS QUEUED: ${dCount}</div>`;
     if (!haveQ)   html+=`<div class="shop-foot red">DEPLOY A QUEEN TO PURCHASE</div>`;
   } else {
+    const owned=me.ownedCosmetics||[], equipped=me.equipped||{};
     for (const it of COSMETIC_ITEMS){
-      html+=`<div class="shop-card wip"><div class="shop-ic">${it.ic}</div>
+      if (!it.id){   // design teaser — not yet implemented
+        html+=`<div class="shop-card wip"><div class="shop-ic">${it.ic}</div>
+          <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
+          <div class="shop-pr gem">${it.pr} GEMS</div>
+          <button class="shop-buy" disabled>SOON</button></div>`;
+        continue;
+      }
+      const isOwned=owned.includes(it.id), isEquipped=equipped[it.slot]===it.id;
+      let priceRow, btn;
+      if (!isOwned){
+        priceRow=`<div class="shop-pr gem">${it.pr} GEMS</div>`;
+        btn=`<button class="shop-buy" ${gems>=it.pr?'':'disabled'} onclick="cosmeticBuy('${it.id}')">BUY</button>`;
+      } else if (isEquipped){
+        priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
+        btn=`<button class="shop-buy" style="background:var(--grn);color:var(--ink)" onclick="cosmeticEquip('${it.slot}','')">EQUIPPED</button>`;
+      } else {
+        priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
+        btn=`<button class="shop-buy" onclick="cosmeticEquip('${it.slot}','${it.id}')">EQUIP</button>`;
+      }
+      html+=`<div class="shop-card${isEquipped?' shop-hot':''}"><div class="shop-ic">${it.ic}</div>
         <div class="shop-nm">${it.nm}</div><div class="shop-ds">${it.ds}</div>
-        <div class="shop-pr gem">${it.pr} GEMS</div>
-        <button class="shop-buy" disabled>SOON</button></div>`;
+        ${priceRow}${btn}</div>`;
     }
-    html+=`</div><div class="shop-foot">COSMETICS ARE COMING SOON — EARN GEMS TO CUSTOMIZE YOUR HIVE.</div>`;
+    html+=`</div><div class="shop-foot">SPEND GEMS TO CUSTOMIZE YOUR HIVE — COSMETICS ARE VISIBLE TO EVERYONE.</div>`;
   }
   el.innerHTML=html;
 }
@@ -2654,6 +2743,36 @@ function shopWindowBuy(item){
   // Placement items need the map — get the window out of the way.
   if (item==='relocate'||item==='brute') closeWindow();
   else if (winIsOpen('shop')) renderShopWindow();
+}
+
+// Buy gems with real money: ask the server for a Stripe Checkout URL, then hand off to it. The
+// server is authoritative for price/amount (we only send the pack id); gems are credited by the
+// Stripe webhook, not here. `devMode` = Stripe keys not configured yet.
+async function buyGems(pack){
+  AudioEngine.click();
+  try{
+    const r=await fetch('/api/buy-gems',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({pack})});
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.ok&&j.url){ location.href=j.url; return; }      // → Stripe hosted checkout
+    if(j&&j.devMode){ toast('PAYMENTS NOT YET CONFIGURED'); return; }
+    toast((j&&j.error)?String(j.error).toUpperCase():'COULD NOT START CHECKOUT');
+  }catch(e){ toast('NETWORK ERROR — TRY AGAIN'); }
+}
+
+// Cosmetics: buy with gems / equip a slot. Server is authoritative (validates ownership + price);
+// the accompanying `me` refreshes the shop UI + drives the live glow. id='' on equip = unequip slot.
+function cosmeticBuy(id){ AudioEngine.click(); send({t:'cosmetic-buy', id}); }
+function cosmeticEquip(slot,id){ AudioEngine.click(); send({t:'cosmetic-equip', slot, id}); }
+
+// After returning from Stripe checkout (success_url/cancel_url land back here with ?gems=…), show a
+// toast and strip the param so a refresh doesn't repeat it. The balance refreshes via the next `me`.
+function checkGemReturn(){
+  let q; try{ q=new URLSearchParams(location.search).get('gems'); }catch(e){ return; }
+  if(!q) return;
+  if(q==='ok')      toast('GEMS ADDED — THANK YOU!');
+  else if(q==='cancel') toast('CHECKOUT CANCELLED');
+  try{ const u=new URL(location.href); u.searchParams.delete('gems'); history.replaceState(null,'',u); }catch(e){}
 }
 
 // ---- Help window (E2): a field manual whose numbers come from the live me.cfg + GATES/SHOP_ITEMS ----
@@ -3009,12 +3128,9 @@ function updateHUD() {
     }
   }
   $('ants-avail').textContent=me.unlimitedAnts?'∞':me.antsAvail;
-  // Workers panel: live ARMY / cap readout + bar + deploy-button state.
-  const army=me.army||0, cap=me.cfg?.ARMY_CAP||0;
-  const wkArmy=$('wk-army');
-  if (wkArmy && wkArmy.firstChild && wkArmy.firstChild.nodeType===3) wkArmy.firstChild.nodeValue=army.toLocaleString();
-  if ($('wk-cap')) $('wk-cap').textContent = cap ? ('/'+(cap>=1000?(cap/1000)+'K':cap)) : '';
-  if ($('wk-army-fill')&&cap) $('wk-army-fill').style.width=Math.min(100,army/cap*100)+'%';
+  // Workers panel: live ARMY readout + deploy-button state. (No cap — workers are unlimited.)
+  const army=me.army||0;
+  if ($('wk-army')) $('wk-army').textContent=army.toLocaleString();
   if ($('wk-list-count')) $('wk-list-count').textContent=army;
   updateDeployBtn();
   // Daily claim cell: while the current 00:00-UTC window is unclaimed it IS the claim button;
@@ -3834,6 +3950,10 @@ function render() {
       const sx=ix0-cacheOriX, sy=iy0-cacheOriY, sw=ix1-ix0, sh=iy1-iy0;             // src px (cache-local)
       const dx=W/2+(ix0-view.x)*cp, dy=H/2+(iy0-view.y)*cp, dw=sw*cp, dh=sh*cp;     // dst px (screen)
       ctx.drawImage(territoryCanvas, sx, sy, sw, sh, dx, dy, dw, dh);   // crisp pixelated territory
+      // GLOW cosmetic overlay — white over glowing owners' tiles at the pulsing alpha. Same src/dst
+      // rect as territory; under the fog (drawn next) so distant glow still fades into the shroud.
+      if (glowAny) { ctx.save(); ctx.globalAlpha=glowAlpha(); ctx.imageSmoothingEnabled=false;
+                     ctx.drawImage(glowCanvas, sx, sy, sw, sh, dx, dy, dw, dh); ctx.restore(); }
     }
     if ($('d-tiles')) $('d-tiles').textContent = (Math.max(0,ix1-ix0)*Math.max(0,iy1-iy0))|0;
   }
@@ -4740,14 +4860,19 @@ function renderAntList() {
     return;
   }
   const SHOWN=6;                       // keep the list short so it never needs a scrollbar; the rest roll up into "+N MORE"
-  const shown=ants.slice(0,SHOWN);
+  // Show the HEALTHIEST workers (most life left) first, not the oldest — `world.ants` is append-order,
+  // so a raw slice(0,6) always surfaced the most-drained ants and the panel looked empty even when the
+  // army was fresh. Sort a copy by remaining-life desc.
+  const shown=[...ants].sort((a,b)=>b[1]-a[1]).slice(0,SHOWN);
+  const col=me?.color||'var(--grn)';   // fill = the player's queen/tile colour
   let html='';
   for (const a of shown) {
     const rem=a[1], kind=a[2];
-    const frac=Math.max(0,Math.min(1,rem/life));  // drains as the worker ages toward its return
+    const frac=Math.max(0,Math.min(1,rem/life));
+    const pct=Math.ceil(frac*100);     // deplete in 1% chunks until the worker despawns
     const ic=kind===1?'◼':'▴';
-    html+=`<div class="wk-ant${kind===1?' brute':''}"><span class="wk-ant-ic">${ic}</span>`
-      +`<span class="wk-ant-bar"><span class="wk-ant-fill" style="width:${(frac*100).toFixed(1)}%"></span></span></div>`;
+    html+=`<div class="wk-ant${kind===1?' brute':''}"><span class="wk-ant-ic" style="color:${col}">${ic}</span>`
+      +`<span class="wk-ant-bar"><span class="wk-ant-fill" style="width:${pct}%;background:${col}"></span></span></div>`;
   }
   const more=(me?.army||0)-shown.length;
   if (more>0) html+=`<div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);text-align:center;padding:4px;">+${more} MORE</div>`;
@@ -4771,7 +4896,7 @@ function tickAntBars() {
   for (const b of antBars) {
     const r = Math.max(0, b.rem - elapsed);
     const frac = Math.max(0, Math.min(1, r / antBarsLife));
-    b.el.style.width = (frac*100).toFixed(2) + '%';
+    b.el.style.width = Math.ceil(frac*100) + '%';   // same 1% chunks as renderAntList (no sub-pixel creep)
   }
 }
 $('admin-chk').onchange=e=>{
@@ -4889,13 +5014,15 @@ function admSetTarget(pid, username, color, level, hp, maxHp, tiles, ants, qx, q
   const nm=$('adm-tgt-name');
   nm.textContent=String(username).toUpperCase();
   nm.style.background=color; nm.style.color=admIsLight(color)?'#000':'#fff';
-  $('adm-tgt-meta').textContent=`LV${level} · ${tiles>=1000?(tiles/1000).toFixed(1)+'K':tiles} TILES · ${ants} ANTS`;
+  const tp=admPlayers.find(x=>x.id===pid);
+  const gems=tp?.gems||0, cos=tp?.cosmetics||0;
+  $('adm-tgt-meta').textContent=`LV${level} · ${tiles>=1000?(tiles/1000).toFixed(1)+'K':tiles} TILES · ${ants} ANTS · ${gems.toLocaleString()} 💎 · ${cos} COS`;
   const pct=maxHp>0?hp/maxHp*100:0;
   $('adm-tgt-hp-fill').style.width=pct+'%';
   $('adm-tgt-hp-text').textContent=`${hp}/${maxHp} HP`;
   if ($('atgt-setlvl')) $('atgt-setlvl').value=level;
   if ($('atgt-setants')) $('atgt-setants').value=ants;
-  const tp=admPlayers.find(x=>x.id===pid);
+  if ($('atgt-setgems')) $('atgt-setgems').value=gems;
   admUpdUnlimBtns(tp?tp.unlimitedNectar:false, tp?tp.unlimitedAnts:false);
 }
 function admUpdUnlimBtns(cr, ant) {
@@ -5018,6 +5145,22 @@ function admSetNectar() {
   const n=parseInt($('atgt-setcr')?.value);
   if (admTargetId==null||isNaN(n)||n<0) return;
   AudioEngine.click(); send({t:'admin-set-nectar',targetId:admTargetId,amount:n}); toast('NECTAR→'+n);
+}
+// Gems live in the account record (users.json); the server mutates + saves there + pushes a fresh `me`.
+function admGiveGems() {
+  const n=parseInt($('atgt-givegems')?.value);
+  if (admTargetId==null||isNaN(n)||n<=0) return;
+  AudioEngine.click(); send({t:'admin-give-gems',targetId:admTargetId,amount:n}); toast('+'+n.toLocaleString()+' 💎');
+}
+function admSetGems() {
+  const n=parseInt($('atgt-setgems')?.value);
+  if (admTargetId==null||isNaN(n)||n<0) return;
+  AudioEngine.click(); send({t:'admin-set-gems',targetId:admTargetId,amount:n}); toast('💎→'+n.toLocaleString());
+}
+// One-click: seed every cosmetic in the registry onto the target — instant QA of the whole line.
+function admGrantCosmetics() {
+  if (admTargetId==null) return;
+  AudioEngine.click(); send({t:'admin-grant-cosmetics',targetId:admTargetId}); toast('ALL COSMETICS GRANTED');
 }
 
 /* Sandbox */
@@ -5236,6 +5379,7 @@ applySettings();
 
 connect();
 requestAnimationFrame(loop);
+checkGemReturn();   // toast + clear ?gems= when returning from Stripe checkout
 </script>
 </body>
 </html>

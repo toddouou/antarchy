@@ -1,6 +1,7 @@
 /target
 /target-dev
 /target-check
+/target-glow
 users.json
 users.json.tmp
 sessions.json
