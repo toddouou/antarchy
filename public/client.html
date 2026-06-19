@@ -1492,7 +1492,6 @@ let catItemsById={};               // id -> catalogue item (price/params/categor
 let cosmRoster={};                 // ownerId -> {aura,trail,emblem}
 let trailAny=false, auraAny=false; // cheap gates so the common (no-cosmetics) case stays zero-cost
 const trailCells=new Map();        // worldKey -> {t:tick, o:owner} — recent painted cells for trails
-let fxTintCache={};                // tile-fx id -> [r,g,b] bloom tint (white default)
 // ===== Cosmetics health & perf guard (Phase 0 instrumentation) ===================================
 // Hard rule: a fault OR a perf cliff in ANY cosmetic path must never kill the game. `cosmKill`
 // latches OFF all cosmetic rendering after the first thrown fault (logged once with its subsystem);
@@ -1533,18 +1532,10 @@ window.addEventListener('unhandledrejection', e=>{ try{ console.error('[unhandle
 function setCatalog(cat){
   CATALOG=cat||{items:[],bundles:[]};
   catItemsById={}; for (const it of (CATALOG.items||[])) catItemsById[it.id]=it;
-  fxTintCache={};
 }
 function applyCosmRoster(map){
   cosmRoster=map||{}; trailAny=false; auraAny=false;
   for (const k in cosmRoster){ const c=cosmRoster[k]; if(c.trail)trailAny=true; if(c.aura)auraAny=true; }
-}
-// Bloom tint for a tile-fx (its `params` hex, or white for the plain GLOW). Cached per id.
-function fxTint(fxId){
-  let t=fxTintCache[fxId];
-  if(!t){ const it=catItemsById[fxId]; const hex=(it&&it.params&&it.params[0]==='#')?it.params:'#ffffff';
-          t=toRGB(hex); fxTintCache[fxId]=t; }
-  return t;
 }
 function lerpHex(a,b,f){ const A=toRGB(a),B=toRGB(b);
   return `rgb(${(A[0]+(B[0]-A[0])*f)|0},${(A[1]+(B[1]-A[1])*f)|0},${(A[2]+(B[2]-A[2])*f)|0})`; }
@@ -1605,22 +1596,31 @@ _defAura('au_cyber',  'sonar',    '#00F5D4');       // expanding sonar pulses
 _defAura('au_prism',  'prism',    '#ff66cc');       // refractive rainbow motes (bundle exclusive)
 _defAura('au_frost',  'stardust', '#90E0EF');       // legacy SKU (cut in catalogue Phase 5) → cold dust
 // --- global particle pool (world-space) ---
-const PCAP=700;
+const PCAP=900;
 const Px=new Float32Array(PCAP), Py=new Float32Array(PCAP), Pvx=new Float32Array(PCAP), Pvy=new Float32Array(PCAP);
 const Pl=new Float32Array(PCAP), Pml=new Float32Array(PCAP), Psz=new Float32Array(PCAP), Pspr=new Int16Array(PCAP);
 let pcount=0, _auraLastT=performance.now();
 function _spawn(wx,wy,vx,vy,life,size,spr){ if(pcount>=PCAP) return; const i=pcount++;
   Px[i]=wx; Py[i]=wy; Pvx[i]=vx; Pvy[i]=vy; Pl[i]=life; Pml[i]=life; Psz[i]=size; Pspr[i]=spr; }
-// Emit pooled particles for the trailing kinds at the entity's WORLD centre (wx,wy). `rad` is screen px.
-function emitAura(wx,wy,rad,spec,isQueen){
+// Emit pooled particles for the trailing kinds at the entity's WORLD centre (wx,wy). `rad` is screen px;
+// (hx,hy) is the entity's unit heading (0,0 = stationary, e.g. a queen). Emission is randomised so it
+// stays even across many entities and never bursts the pool.
+function emitAura(wx,wy,rad,spec,isQueen,hx,hy){
   const cp=CELL*view.zoom, wr=rad/cp, big=isQueen?2.0:1;   // wr = entity radius in world cells
   if(spec.kind==='stardust'){
-    if(Math.random()<0.6*big){ const a=Math.random()*Math.PI*2, r=wr*(0.3+Math.random()*0.9);
+    if(Math.random()<0.42*big){ const a=Math.random()*Math.PI*2, r=wr*(0.3+Math.random()*0.9);
       _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, (Math.random()-0.5)*0.001*wr, -0.0016*wr*(0.6+Math.random()),
              800+Math.random()*700, Math.max(2,rad*0.22), spec.spr); }
   } else if(spec.kind==='comet'){
-    const n=isQueen?2:1; for(let k=0;k<n;k++){ const a=Math.random()*Math.PI*2, sp=0.002*wr*(0.5+Math.random());
-      _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.001*wr, 480+Math.random()*520, Math.max(2,rad*0.26), spec.spr); }
+    // A real tail: stream sparks BEHIND the heading so a moving ant draws a comet; a stationary queen
+    // (no heading) gets a gentle rising-ember bloom instead.
+    const moving=(hx||hy), n=isQueen?2:1;
+    for(let k=0;k<n;k++){
+      if(moving){ const sp=0.0026*wr*(0.7+Math.random()*0.6), jx=(Math.random()-0.5)*0.0012*wr, jy=(Math.random()-0.5)*0.0012*wr;
+        _spawn(wx, wy, -hx*sp+jx, -hy*sp+jy, 420+Math.random()*420, Math.max(2,rad*0.26), spec.spr); }
+      else { const a=Math.random()*Math.PI*2, sp=0.0016*wr*(0.5+Math.random());
+        _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.0014*wr, 520+Math.random()*520, Math.max(2,rad*0.26), spec.spr); }
+    }
   }
 }
 // Update + draw the whole pool once per frame (additive sprite blits — no shadowBlur).
@@ -1678,9 +1678,9 @@ function drawAura(g, cx, cy, rad, auraId, isQueen){
 }
 // Live-map dispatcher: ring kinds draw deterministically on the main ctx; trailing kinds EMIT into the
 // global pool (drawn later by stepAuraParticles) at the entity's world centre (wx,wy).
-function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy){
+function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy, hx, hy){
   const spec=AURA[auraId]; if(!spec) return;
-  if(!effReduce() && (spec.kind==='comet'||spec.kind==='stardust')) emitAura(wx,wy,rad,spec,isQueen);
+  if(!effReduce() && (spec.kind==='comet'||spec.kind==='stardust')) emitAura(wx,wy,rad,spec,isQueen,hx||0,hy||0);
   else drawAura(ctx, cx, cy, rad, auraId, isQueen);
 }
 // Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
@@ -1753,19 +1753,21 @@ const TILE_FX={
       grad.addColorStop(1,'rgba(255,255,255,.82)'); g.fillStyle=grad; g.fillRect(0,0,mw,mh); } },
   tf_auroraveil: { blend:'screen', name:'AURORA SHEEN',
     alpha:(t,red)=> red?0.24 : 0.20+0.06*Math.sin(t*0.0007),
-    draw(g,mw,mh,t,ax,ay,red){ const span=mw+mh, off=((ax+ay)*0.6 + (red?0:t*0.03)) % span;
-      const grad=g.createLinearGradient(off-span,0, off,mh);
+    draw(g,mw,mh,t,ax,ay,red){ const span=mw+mh;
+      // Ping-pong the band across the rect (sin, no modulo) so it drifts seamlessly — never snaps.
+      const off=mw*0.5 + Math.sin((red?0:t*0.00018)+(ax+ay)*0.002)*span*0.55;
+      const grad=g.createLinearGradient(off-span*0.6,0, off+span*0.6,mh);
       const cols=['rgba(6,214,160,0)','rgba(6,214,160,.85)','rgba(0,245,212,.9)','rgba(131,56,236,.85)','rgba(6,214,160,0)'];
       for(let i=0;i<cols.length;i++) grad.addColorStop(i/(cols.length-1),cols[i]);
       g.fillStyle=grad; g.fillRect(0,0,mw,mh); } },
-  tf_holo: { blend:'overlay', name:'IRIDESCENT',
-    alpha:(t,red)=> red?0.30 : 0.26+0.05*Math.sin(t*0.001),
+  tf_holo: { blend:'screen', name:'IRIDESCENT',   // 'screen' reads on ANY owner colour (overlay dies on dark)
+    alpha:(t,red)=> red?0.34 : 0.30+0.06*Math.sin(t*0.001),
     draw(g,mw,mh,t,ax,ay,red){ const h0=(red?0:t*0.03)+(ax+ay)*0.3;
       const grad=g.createLinearGradient(0,0,mw,mh);
       for(let i=0;i<=6;i++) grad.addColorStop(i/6, `hsla(${(h0+i*60)%360|0},90%,62%,.9)`);
       g.fillStyle=grad; g.fillRect(0,0,mw,mh); } },
-  tf_gilded: { blend:'overlay', name:'GILDED',
-    alpha:()=>0.5,
+  tf_gilded: { blend:'screen', name:'GILDED',     // 'screen' keeps the gold visible on dark territory too
+    alpha:()=>0.55,
     draw(g,mw,mh,t,ax,ay,red){ const grad=g.createLinearGradient(0,0,0,mh);
       grad.addColorStop(0,'#6e520f'); grad.addColorStop(.5,'#ffe7a0'); grad.addColorStop(1,'#6e520f');
       g.fillStyle=grad; g.fillRect(0,0,mw,mh);
@@ -2325,12 +2327,11 @@ function _mergePalette(ids,colors,fx){
 // OS requests reduced motion. Every animated cosmetic checks this and holds static when set. Reads
 // `settings` lazily (defined later); only ever called at render time, after settings is initialised.
 function effReduce(){ try { return !!settings.reduce; } catch(_) { return false; } }
-// Glow pulse: a GENTLE additive bloom that breathes within a <10% relative-luminance delta — WCAG
-// 2.3.1 safe (was a 0→0.85 colour↔white wash that read as a strobe). Period ~2200 ms (~0.45 Hz, far
-// under the 3 Hz flash threshold); blitted with the 'lighter' composite (see the draw call) so tiles
-// softly brighten instead of washing to white. Holds at a constant mid value when effects are reduced.
+// Bloom pulse constants (used by the BLOOM tile-fx generator): a GENTLE additive breathe within a
+// <10% relative-luminance delta — WCAG 2.3.1 safe. Period ~2200 ms (~0.45 Hz, far under the 3 Hz flash
+// threshold); composited with 'lighter' so tiles softly brighten. Holds at a constant mid value when
+// effects are reduced.
 const GLOW_PERIOD=2200, GLOW_MAX=0.10;
-function glowAlpha(){ if(effReduce()) return GLOW_MAX*0.5; return GLOW_MAX*(1-Math.cos(performance.now()*(2*Math.PI/GLOW_PERIOD)))/2; }
 
 // Compressed binary CONTROL frame (kind >=16: me/leaderboard/stats/region-holders). The deflated
 // payload is the same JSON the legacy text path carried, so we just inflate → dispatch via handle().
@@ -4511,7 +4512,7 @@ function render() {
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
     ctx.strokeRect(px,py,qw,qw);
     // Queen AURA cosmetic — ringed around the body (queens are few → always drawn).
-    { const ar=cosmRoster[q.id]; if (ar&&ar.aura && cosmActive()) cosmGuard('queen-aura', ()=>drawEntityAura(px+qw/2, py+qw/2, qw*0.9, ar.aura, true, q.x+q.size/2, q.y+q.size/2)); }
+    { const ar=cosmRoster[q.id]; if (ar&&ar.aura && cosmActive()) cosmGuard('queen-aura', ()=>drawEntityAura(px+qw/2, py+qw/2, qw*0.9, ar.aura, true, q.x+q.size/2, q.y+q.size/2, 0, 0)); }
     const _fic=factionIcon[q.id];                  // alliance emblem above the queen
     if (_fic && cp>=2) { ctx.save(); ctx.font=`${Math.max(9,qw*0.5)}px serif`; ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText(_fic, px+qw/2, py-(cp>=4?8:3)); ctx.restore(); }
     // (Queen emblem slot retired — emoji glyphs were the banned icon-as-cosmetic; see catalogue.)
@@ -4621,7 +4622,7 @@ function render() {
     // Ant AURA cosmetic — only when zoomed in (cp>=4 ⇒ bounded ant count on screen) to stay in budget.
     if (auraAny && cp>=4 && cosmActive()){ const ar=cosmRoster[owner];
       if (ar&&ar.aura) cosmGuard('ant-aura', ()=>{ const half=(kind===1?cp:cp/2), c=(kind===1?1:0.5);
-        drawEntityAura(px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura, kind===1, lx+c, ly+c); }); }
+        drawEntityAura(px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura, kind===1, lx+c, ly+c, adx, ady); }); }
   }
   // Aura particle pool — update + draw once per frame, over the entities (trailing comet/stardust).
   if ((auraAny||pcount) && cosmActive()) cosmGuard('aura-particles', ()=>stepAuraParticles(cp));
