@@ -2961,8 +2961,10 @@ const SHOP_ITEMS=[
   {id:'relocate',ic:'📍', nm:'RELOCATE', pr:20, gate:50, ds:'Teleport your queen to a new tile you pick.'},
 ];
 function openShopWindow(){ AudioEngine.click(); openWindow('SHOP — REQUISITIONS','shop'); renderShopWindow(); }
-// Shop tabs: GEMS (buy gems for real $) is the DEFAULT; COSMETICS spends gems (soon); POWERUPS = nectar.
-let _shopTab='gems';
+// Shop tabs: open on COSMETICS (the vanity store players browse) — not the buy-gems paywall; GEMS is one
+// click away and the natural next step when something's unaffordable. POWERUPS spends nectar. Last tab
+// sticks between opens (the defender nudge sets POWERUPS before opening).
+let _shopTab='cosmetics';
 function shopTab(name){ if(name===_shopTab) return; _shopTab=name; AudioEngine.click(); renderShopWindow(); }
 // Cosmetics shop filters (ownership / category / rarity) — no emoji anywhere; cards use CSS swatches.
 let _cosmOwn='all', _cosmCat='all', _cosmRar='all';
@@ -3098,13 +3100,12 @@ function renderShopWindow(){
           html+=`<div class="shop-card${isEq?' shop-hot':''}">${cosmSwatch(it)}
             ${chipR}<div class="shop-nm">${it.name}</div><div class="shop-ds">${it.desc}</div>
             ${priceRow}
-            <button class="shop-buy" style="background:#3A86FF;color:#fff" onclick="cosmeticPreview('${it.id}')">PREVIEW</button>
             ${act}</div>`;
         }
       }
       if (!shown) html+=`<div class="disc-empty" style="grid-column:1/-1">NO ITEMS MATCH THESE FILTERS</div>`;
     }
-    html+=`</div><div class="shop-foot">PREVIEW BEFORE YOU BUY · COSMETICS ARE VISIBLE TO EVERYONE · GEMS SURVIVE SEASON WIPES</div>`;
+    html+=`</div><div class="shop-foot">COSMETICS ARE VISIBLE TO EVERYONE · EQUIP ANYTIME · GEMS SURVIVE SEASON WIPES</div>`;
   }
   el.innerHTML=html;
 }
@@ -3136,60 +3137,8 @@ function cosmeticBuy(id){ AudioEngine.click(); send({t:'cosmetic-buy', id}); }
 function cosmeticEquip(slot,id){ AudioEngine.click(); send({t:'cosmetic-equip', slot, id}); }
 function bundleBuy(id){ AudioEngine.click(); send({t:'bundle-buy', id}); }
 
-// ---- Try-before-buy PREVIEW sandbox -------------------------------------------------------------
-// Renders the cosmetic on a PRIVATE scene (fake tiles + an ant + the queen) inside the window
-// framework — never touches the shared map or other players' views. Self-stops when the window closes.
-let _previewRaf=0;
-function shade(hex,f){ const c=toRGB(hex); return `rgb(${(c[0]*f)|0},${(c[1]*f)|0},${(c[2]*f)|0})`; }
-function cosmeticPreview(id){
-  AudioEngine.click();
-  const it=catItemsById[id]; if(!it||!me) return;
-  const isOwned=(me.ownedCosmetics||[]).includes(id);
-  const act = isOwned ? `cosmeticEquip('${it.slot}','${id}');closeWindow()` : `cosmeticBuy('${id}');closeWindow()`;
-  const actLabel = isOwned ? 'EQUIP' : ('BUY · '+it.price.toLocaleString()+' GEMS');
-  openWindow('PREVIEW — '+it.name,'preview');
-  $('win-body').innerHTML=
-    `<canvas id="cos-prev" width="340" height="190" style="width:100%;max-width:340px;display:block;margin:0 auto;image-rendering:pixelated;border:3px solid var(--ink);background:#0d0d0d"></canvas>
-     <div class="shop-ds" style="text-align:center;margin:10px 4px">${it.desc}</div>
-     <div style="text-align:center"><button class="shop-buy" style="display:inline-block;width:auto;padding:9px 20px" onclick="${act}">${actLabel}</button></div>`;
-  cancelAnimationFrame(_previewRaf);
-  const cv=$('cos-prev'); if(!cv) return; const g=cv.getContext('2d'); const t0=performance.now();
-  (function frame(now){
-    if(!winIsOpen('preview')){ cancelAnimationFrame(_previewRaf); return; }
-    drawPreviewScene(g, cv.width, cv.height, it, now-t0);
-    _previewRaf=requestAnimationFrame(frame);
-  })(t0);
-}
-function drawPreviewScene(g, W2, H2, it, t){
-  const myCol=(me&&me.color)||'#E63946';
-  const fillCol=(it.category==='recolor'&&it.params&&it.params[0]==='#')?it.params:myCol;
-  g.clearRect(0,0,W2,H2);
-  const cell=15;
-  for(let y=0;y<H2;y+=cell) for(let x=0;x<W2;x+=cell){ g.fillStyle=fillCol; g.fillRect(x,y,cell-1,cell-1); }
-  if (it.category==='tile_fx'){
-    // Drive the SAME generator the live map uses (territory = the whole preview), so what you see is
-    // what you get. Composite + alpha mirror drawTileFx; reduce-motion freezes it.
-    const gen=TILE_FX[it.id]||TILE_FX.glow, red=effReduce();
-    g.save();
-    g.globalCompositeOperation=gen.blend||'lighter';
-    g.globalAlpha=Math.max(0,Math.min(0.6, gen.alpha?gen.alpha(t,red):0.3));
-    gen.draw(g, W2, H2, t, 0, 0, red);
-    g.restore();
-  }
-  const ax=W2*0.12 + ((t/16)%(W2*0.62)), ay=H2*0.55;
-  if (it.category==='trail'){
-    const stops=String(it.params||'').split('>').filter(s=>s); stops.push(fillCol);
-    for(let k=TRAIL_WIN-1;k>=0;k--){ const tx=ax-k*7; if(tx<0)continue; const f=k/TRAIL_WIN;
-      let col; if(stops.length<=1) col=stops[0]||fillCol; else { const seg=f*(stops.length-1),i=Math.min(stops.length-2,seg|0); col=lerpHex(stops[i],stops[i+1],seg-i); }
-      g.fillStyle=col; g.fillRect((tx-7)|0,(ay-7)|0,14,14); }
-  }
-  const qs=28, qx=W2*0.8, qy=H2*0.5;
-  if (it.category==='aura'){ drawAura(g, ax, ay, 13, it.id, false); drawAura(g, qx+qs/2, qy, qs*0.8, it.id, true); }
-  g.fillStyle=shade(fillCol,0.45); g.fillRect((ax-6)|0,(ay-6)|0,12,12);
-  g.fillStyle=fillCol; g.fillRect(qx,qy-qs/2,qs,qs);
-  g.strokeStyle='#0d0d0d'; g.lineWidth=2; g.strokeRect(qx,qy-qs/2,qs,qs);
-  g.fillStyle='#0d0d0d'; g.font='17px serif'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('♛',qx+qs/2,qy);
-}
+// (Cosmetic preview sandbox removed — the card swatch hints the effect, cosmetics show live on the
+// map for everyone, and buy/equip is immediate, so the extra window added a step without value.)
 
 // After returning from Stripe checkout (success_url/cancel_url land back here with ?gems=…), show a
 // toast and strip the param so a refresh doesn't repeat it. The balance refreshes via the next `me`.
