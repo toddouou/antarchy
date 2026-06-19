@@ -1493,6 +1493,43 @@ let cosmRoster={};                 // ownerId -> {aura,trail,emblem}
 let trailAny=false, auraAny=false; // cheap gates so the common (no-cosmetics) case stays zero-cost
 const trailCells=new Map();        // worldKey -> {t:tick, o:owner} — recent painted cells for trails
 let fxTintCache={};                // tile-fx id -> [r,g,b] bloom tint (white default)
+// ===== Cosmetics health & perf guard (Phase 0 instrumentation) ===================================
+// Hard rule: a fault OR a perf cliff in ANY cosmetic path must never kill the game. `cosmKill`
+// latches OFF all cosmetic rendering after the first thrown fault (logged once with its subsystem);
+// `cosmPerfOff` sheds cosmetics while the render-time EMA blows past budget (auto-recovers). The
+// per-block `cosmGuard(name, fn)` runs a cosmetic block so a throw disables only cosmetics — the map
+// keeps drawing — and names the culprit in the console so the next live fault is pinpointed.
+let cosmKill=false, cosmPerfOff=false, _cosmFaultLogged=false;
+let _renderEma=16;                         // smoothed render() ms (governor input)
+const COSM_OFF_MS=22, COSM_ON_MS=15;       // shed cosmetics above OFF ms, restore below ON ms (hysteresis)
+function cosmActive(){ return !cosmKill && !cosmPerfOff; }
+function cosmGuard(name, fn){
+  if (cosmKill) return;
+  try { fn(); }
+  catch(e){
+    cosmKill=true;
+    if(!_cosmFaultLogged){ _cosmFaultLogged=true;
+      console.error('[cosmetics] DISABLED after render fault in "'+name+'":', e&&e.stack||e);
+      try{ toast('COSMETIC FX DISABLED (render fault)'); }catch(_){}
+    }
+  }
+}
+// Governor: feed each frame's render() ms. Degrades gracefully toward the 60 fps floor — first
+// coarsens the tile-fx mask resolution (fxQuality 2→4), then sheds ALL cosmetics if still over budget;
+// recovers in reverse when fast again. Hysteresis + one-shot logs keep it from flickering.
+function cosmGovern(rms){
+  _renderEma += (rms-_renderEma)*0.12;
+  if (_renderEma>COSM_OFF_MS){
+    if (fxQuality<4){ fxQuality++; _fxLast.key=''; }                 // coarsen mask (cheaper) first
+    else if (!cosmPerfOff){ cosmPerfOff=true; console.warn('[cosmetics] shed — render EMA '+_renderEma.toFixed(1)+'ms'); }
+  } else if (_renderEma<COSM_ON_MS){
+    if (cosmPerfOff){ cosmPerfOff=false; console.info('[cosmetics] restored — render EMA '+_renderEma.toFixed(1)+'ms'); }
+    else if (fxQuality>2){ fxQuality--; _fxLast.key=''; }            // refine mask back up when there's headroom
+  }
+}
+// Last-resort global capture — surfaces the exact stack the next time any fault occurs live.
+window.addEventListener('error', e=>{ try{ console.error('[onerror]', e.message, (e.filename||'')+':'+e.lineno+':'+e.colno, (e.error&&e.error.stack)||''); }catch(_){} });
+window.addEventListener('unhandledrejection', e=>{ try{ console.error('[unhandledrejection]', (e.reason&&e.reason.stack)||e.reason); }catch(_){} });
 function setCatalog(cat){
   CATALOG=cat||{items:[],bundles:[]};
   catItemsById={}; for (const it of (CATALOG.items||[])) catItemsById[it.id]=it;
@@ -1530,6 +1567,7 @@ const TRAIL_WIN=10;
 function drawTrail(cp){
   if (effReduce()){ if(trailCells.size) trailCells.clear(); return; }
   if (!trailCells.size || !tileCache) return;
+  const W=cvs.width, H=cvs.height;   // (these are render-locals elsewhere; bind them here too)
   const curTick=vw?.tick||0;
   ctx.save(); ctx.imageSmoothingEnabled=false;
   for (const [key,rec] of trailCells){
@@ -1544,50 +1582,106 @@ function drawTrail(cp){
   }
   ctx.restore();
 }
-function auraStaticColor(id){
-  switch(id){ case 'au_halo':return '#FFD166'; case 'au_cyber':return '#00F5D4';
-    case 'au_frost':return '#90E0EF'; case 'au_phantom':return '#cfe3ff';
-    case 'au_prism':return '#ff66cc'; case 'au_sparkle':return '#ffffff'; default:return null; }
-}
-// Draw an entity aura on context `g`, centred at (cx,cy) with radius `rad`. Animated, but every
-// animation is gentle (<3 Hz, small amplitude) and collapses to a single static ring when effects are
-// reduced. Takes the context so both the live map (ctx) and the shop preview sandbox can reuse it.
-function drawAura(g, cx, cy, rad, auraId){
-  if(!auraId) return;
-  if(effReduce()){
-    const col=auraStaticColor(auraId); if(!col) return;
-    g.save(); g.globalAlpha=0.5; g.strokeStyle=col; g.lineWidth=Math.max(1.5,rad*0.12);
-    g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); g.restore(); return;
+// ===== Entity auras — bounded particle / light systems (no shadowBlur) ===========================
+// Auras render as real light: soft concentric rings, orbiting sprite motes, expanding sonar pulses,
+// and — for the trailing kinds — a single GLOBAL particle pool (fixed-size typed arrays, recycled via
+// swap-remove, hard-capped at PCAP). NO `shadowBlur` (its software-raster path was the perf cliff) and
+// NO emoji. Particles live in WORLD space so they anchor to the land as the camera pans; the pool is
+// updated+drawn once per frame (`stepAuraParticles`). Queens get the grandest variant of each aura.
+// All motion freezes to a static ring under reduce-effects. Emission is gated to on-screen entities
+// (queens always; ants only at cp≥4 ⇒ bounded count), and the whole subsystem rides `cosmActive()`.
+const _auraSprites=[];                              // soft radial-dot sprites (one tint per aura colour)
+function _dotSprite(hex){ const R=16, c=document.createElement('canvas'); c.width=c.height=R*2;
+  const g=c.getContext('2d'), [r,gg,b]=toRGB(hex), grd=g.createRadialGradient(R,R,0,R,R,R);
+  grd.addColorStop(0,`rgba(${r},${gg},${b},1)`); grd.addColorStop(.35,`rgba(${r},${gg},${b},.55)`);
+  grd.addColorStop(1,`rgba(${r},${gg},${b},0)`); g.fillStyle=grd; g.fillRect(0,0,R*2,R*2);
+  return _auraSprites.push(c)-1; }
+const AURA={};                                      // id -> { kind, color, rgb:"r,g,b", spr }
+function _defAura(id,kind,color){ AURA[id]={kind,color,rgb:toRGB(color).join(','),spr:_dotSprite(color)}; }
+_defAura('au_halo',   'halo',     '#FFD166');       // soft golden ring + orbiting motes
+_defAura('au_phantom','comet',    '#cfe3ff');       // trailing comet sparks (pooled)
+_defAura('au_sparkle','stardust', '#ffffff');       // drifting twinkles (pooled)
+_defAura('au_cyber',  'sonar',    '#00F5D4');       // expanding sonar pulses
+_defAura('au_prism',  'prism',    '#ff66cc');       // refractive rainbow motes (bundle exclusive)
+_defAura('au_frost',  'stardust', '#90E0EF');       // legacy SKU (cut in catalogue Phase 5) → cold dust
+// --- global particle pool (world-space) ---
+const PCAP=700;
+const Px=new Float32Array(PCAP), Py=new Float32Array(PCAP), Pvx=new Float32Array(PCAP), Pvy=new Float32Array(PCAP);
+const Pl=new Float32Array(PCAP), Pml=new Float32Array(PCAP), Psz=new Float32Array(PCAP), Pspr=new Int16Array(PCAP);
+let pcount=0, _auraLastT=performance.now();
+function _spawn(wx,wy,vx,vy,life,size,spr){ if(pcount>=PCAP) return; const i=pcount++;
+  Px[i]=wx; Py[i]=wy; Pvx[i]=vx; Pvy[i]=vy; Pl[i]=life; Pml[i]=life; Psz[i]=size; Pspr[i]=spr; }
+// Emit pooled particles for the trailing kinds at the entity's WORLD centre (wx,wy). `rad` is screen px.
+function emitAura(wx,wy,rad,spec,isQueen){
+  const cp=CELL*view.zoom, wr=rad/cp, big=isQueen?2.0:1;   // wr = entity radius in world cells
+  if(spec.kind==='stardust'){
+    if(Math.random()<0.6*big){ const a=Math.random()*Math.PI*2, r=wr*(0.3+Math.random()*0.9);
+      _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, (Math.random()-0.5)*0.001*wr, -0.0016*wr*(0.6+Math.random()),
+             800+Math.random()*700, Math.max(2,rad*0.22), spec.spr); }
+  } else if(spec.kind==='comet'){
+    const n=isQueen?2:1; for(let k=0;k<n;k++){ const a=Math.random()*Math.PI*2, sp=0.002*wr*(0.5+Math.random());
+      _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.001*wr, 480+Math.random()*520, Math.max(2,rad*0.26), spec.spr); }
   }
-  const t=performance.now();
-  g.save();
-  switch(auraId){
-    case 'au_halo': { const p=0.7+0.3*Math.sin(t/700); g.globalCompositeOperation='lighter';
-      g.shadowColor='#FFD166'; g.shadowBlur=rad*1.2*p;
-      g.strokeStyle='rgba(255,209,102,'+(0.55*p).toFixed(3)+')'; g.lineWidth=Math.max(1.5,rad*0.18);
-      g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); break; }
-    case 'au_cyber': { const p=0.6+0.4*Math.sin(t/420); g.globalCompositeOperation='lighter';
-      g.shadowColor='#00F5D4'; g.shadowBlur=rad*p;
-      g.strokeStyle='rgba(0,245,212,'+(0.7*p).toFixed(3)+')'; g.lineWidth=Math.max(1.2,rad*0.14);
-      g.strokeRect(cx-rad,cy-rad,rad*2,rad*2); break; }
-    case 'au_frost': { const p=0.6+0.4*Math.sin(t/900); g.globalCompositeOperation='lighter';
-      g.shadowColor='#90E0EF'; g.shadowBlur=rad*1.1*p;
-      g.strokeStyle='rgba(144,224,239,'+(0.5*p).toFixed(3)+')'; g.lineWidth=Math.max(1.2,rad*0.14);
-      g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); break; }
-    case 'au_phantom': { g.globalAlpha=0.25; g.strokeStyle='#cfe3ff'; g.lineWidth=Math.max(1,rad*0.1);
-      g.beginPath(); g.arc(cx,cy,rad*(1.0+0.15*Math.sin(t/500)),0,Math.PI*2); g.stroke(); break; }
-    case 'au_prism': { const hue=(t/12)%360; g.globalCompositeOperation='lighter';
-      g.shadowColor=`hsl(${hue},100%,60%)`; g.shadowBlur=rad*1.1;
-      g.strokeStyle=`hsla(${hue},100%,65%,0.6)`; g.lineWidth=Math.max(1.2,rad*0.16);
-      g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); break; }
-    case 'au_sparkle': { g.globalCompositeOperation='lighter'; g.fillStyle='#fff';
-      for(let i=0;i<3;i++){ const a=t/600+i*2.1, rr=rad*(0.9+0.3*Math.sin(t/300+i));
-        const sx=cx+Math.cos(a)*rr, sy=cy+Math.sin(a)*rr;
-        const s=Math.max(1,rad*0.12)*(0.6+0.4*Math.sin(t/200+i*1.7));
-        g.beginPath(); g.arc(sx,sy,s,0,Math.PI*2); g.fill(); } break; }
-    default: break;
+}
+// Update + draw the whole pool once per frame (additive sprite blits — no shadowBlur).
+function stepAuraParticles(cp){
+  let dt=performance.now()-_auraLastT; _auraLastT+=dt; if(dt>50)dt=50; if(dt<0)dt=0;
+  if(!pcount) return;
+  const W=cvs.width, H=cvs.height;
+  ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.imageSmoothingEnabled=true;
+  for(let i=0;i<pcount;i++){
+    Pl[i]-=dt;
+    if(Pl[i]<=0){ const j=--pcount; Px[i]=Px[j];Py[i]=Py[j];Pvx[i]=Pvx[j];Pvy[i]=Pvy[j];Pl[i]=Pl[j];Pml[i]=Pml[j];Psz[i]=Psz[j];Pspr[i]=Pspr[j]; i--; continue; }
+    Px[i]+=Pvx[i]*dt; Py[i]+=Pvy[i]*dt;
+    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp;
+    if(sx<-16||sy<-16||sx>W+16||sy>H+16) continue;
+    const spr=_auraSprites[Pspr[i]]; if(!spr) continue;
+    const s=Math.max(1.5,Psz[i]); ctx.globalAlpha=(Pl[i]/Pml[i])*0.9;
+    ctx.drawImage(spr, sx-s, sy-s, s*2, s*2);
+  }
+  ctx.restore();
+}
+function drawStaticRing(g,cx,cy,rad,hex){ g.save(); g.globalAlpha=0.5; g.strokeStyle=hex;
+  g.lineWidth=Math.max(1.5,rad*0.12); g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); g.restore(); }
+// Deterministic, context-agnostic aura renderer (used by the live map for ring kinds AND by the shop
+// preview for everything). No pool, no shadowBlur. (cx,cy)=screen centre, `rad`=screen-px radius.
+function drawAura(g, cx, cy, rad, auraId, isQueen){
+  if(!auraId) return; const spec=AURA[auraId]; if(!spec) return;
+  if(effReduce()){ drawStaticRing(g,cx,cy,rad,spec.color||'#fff'); return; }
+  const t=performance.now(); g.save(); g.globalCompositeOperation='lighter';
+  if(spec.kind==='halo'){
+    const p=0.6+0.4*Math.sin(t/700), col=spec.rgb;
+    for(let k=0;k<3;k++){ g.strokeStyle=`rgba(${col},${(0.24*p*(1-k*0.3)).toFixed(3)})`;
+      g.lineWidth=Math.max(1.5,rad*0.18*(1-k*0.22)); g.beginPath(); g.arc(cx,cy,rad*(1+k*0.12),0,Math.PI*2); g.stroke(); }
+    const n=isQueen?6:3, spr=_auraSprites[spec.spr], s=Math.max(2,rad*0.18);
+    for(let i=0;i<n;i++){ const a=t/900+i*(6.283/n), mx=cx+Math.cos(a)*rad*1.05, my=cy+Math.sin(a)*rad*1.05;
+      g.globalAlpha=0.85; g.drawImage(spr, mx-s, my-s, s*2, s*2); }
+  } else if(spec.kind==='sonar'){
+    const col=spec.rgb, rings=isQueen?3:2;
+    for(let k=0;k<rings;k++){ const ph=((t/1400)+k/rings)%1; g.strokeStyle=`rgba(${col},${((1-ph)*0.5).toFixed(3)})`;
+      g.lineWidth=Math.max(1.5,rad*0.12); g.beginPath(); g.arc(cx,cy,rad*(0.55+ph*1.7),0,Math.PI*2); g.stroke(); }
+    const spr=_auraSprites[spec.spr], s=Math.max(2,rad*0.22); g.globalAlpha=0.7; g.drawImage(spr,cx-s,cy-s,s*2,s*2);
+  } else if(spec.kind==='prism'){
+    const n=isQueen?8:5;
+    for(let i=0;i<n;i++){ const a=t/700+i*(6.283/n), hue=(t/12+i*(360/n))%360, rr=rad*(1+0.08*Math.sin(t/300+i));
+      const mx=cx+Math.cos(a)*rr, my=cy+Math.sin(a)*rr, s=Math.max(2,rad*0.16);
+      g.fillStyle=`hsl(${hue|0},100%,62%)`; g.beginPath(); g.arc(mx,my,s,0,Math.PI*2); g.fill(); }
+    g.globalAlpha=0.4; g.strokeStyle=`hsla(${(t/12)%360|0},100%,65%,1)`; g.lineWidth=Math.max(1.2,rad*0.12);
+    g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke();
+  } else { // comet / stardust — deterministic approximation (for the preview sandbox)
+    const spr=_auraSprites[spec.spr], n=9;
+    for(let i=0;i<n;i++){ const ph=((t/700)+i/n)%1, a=t/500+i*(6.283/n), rr=rad*(0.25+ph*1.0);
+      const mx=cx+Math.cos(a)*rr, my=cy+Math.sin(a)*rr-(spec.kind==='stardust'?ph*rad*0.8:0);
+      const s=Math.max(2,rad*0.2)*(1-ph*0.7); g.globalAlpha=(1-ph)*0.9; g.drawImage(spr,mx-s,my-s,s*2,s*2); }
   }
   g.restore();
+}
+// Live-map dispatcher: ring kinds draw deterministically on the main ctx; trailing kinds EMIT into the
+// global pool (drawn later by stepAuraParticles) at the entity's world centre (wx,wy).
+function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy){
+  const spec=AURA[auraId]; if(!spec) return;
+  if(!effReduce() && (spec.kind==='comet'||spec.kind==='stardust')) emitAura(wx,wy,rad,spec,isQueen);
+  else drawAura(ctx, cx, cy, rad, auraId, isQueen);
 }
 // Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
 let myAlliance=null, factionsAll=[], factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
@@ -1617,14 +1711,117 @@ let prevAntPos=new Map(), lastVwAt=0, antFrameDt=0; // antFrameDt: smoothed ms b
 const territoryCanvas=document.createElement('canvas');
 const territoryCtx=territoryCanvas.getContext('2d',{alpha:true});
 let territoryImg=null;             // full-cache ImageData backing (TILE_CACHE_W×H), edited in place
-// GLOW overlay (cosmetic): a parallel full-cache buffer holding WHITE pixels exactly where a visible
-// owner has the `glow` tile-fx equipped, transparent elsewhere. Written in the same pass as the
-// territory texture; blitted each frame at a pulsing alpha so those tiles oscillate colour↔white.
-// `glowAny` skips the blit entirely when nobody visible is glowing (the common case = zero cost).
-const glowCanvas=document.createElement('canvas');
-const glowCtx=glowCanvas.getContext('2d',{alpha:true});
-let glowImg=null;
-let glowAny=false;
+// ===== Tile-effect overlay (viewport-resolution, territory-masked) ================================
+// Cosmetic tile effects render as ONE screen-space procedural pass per *visible* effect, each clipped
+// to that effect's owners' territory. Cost is O(visible pixels) — independent of painted area or owner
+// count — which is the structural cure for the old full-cache GLOW buffer (a 16 MB ImageData blitted
+// whole every frame). Per frame we sample the visible territory straight from `tileCache`+`paletteFx`
+// into reduced-resolution per-effect masks (cached while the view is still), then composite each
+// effect's bespoke generator through its mask. Reduced res keeps it cheap and hides the upscale (these
+// are soft effects); the perf governor coarsens `fxQuality`/caps passes under load. No fx buffer, no
+// per-tile fx cost in rasterizeCache.
+let fxAny=false;                                   // any visible owner has a tile_fx (cheap gate)
+let fxDataGen=0;                                   // bumps on any territory/palette change → mask rebuild
+let fxQuality=3;                                   // mask = screen / fxQuality px (governor: 2 fine … 4 coarse)
+const FX_MAX_PASSES=4;                             // hard cap on distinct effects composited per frame
+const fxLayer=document.createElement('canvas');    // reduced-res scratch a generator paints into
+const fxLayerCtx=fxLayer.getContext('2d',{alpha:true});
+const fxMaskCanvas=document.createElement('canvas');// reduced-res mask (one effect at a time)
+const fxMaskCtx=fxMaskCanvas.getContext('2d',{alpha:true});
+let _fxPool=[], _fxPoolW=0, _fxPoolH=0;            // reusable mask ImageData scratch (avoids per-frame GC)
+let _fxLast={key:'', codes:[]};                    // idle cache: skip resampling when view+data unchanged
+function _fxMask(i,mw,mh){                          // a cleared mask ImageData for pass `i`
+  if(_fxPoolW!==mw||_fxPoolH!==mh){ _fxPool=[]; _fxPoolW=mw; _fxPoolH=mh; }
+  let img=_fxPool[i];
+  if(!img){ img=fxMaskCtx.createImageData(mw,mh); _fxPool[i]=img; } else img.data.fill(0);
+  return img;
+}
+// A pre-rendered twinkle tile for the Galaxy starfield (built once; drifted as a pattern).
+const _fxStarTile=(()=>{ const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+  for(let i=0;i<46;i++){ const px=Math.random()*128, py=Math.random()*128, r=Math.random()*1.3+0.3;
+    x.globalAlpha=Math.random()*0.7+0.3; x.fillStyle='#fff'; x.beginPath(); x.arc(px,py,r,0,Math.PI*2); x.fill(); }
+  return c; })();
+// Bespoke generators. `draw(g,mw,mh,t,ax,ay,red)` paints the full pattern into the reduced layer; the
+// mask then clips it to territory. (ax,ay)=world top-left of the sampled rect → patterns drift with the
+// land. `alpha(t,red)` is the composite opacity (clamped ≤0.6; Bloom stays ≤0.10 for WCAG 2.3.1). All
+// motion freezes when `red` (reduce-effects / prefers-reduced-motion).
+const TILE_FX={
+  glow: { blend:'lighter', name:'BLOOM',
+    alpha:(t,red)=> red? GLOW_MAX*0.5 : GLOW_MAX*(1-Math.cos(t*(2*Math.PI/GLOW_PERIOD)))/2,
+    draw(g,mw,mh){ const grad=g.createLinearGradient(0,0,0,mh);
+      grad.addColorStop(0,'rgba(255,255,255,.82)'); grad.addColorStop(.5,'rgba(255,255,255,1)');
+      grad.addColorStop(1,'rgba(255,255,255,.82)'); g.fillStyle=grad; g.fillRect(0,0,mw,mh); } },
+  tf_auroraveil: { blend:'screen', name:'AURORA SHEEN',
+    alpha:(t,red)=> red?0.24 : 0.20+0.06*Math.sin(t*0.0007),
+    draw(g,mw,mh,t,ax,ay,red){ const span=mw+mh, off=((ax+ay)*0.6 + (red?0:t*0.03)) % span;
+      const grad=g.createLinearGradient(off-span,0, off,mh);
+      const cols=['rgba(6,214,160,0)','rgba(6,214,160,.85)','rgba(0,245,212,.9)','rgba(131,56,236,.85)','rgba(6,214,160,0)'];
+      for(let i=0;i<cols.length;i++) grad.addColorStop(i/(cols.length-1),cols[i]);
+      g.fillStyle=grad; g.fillRect(0,0,mw,mh); } },
+  tf_holo: { blend:'overlay', name:'IRIDESCENT',
+    alpha:(t,red)=> red?0.30 : 0.26+0.05*Math.sin(t*0.001),
+    draw(g,mw,mh,t,ax,ay,red){ const h0=(red?0:t*0.03)+(ax+ay)*0.3;
+      const grad=g.createLinearGradient(0,0,mw,mh);
+      for(let i=0;i<=6;i++) grad.addColorStop(i/6, `hsla(${(h0+i*60)%360|0},90%,62%,.9)`);
+      g.fillStyle=grad; g.fillRect(0,0,mw,mh); } },
+  tf_gilded: { blend:'overlay', name:'GILDED',
+    alpha:()=>0.5,
+    draw(g,mw,mh,t,ax,ay,red){ const grad=g.createLinearGradient(0,0,0,mh);
+      grad.addColorStop(0,'#6e520f'); grad.addColorStop(.5,'#ffe7a0'); grad.addColorStop(1,'#6e520f');
+      g.fillStyle=grad; g.fillRect(0,0,mw,mh);
+      if(!red){ const bw=Math.max(8,mw*0.22), x=((t*0.05)%(mw+bw*2))-bw;
+        const sp=g.createLinearGradient(x,0,x+bw,0);
+        sp.addColorStop(0,'rgba(255,255,255,0)'); sp.addColorStop(.5,'rgba(255,250,224,.85)'); sp.addColorStop(1,'rgba(255,255,255,0)');
+        g.globalCompositeOperation='lighter'; g.fillStyle=sp; g.fillRect(0,0,mw,mh); g.globalCompositeOperation='source-over'; } } },
+  tf_galaxy: { blend:'lighter', name:'GALAXY',
+    alpha:(t,red)=> red?0.5 : 0.44+0.10*Math.sin(t*0.0009),
+    draw(g,mw,mh,t,ax,ay,red){ const pat=g.createPattern(_fxStarTile,'repeat'); if(!pat) return;
+      const dx=((red?0:t*0.005)+ax*0.5)%128, dy=((red?0:t*0.003)+ay*0.5)%128;
+      g.save(); g.translate(-dx,-dy); g.fillStyle=pat; g.fillRect(0,0,mw+128,mh+128); g.restore();
+      g.fillStyle='rgba(140,90,200,.10)'; g.fillRect(0,0,mw,mh); } },
+};
+// Per-frame compositor. `s*`=cache-local src rect (visible territory in the cache), `d*`=screen dst rect.
+function drawTileFx(sx,sy,sw,sh, dx,dy,dw,dh, cp){
+  if(!fxAny || !tileCache || sw<=0 || sh<=0 || worldBrowsable()) return;   // hidden during queen-select
+  const q=fxQuality;
+  const mw=Math.max(1, Math.min(1024, Math.ceil(dw/q)));
+  const mh=Math.max(1, Math.min(1024, Math.ceil(dh/q)));
+  if(fxLayer.width!==mw||fxLayer.height!==mh){ fxLayer.width=mw; fxLayer.height=mh; }
+  if(fxMaskCanvas.width!==mw||fxMaskCanvas.height!==mh){ fxMaskCanvas.width=mw; fxMaskCanvas.height=mh; }
+  const key=sx+'|'+sy+'|'+sw+'|'+sh+'|'+mw+'|'+mh+'|'+fxDataGen;
+  let codes=_fxLast.codes;
+  if(_fxLast.key!==key){
+    // (Re)sample the visible territory into reduced-res per-effect masks — bounded by mask size.
+    codes=[]; const idx=new Map(); const xs=sw/mw, ys=sh/mh;
+    for(let my=0;my<mh;my++){ const cy=(sy+my*ys)|0; const base=cy*TILE_CACHE_W;
+      for(let mx=0;mx<mw;mx++){ const ci=base+((sx+mx*xs)|0); const owner=tileCache[ci]; if(!owner) continue;
+        if(fogCache && fogCache[ci]>=100) continue;          // fogged-out cells show no territory → no fx
+        const code=paletteFx[owner]; if(!code) continue;
+        let i=idx.get(code);
+        if(i===undefined){ if(codes.length>=FX_MAX_PASSES) continue; i=codes.length; codes.push(code); idx.set(code,i); _fxMask(i,mw,mh); }
+        _fxPool[i].data[(my*mw+mx)*4+3]=255; } }
+    _fxLast={key, codes};
+  }
+  if(!codes.length) return;
+  const red=effReduce(), t=performance.now();
+  const ax=cacheOriX+sx, ay=cacheOriY+sy;
+  for(let i=0;i<codes.length;i++){
+    const gen=TILE_FX[codes[i]]||TILE_FX.glow;
+    fxLayerCtx.setTransform(1,0,0,1,0,0); fxLayerCtx.globalCompositeOperation='source-over';
+    fxLayerCtx.clearRect(0,0,mw,mh);
+    gen.draw(fxLayerCtx, mw, mh, t, ax, ay, red);
+    fxMaskCtx.putImageData(_fxPool[i], 0, 0);               // the effect's territory mask
+    fxLayerCtx.globalCompositeOperation='destination-in';   // keep pattern only over territory
+    fxLayerCtx.drawImage(fxMaskCanvas, 0, 0);
+    fxLayerCtx.globalCompositeOperation='source-over';
+    ctx.save();
+    ctx.globalCompositeOperation=gen.blend||'lighter';
+    ctx.globalAlpha=Math.max(0, Math.min(0.6, gen.alpha?gen.alpha(t,red):0.3));
+    ctx.imageSmoothingEnabled=true;                          // soft upscale of the reduced layer
+    ctx.drawImage(fxLayer, 0,0,mw,mh, dx,dy,dw,dh);
+    ctx.restore();
+  }
+}
 // Fog-of-war — the whole canvas is fogged by default; each tick we ERASE a REVEAL MASK for what the
 // player can see (so a leak is structurally impossible). `fogCanvas`/`fogImg` is the per-frame reveal
 // MASK (served grid v.w×v.h, 1px/cell, alpha = how much to erase = (100-fog)/100); rebuilt only when
@@ -1790,9 +1987,6 @@ function getNearColored(v) {
 function allocCacheTextures(){
   territoryCanvas.width=TILE_CACHE_W; territoryCanvas.height=TILE_CACHE_H;
   territoryImg=territoryCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
-  glowCanvas.width=TILE_CACHE_W; glowCanvas.height=TILE_CACHE_H;   // parallel glow overlay buffer
-  glowImg=glowCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
-  glowAny=false;
   cacheRenderMode=-1;
 }
 // Wipe the territory texture (on cache re-anchor / world wipe). Re-fills as frames arrive.
@@ -1800,7 +1994,7 @@ function clearCacheTextures(){
   if (!territoryImg) return;
   territoryImg.data.fill(0);
   territoryCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H);
-  if (glowImg){ glowImg.data.fill(0); glowCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H); glowAny=false; }
+  fxDataGen++;          // territory changed → tile-fx masks must rebuild
   trailCells.clear();   // cache anchor changed → fresh-cell indices no longer map; drop them
 }
 // Rasterize a cache-LOCAL pixel region [lx,ly,lw,lh] of tileCache into the persistent TERRITORY
@@ -1818,26 +2012,20 @@ function rasterizeCache(lx, ly, lw, lh){
   const browsable = worldBrowsable();
   const showMap = mapVisible;
   const td=territoryImg.data;
-  const gd=glowImg?glowImg.data:null;   // parallel glow overlay (white where owner has glow equipped)
   for (let ry=0; ry<lh; ry++){
     const rowC=(ly+ry)*TILE_CACHE_W + lx;
     for (let rx=0; rx<lw; rx++){
       const ci=rowC+rx, o=ci*4;
       const t=tileCache[ci];
-      if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; if(gd)gd[o+3]=0; continue; }
+      if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; continue; }
       const rgb=toRGB(palette[t]||'#9b3027');   // each player's own colour (no shared alliance colour)
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
       // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
       td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
-      // Tile-fx cosmetic: stamp the effect's bloom TINT over this owner's cell (white for plain GLOW,
-      // gold for GILDED, cyan for NEON, …); the per-frame additive blit applies the gentle pulse.
-      if (gd){ const fx=paletteFx[t];
-               if (fx){ const tn=fxTint(fx); gd[o]=tn[0]; gd[o+1]=tn[1]; gd[o+2]=tn[2]; gd[o+3]=255; }
-               else gd[o+3]=0; }
     }
   }
   territoryCtx.putImageData(territoryImg, 0,0, lx, ly, lw, lh);
-  if (glowImg) glowCtx.putImageData(glowImg, 0,0, lx, ly, lw, lh);
+  fxDataGen++;   // territory pixels changed → tile-fx masks rebuild on next frame
 }
 
 /* ===================================================================
@@ -2129,9 +2317,9 @@ function _sameGeom(h,g){ return g && h.x0===g.x0 && h.y0===g.y0 && h.w===g.w && 
 function _mergePalette(ids,colors,fx){
   if(!ids)return;
   for(let i=0;i<ids.length;i++){ if(colors&&colors[i]) palette[ids[i]]=colors[i]; if(fx) paletteFx[ids[i]]=fx[i]||''; }
-  // Gate the tile-fx bloom blit on whether ANY visible owner has a tile-fx (cheap; paletteFx is
-  // bounded by visible owners).
-  if(fx){ glowAny=false; for(const k in paletteFx){ if(paletteFx[k]){ glowAny=true; break; } } }
+  // Gate the tile-fx overlay pass on whether ANY visible owner has a tile-fx (cheap; paletteFx is
+  // bounded by visible owners). A palette change also invalidates the cached effect masks.
+  if(fx){ fxAny=false; for(const k in paletteFx){ if(paletteFx[k]){ fxAny=true; break; } } fxDataGen++; }
 }
 // Global "reduce effects" gate — true when the user enabled the Settings toggle OR (its default) the
 // OS requests reduced motion. Every animated cosmetic checks this and holds static when set. Reads
@@ -2775,6 +2963,31 @@ function openShopWindow(){ AudioEngine.click(); openWindow('SHOP — REQUISITION
 // Shop tabs: GEMS (buy gems for real $) is the DEFAULT; COSMETICS spends gems (soon); POWERUPS = nectar.
 let _shopTab='gems';
 function shopTab(name){ if(name===_shopTab) return; _shopTab=name; AudioEngine.click(); renderShopWindow(); }
+// Cosmetics shop filters (ownership / category / rarity) — no emoji anywhere; cards use CSS swatches.
+let _cosmOwn='all', _cosmCat='all', _cosmRar='all';
+function cosmFilter(kind,val){ if(kind==='own')_cosmOwn=val; else if(kind==='cat')_cosmCat=val; else _cosmRar=val; AudioEngine.click(); renderShopWindow(); }
+// A small CSS gradient that PREVIEWS each effect in the card icon slot (replaces the banned emoji).
+const TILEFX_SWATCH={
+  glow:'radial-gradient(circle,#fff 0%,#ffffff33 55%,transparent 78%),#0d0d0d',
+  tf_holo:'conic-gradient(from 0deg,#ff004c,#ffb703,#06d6a0,#00f5d4,#3a86ff,#8338ec,#ff004c)',
+  tf_gilded:'linear-gradient(135deg,#6e520f,#ffe7a0 50%,#6e520f)',
+  tf_galaxy:'radial-gradient(circle at 30% 28%,#fff 0,transparent 9%),radial-gradient(circle at 72% 64%,#fff 0,transparent 7%),linear-gradient(135deg,#2a1b4d,#5a189a)',
+  tf_auroraveil:'linear-gradient(120deg,#06d6a0,#00f5d4,#8338ec)',
+  tf_neon:'linear-gradient(135deg,#0d0d0d,#00f5d4)', tf_honey:'linear-gradient(135deg,#6e520f,#ffb703)',
+};
+const BUNDLE_SWATCH='linear-gradient(135deg,#8338ec,#3a86ff,#06d6a0)';
+function cosmSwatch(it){
+  const sz='width:32px;height:32px;border-radius:6px;border:2px solid var(--ink);margin:0 auto 2px';
+  let bg;
+  if(it.category==='recolor'){ bg=it.params||'#888'; }
+  else if(it.category==='aura'){ const c=(AURA[it.id]&&AURA[it.id].color)||(it.params&&it.params[0]==='#'?it.params:'#fff');
+    bg=`radial-gradient(circle at 50% 50%, ${c} 0%, ${c}66 42%, transparent 72%), #0d0d0d`; }
+  else if(it.category==='trail'){ const st=String(it.params||'').split('>').filter(s=>s); st.push((me&&me.color)||'#E63946');
+    bg=`linear-gradient(90deg, ${st.join(',')})`; }
+  else if(it.category==='tile_fx'){ bg=TILEFX_SWATCH[it.id]||`radial-gradient(circle,#fff,transparent 70%),#0d0d0d`; }
+  else { bg='#888'; }
+  return `<div class="shop-ic" style="${sz};background:${bg}"></div>`;
+}
 
 // Gem packs — DISPLAY ONLY. The server (`stripe.rs::GEM_PACKS`) is authoritative for gems + price;
 // the client sends just the pack `id` to /api/buy-gems. Keep ids/amounts in sync with that table.
@@ -2839,46 +3052,56 @@ function renderShopWindow(){
     const RAR={common:'#9aa6b2',rare:'#3A86FF',epic:'#8338EC',legendary:'#FFB703'};
     const sec=(label)=>`<div style="grid-column:1/-1;font-family:'Press Start 2P',monospace;font-size:10px;color:var(--red);margin:12px 2px 2px;letter-spacing:.04em">${label}</div>`;
     if(!items.length){ html+=`<div class="disc-empty">LOADING COSMETICS…</div>`; }
-    // Bundles first — the value anchor (strikethrough sticker → price).
-    if (bundles.length){
-      html+=sec('BUNDLES');
-      for (const b of bundles){
-        const haveAll=(b.members||[]).every(m=>owned.includes(m));
-        const btn = haveAll
-          ? `<button class="shop-buy" style="background:var(--grn);color:var(--ink)" disabled>OWNED</button>`
-          : `<button class="shop-buy" ${gems>=b.price?'':'disabled'} onclick="bundleBuy('${b.id}')">BUY</button>`;
-        html+=`<div class="shop-card shop-hot"><div class="shop-ic">${b.icon}</div>
-          <div class="shop-nm">${b.name}</div><div class="shop-ds">${b.desc}</div>
-          <div class="shop-pr gem"><s style="opacity:.55">${b.sticker.toLocaleString()}</s> ${b.price.toLocaleString()} GEMS</div>
-          <div class="shop-ds" style="opacity:.7;margin-top:-4px">${(b.members||[]).length} items · ${haveAll?'complete':'save '+Math.round(100-100*b.price/b.sticker)+'%'}</div>${btn}</div>`;
-      }
-    }
-    for (const [cat,label] of [['recolor','RECOLORS'],['trail','TRAILS'],['aura','AURAS'],['tile_fx','TILE EFFECTS'],['queen_emblem','QUEEN EMBLEMS']]){
-      // Bundle-exclusive items are hidden from à-la-carte lists unless already owned (so you can equip).
-      const list=items.filter(it=>it.category===cat && (!it.bundleOnly || owned.includes(it.id)));
-      if (!list.length) continue;
-      html+=sec(label);
-      for (const it of list){
-        const isOwned=owned.includes(it.id), isEq=equipped[it.slot]===it.id;
-        const rc=RAR[it.rarity]||'#9aa6b2';
-        const chip=`<span style="display:inline-block;font-size:8px;padding:1px 5px;border:2px solid ${rc};color:${rc};margin:0 0 4px">${(it.rarity||'').toUpperCase()}</span>`;
-        let priceRow, act;
-        if (!isOwned){
-          priceRow=`<div class="shop-pr gem">${it.price.toLocaleString()} GEMS</div>`;
-          act=`<button class="shop-buy" ${gems>=it.price?'':'disabled'} onclick="cosmeticBuy('${it.id}')">BUY</button>`;
-        } else if (isEq){
-          priceRow=`<div class="shop-pr" style="color:var(--grn)">EQUIPPED</div>`;
-          act=`<button class="shop-buy" style="background:var(--grn);color:var(--ink)" onclick="cosmeticEquip('${it.slot}','')">UNEQUIP</button>`;
-        } else {
-          priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
-          act=`<button class="shop-buy" onclick="cosmeticEquip('${it.slot}','${it.id}')">EQUIP</button>`;
+    else {
+      // Filter bar — ownership (All / Owned / Not owned) · category · rarity. Plain chips, no emoji.
+      const fchip=(label,active,onclick)=>`<button onclick="${onclick}" style="font:8px 'Press Start 2P',monospace;padding:4px 7px;border:2px solid ${active?'var(--red)':'#3a3a3a'};background:${active?'var(--red)':'transparent'};color:${active?'#fff':'#9aa6b2'};cursor:pointer">${label}</button>`;
+      html+=`<div style="grid-column:1/-1;display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:2px 0 4px">`;
+      html+=[['all','ALL'],['owned','OWNED'],['unowned','NOT OWNED']].map(([v,l])=>fchip(l,_cosmOwn===v,`cosmFilter('own','${v}')`)).join('');
+      html+=`<span style="flex-basis:100%;height:0"></span>`;
+      html+=[['all','ALL'],['recolor','COLORS'],['trail','TRAILS'],['aura','AURAS'],['tile_fx','TILE FX']].map(([v,l])=>fchip(l,_cosmCat===v,`cosmFilter('cat','${v}')`)).join('');
+      html+=`<span style="flex-basis:100%;height:0"></span>`;
+      html+=[['all','ALL'],['common','COMMON'],['rare','RARE'],['epic','EPIC'],['legendary','LEGENDARY']].map(([v,l])=>fchip(l,_cosmRar===v,`cosmFilter('rar','${v}')`)).join('');
+      html+=`</div>`;
+      const ownOk=it=> _cosmOwn==='all' || ((_cosmOwn==='owned')===owned.includes(it.id));
+      const rarOk=it=> _cosmRar==='all' || it.rarity===_cosmRar;
+      let shown=0;
+      // Bundles first — value anchor, only in the unfiltered (category/rarity = All) view.
+      if (_cosmCat==='all' && _cosmRar==='all'){
+        const bl=bundles.filter(b=>{ const all=(b.members||[]).every(m=>owned.includes(m)); return _cosmOwn==='all'||((_cosmOwn==='owned')===all); });
+        if (bl.length){ html+=sec('BUNDLES'); shown+=bl.length;
+          for (const b of bl){ const haveAll=(b.members||[]).every(m=>owned.includes(m));
+            const btn = haveAll ? `<button class="shop-buy" style="background:var(--grn);color:var(--ink)" disabled>OWNED</button>`
+                                : `<button class="shop-buy" ${gems>=b.price?'':'disabled'} onclick="bundleBuy('${b.id}')">BUY</button>`;
+            html+=`<div class="shop-card shop-hot"><div class="shop-ic" style="width:32px;height:32px;border-radius:6px;border:2px solid var(--ink);margin:0 auto 2px;background:${BUNDLE_SWATCH}"></div>
+              <div class="shop-nm">${b.name}</div><div class="shop-ds">${b.desc}</div>
+              <div class="shop-pr gem"><s style="opacity:.55">${b.sticker.toLocaleString()}</s> ${b.price.toLocaleString()} GEMS</div>
+              <div class="shop-ds" style="opacity:.7;margin-top:-4px">${(b.members||[]).length} items · ${haveAll?'complete':'save '+Math.round(100-100*b.price/b.sticker)+'%'}</div>${btn}</div>`; }
         }
-        html+=`<div class="shop-card${isEq?' shop-hot':''}"><div class="shop-ic">${it.icon}</div>
-          ${chip}<div class="shop-nm">${it.name}</div><div class="shop-ds">${it.desc}</div>
-          ${priceRow}
-          <button class="shop-buy" style="background:#3A86FF;color:#fff" onclick="cosmeticPreview('${it.id}')">👁 PREVIEW</button>
-          ${act}</div>`;
       }
+      // À-la-carte sections (emblems retired). Bundle-only items hidden until owned (so you can equip).
+      for (const [cat,label] of [['recolor','COLORS'],['trail','TRAILS'],['aura','AURAS'],['tile_fx','TILE EFFECTS']]){
+        if (_cosmCat!=='all' && _cosmCat!==cat) continue;
+        const list=items.filter(it=>it.category===cat && (!it.bundleOnly || owned.includes(it.id)) && ownOk(it) && rarOk(it));
+        if (!list.length) continue;
+        html+=sec(label); shown+=list.length;
+        for (const it of list){
+          const isOwned=owned.includes(it.id), isEq=equipped[it.slot]===it.id, rc=RAR[it.rarity]||'#9aa6b2';
+          const chipR=`<span style="display:inline-block;font-size:8px;padding:1px 5px;border:2px solid ${rc};color:${rc};margin:0 0 4px">${(it.rarity||'').toUpperCase()}</span>`;
+          let priceRow, act;
+          if (!isOwned){ priceRow=`<div class="shop-pr gem">${it.price.toLocaleString()} GEMS</div>`;
+            act=`<button class="shop-buy" ${gems>=it.price?'':'disabled'} onclick="cosmeticBuy('${it.id}')">BUY</button>`; }
+          else if (isEq){ priceRow=`<div class="shop-pr" style="color:var(--grn)">EQUIPPED</div>`;
+            act=`<button class="shop-buy" style="background:var(--grn);color:var(--ink)" onclick="cosmeticEquip('${it.slot}','')">UNEQUIP</button>`; }
+          else { priceRow=`<div class="shop-pr" style="color:var(--grn)">OWNED</div>`;
+            act=`<button class="shop-buy" onclick="cosmeticEquip('${it.slot}','${it.id}')">EQUIP</button>`; }
+          html+=`<div class="shop-card${isEq?' shop-hot':''}">${cosmSwatch(it)}
+            ${chipR}<div class="shop-nm">${it.name}</div><div class="shop-ds">${it.desc}</div>
+            ${priceRow}
+            <button class="shop-buy" style="background:#3A86FF;color:#fff" onclick="cosmeticPreview('${it.id}')">PREVIEW</button>
+            ${act}</div>`;
+        }
+      }
+      if (!shown) html+=`<div class="disc-empty" style="grid-column:1/-1">NO ITEMS MATCH THESE FILTERS</div>`;
     }
     html+=`</div><div class="shop-foot">PREVIEW BEFORE YOU BUY · COSMETICS ARE VISIBLE TO EVERYONE · GEMS SURVIVE SEASON WIPES</div>`;
   }
@@ -2943,10 +3166,14 @@ function drawPreviewScene(g, W2, H2, it, t){
   const cell=15;
   for(let y=0;y<H2;y+=cell) for(let x=0;x<W2;x+=cell){ g.fillStyle=fillCol; g.fillRect(x,y,cell-1,cell-1); }
   if (it.category==='tile_fx'){
-    const tint=(it.params&&it.params[0]==='#')?it.params:'#ffffff';
-    g.save(); g.globalCompositeOperation='lighter';
-    g.globalAlpha=effReduce()?0.06:(0.10*(1-Math.cos(t*2*Math.PI/2200))/2+0.02);
-    g.fillStyle=tint; g.fillRect(0,0,W2,H2); g.restore();
+    // Drive the SAME generator the live map uses (territory = the whole preview), so what you see is
+    // what you get. Composite + alpha mirror drawTileFx; reduce-motion freezes it.
+    const gen=TILE_FX[it.id]||TILE_FX.glow, red=effReduce();
+    g.save();
+    g.globalCompositeOperation=gen.blend||'lighter';
+    g.globalAlpha=Math.max(0,Math.min(0.6, gen.alpha?gen.alpha(t,red):0.3));
+    gen.draw(g, W2, H2, t, 0, 0, red);
+    g.restore();
   }
   const ax=W2*0.12 + ((t/16)%(W2*0.62)), ay=H2*0.55;
   if (it.category==='trail'){
@@ -2956,12 +3183,11 @@ function drawPreviewScene(g, W2, H2, it, t){
       g.fillStyle=col; g.fillRect((tx-7)|0,(ay-7)|0,14,14); }
   }
   const qs=28, qx=W2*0.8, qy=H2*0.5;
-  if (it.category==='aura'){ drawAura(g, ax, ay, 13, it.id); drawAura(g, qx+qs/2, qy, qs*0.8, it.id); }
+  if (it.category==='aura'){ drawAura(g, ax, ay, 13, it.id, false); drawAura(g, qx+qs/2, qy, qs*0.8, it.id, true); }
   g.fillStyle=shade(fillCol,0.45); g.fillRect((ax-6)|0,(ay-6)|0,12,12);
   g.fillStyle=fillCol; g.fillRect(qx,qy-qs/2,qs,qs);
   g.strokeStyle='#0d0d0d'; g.lineWidth=2; g.strokeRect(qx,qy-qs/2,qs,qs);
   g.fillStyle='#0d0d0d'; g.font='17px serif'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('♛',qx+qs/2,qy);
-  if (it.category==='queen_emblem' && it.params){ g.font='20px serif'; g.textBaseline='bottom'; g.fillText(it.params, qx+qs/2, qy-qs/2-3); }
 }
 
 // After returning from Stripe checkout (success_url/cancel_url land back here with ?gems=…), show a
@@ -4156,14 +4382,12 @@ function render() {
       const sx=ix0-cacheOriX, sy=iy0-cacheOriY, sw=ix1-ix0, sh=iy1-iy0;             // src px (cache-local)
       const dx=W/2+(ix0-view.x)*cp, dy=H/2+(iy0-view.y)*cp, dw=sw*cp, dh=sh*cp;     // dst px (screen)
       ctx.drawImage(territoryCanvas, sx, sy, sw, sh, dx, dy, dw, dh);   // crisp pixelated territory
-      // GLOW cosmetic overlay — soft ADDITIVE bloom over glowing owners' tiles at the (gentle) pulsing
-      // alpha. 'lighter' brightens rather than washing to white. Same src/dst rect as territory; under
-      // the fog (drawn next) so distant glow still fades into the shroud.
-      if (glowAny) { ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=glowAlpha();
-                     ctx.imageSmoothingEnabled=false;
-                     ctx.drawImage(glowCanvas, sx, sy, sw, sh, dx, dy, dw, dh); ctx.restore(); }
+      // TILE-FX cosmetic — viewport-resolution procedural overlay (Bloom/Aurora/Iridescent/Gilded/
+      // Galaxy), each clipped to its owners' territory. Same src/dst rect as territory; under the fog
+      // (drawn next) so distant effects still fade into the shroud. O(visible pixels), not territory.
+      if (fxAny && cosmActive()) cosmGuard('tile-fx', ()=>drawTileFx(sx,sy,sw,sh, dx,dy,dw,dh, cp));
       // TRAIL cosmetic — ripen recently-painted cells over the owner's true colour (under the fog).
-      if (trailAny) drawTrail(cp);
+      if (trailAny && cosmActive()) cosmGuard('trail', ()=>drawTrail(cp));
     }
     if ($('d-tiles')) $('d-tiles').textContent = (Math.max(0,ix1-ix0)*Math.max(0,iy1-iy0))|0;
   }
@@ -4287,13 +4511,10 @@ function render() {
     ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
     ctx.strokeRect(px,py,qw,qw);
     // Queen AURA cosmetic — ringed around the body (queens are few → always drawn).
-    { const ar=cosmRoster[q.id]; if (ar&&ar.aura) drawAura(ctx, px+qw/2, py+qw/2, qw*0.9, ar.aura); }
+    { const ar=cosmRoster[q.id]; if (ar&&ar.aura && cosmActive()) cosmGuard('queen-aura', ()=>drawEntityAura(px+qw/2, py+qw/2, qw*0.9, ar.aura, true, q.x+q.size/2, q.y+q.size/2)); }
     const _fic=factionIcon[q.id];                  // alliance emblem above the queen
     if (_fic && cp>=2) { ctx.save(); ctx.font=`${Math.max(9,qw*0.5)}px serif`; ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText(_fic, px+qw/2, py-(cp>=4?8:3)); ctx.restore(); }
-    // Queen EMBLEM cosmetic — accessory glyph above the queen (stacked above any alliance icon).
-    { const er=cosmRoster[q.id]; const em=er&&er.emblem&&catItemsById[er.emblem]&&catItemsById[er.emblem].params;
-      if (em && cp>=2){ ctx.save(); ctx.font=`${Math.max(10,qw*0.6)}px serif`; ctx.textAlign='center';
-        ctx.textBaseline='bottom'; ctx.fillText(em, px+qw/2, py-(_fic?(cp>=4?22:14):(cp>=4?8:3))); ctx.restore(); } }
+    // (Queen emblem slot retired — emoji glyphs were the banned icon-as-cosmetic; see catalogue.)
     if (qw>=12) {
       ctx.fillStyle='#0d0d0d';
       ctx.font=`${qw*.5}px serif`;
@@ -4398,9 +4619,12 @@ function render() {
       }
     }
     // Ant AURA cosmetic — only when zoomed in (cp>=4 ⇒ bounded ant count on screen) to stay in budget.
-    if (auraAny && cp>=4){ const ar=cosmRoster[owner];
-      if (ar&&ar.aura){ const half=(kind===1?cp:cp/2); drawAura(ctx, px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura); } }
+    if (auraAny && cp>=4 && cosmActive()){ const ar=cosmRoster[owner];
+      if (ar&&ar.aura) cosmGuard('ant-aura', ()=>{ const half=(kind===1?cp:cp/2), c=(kind===1?1:0.5);
+        drawEntityAura(px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura, kind===1, lx+c, ly+c); }); }
   }
+  // Aura particle pool — update + draw once per frame, over the entities (trailing comet/stardust).
+  if ((auraAny||pcount) && cosmActive()) cosmGuard('aura-particles', ()=>stepAuraParticles(cp));
 
   // 8) Floating texts (+XP, damage numbers)
   if (vw && floatingTexts.length) {
@@ -4553,7 +4777,11 @@ function loop(t) {
     }
     clampView();
   }
-  pushView(); render();
+  pushView();
+  const _r0=performance.now();
+  try { render(); }                         // backstop: a frame fault logs but never stops the loop
+  catch(e){ console.error('[render] frame fault:', e&&e.stack||e); }
+  cosmGovern(performance.now()-_r0);         // shed cosmetics if the render budget blows out
   tickAntBars();
   requestAnimationFrame(loop);
 }

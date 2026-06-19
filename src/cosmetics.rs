@@ -6,14 +6,14 @@
 //! `UserRecord.equipped`), wipe-proof like `gems`.
 //!
 //! **Slots** keep categories mutually exclusive — one `tile_fx` at a time, one `aura`, one `trail`,
-//! one `recolor`, one `queen_emblem`. Equipping replaces within a slot.
+//! one `recolor`. Equipping replaces within a slot. (The old `queen_emblem` slot was retired.)
 //!
 //! **How each category reaches other viewers (render-only, no per-tile bytes):**
 //! - `recolor`  — a flat premium colour. Equipping just sets the player's `color`; it rides the normal
 //!                owner→colour palette already on the wire. No extra broadcast.
 //! - `tile_fx`  — a whole-territory overlay (glow, gilded, …). Carried by the per-owner **fx palette**
 //!                (`network::get_fx_palette`), bounded by *visible owners* per tile frame.
-//! - `aura` / `trail` / `queen_emblem` — entity / freshly-painted-tile / queen decorations. Carried by
+//! - `aura` / `trail` — entity / freshly-painted-tile decorations. Carried by
 //!                the low-rate **cosmetics roster** (`network::build_cosmetics_roster`, ~1 Hz,
 //!                send-on-change), keyed by player id. The client renders them from data it already
 //!                holds (entity owner, delta-changed cell owner). Nothing is streamed per tile.
@@ -21,6 +21,10 @@
 //! Adding a cosmetic = one entry here. The client fetches the catalogue from the server
 //! (`network::build_catalog`, sent in the `me`/login payload), so there is no hand-mirrored list to
 //! keep in sync.
+
+// The catalogue table reads best with one wide constructor + arrow-aligned doc lists; both are
+// deliberate, so quiet the two style lints they trip.
+#![allow(clippy::too_many_arguments, clippy::doc_overindented_list_items)]
 
 use serde_json::{json, Value};
 
@@ -32,15 +36,15 @@ use serde_json::{json, Value};
 ///   - `trail`   → `>`-separated `#RRGGBB` stops, freshest→aged (e.g. `#000000>#E63946`); the client
 ///                 ripens freshly-painted cells across these stops over ~10 ticks, ending at the
 ///                 owner's true colour.
-///   - `aura` / `tile_fx` / `queen_emblem` → a style key the client switches on (e.g. `halo`, `gilded`,
-///                 `crown`); extra tint hints may ride in `params` as a hex.
+///   - `aura` / `tile_fx` → a style key the client switches on (e.g. `halo`, `gilded`); extra tint
+///                 hints may ride in `params` as a hex.
 #[allow(dead_code)] // `experimental` is reserved for a future "beta" badge; not read server-side yet.
 pub struct Cosmetic {
     pub id:           &'static str,
     pub name:         &'static str,
     pub desc:         &'static str,
     pub icon:         &'static str,
-    pub category:     &'static str,   // recolor | aura | tile_fx | trail | queen_emblem
+    pub category:     &'static str,   // recolor | aura | tile_fx | trail
     pub slot:         &'static str,   // equip slot (== category)
     pub rarity:       &'static str,   // common | rare | epic | legendary
     pub price_gems:   u64,
@@ -87,56 +91,52 @@ pub const COSMETICS: &[Cosmetic] = &[
 
     // ---- Trails (ripening gradient behind your ants; freshest→aged→true colour) ----
     c("tr_chameleon","CHAMELEON", "Tiles paint dark and ripen into your colour — a living trail.", "🦎", "trail", "epic", 600, "#0d0d0d>"),
-    c("tr_mono",     "MONO FADE", "Fresh tiles bloom from black to your colour.",                  "🌑", "trail", "rare", 250, "#000000>"),
-    c("tr_sunset",   "SUNSET",    "A warm orange-to-pink ripple behind every ant.",                "🌅", "trail", "rare", 250, "#FB5607>#FF006E>"),
     c("tr_aurora",   "AURORA",    "Green-cyan-violet shimmer that settles into your colour.",      "🌌", "trail", "rare", 250, "#06D6A0>#00F5D4>#8338EC>"),
     c("tr_glacier",  "GLACIER",   "Tiles freeze white then thaw to your colour.",                  "❄️", "trail", "rare", 250, "#FFFFFF>#90E0EF>"),
     c("tr_ember",    "EMBER",     "New tiles burn in from ember-orange.",                          "🔥", "trail", "rare", 250, "#6A040F>#FFB703>"),
 
-    // ---- Auras (entity ring/glow around your ants + queen) ----
-    c("au_halo",     "HALO",      "A soft golden ring haloes your colony.",        "😇", "aura", "epic", 500, "#FFD166"),
-    c("au_phantom",  "PHANTOM",   "A translucent afterimage trails the entity.",   "👻", "aura", "epic", 500, "#cfe3ff"),
-    c("au_cyber",    "CYBER",     "Neon outline + scanline glow.",                 "🤖", "aura", "epic", 700, "#00F5D4"),
-    c("au_frost",    "FROST",     "A cold mist wreathes your colony.",             "🌬️", "aura", "epic", 600, "#90E0EF"),
-    c("au_sparkle",  "SPARKLE",   "Tiny twinkles orbit your entities.",            "✨", "aura", "epic", 600, "#FFFFFF"),
-    Cosmetic { id:"au_prism", name:"PRISM AURA", desc:"A refractive rainbow ring — bundle exclusive.",
+    // ---- Auras (bounded particle / light systems around your ants + queen) ----
+    c("au_halo",     "HALO",       "A soft ring of light with orbiting motes.",        "😇", "aura", "epic", 500, "#FFD166"),
+    c("au_phantom",  "COMET TRAIL","A tail of fading sparks streams off your colony.",  "☄",  "aura", "epic", 500, "#cfe3ff"),
+    c("au_sparkle",  "STARDUST",   "Drifting twinkles rise around your entities.",      "✨", "aura", "epic", 600, "#FFFFFF"),
+    c("au_cyber",    "SONAR",      "Expanding pulse rings sweep outward from you.",     "📡", "aura", "epic", 700, "#00F5D4"),
+    Cosmetic { id:"au_prism", name:"PRISM HALO", desc:"A refractive rainbow ring of motes — bundle exclusive.",
                icon:"🌈", category:"aura", slot:"aura", rarity:"epic", price_gems:700, params:"#ff66cc",
                bundle_only:true, experimental:false },
 
-    // ---- Tile effects (whole-territory overlay) ----
-    Cosmetic { id:"glow", name:"GLOW", desc:"Your territory breathes with a soft bloom.",
+    // ---- Tile effects (whole-territory viewport overlay) ----
+    Cosmetic { id:"glow", name:"BLOOM", desc:"Your territory breathes with a soft additive bloom.",
                icon:"💫", category:"tile_fx", slot:"tile_fx", rarity:"legendary", price_gems:500, params:"",
                bundle_only:false, experimental:false },
-    c("tf_neon",     "NEON OUTLINE","A glowing neon border around your regions.",  "📡", "tile_fx", "legendary", 700, "#00F5D4"),
-    c("tf_honey",    "HONEYCOMB", "A subtle hex-comb tessellation over your land.", "🐝", "tile_fx", "legendary", 700, "#FFB703"),
-    c("tf_holo",     "HOLOGRAPHIC","Foil holo-card chromatic shimmer.",            "🪩", "tile_fx", "legendary", 900, ""),
-    c("tf_galaxy",   "GALAXY",    "A faint starfield drifts over your territory.",  "🌠", "tile_fx", "legendary", 900, "#b388ff"),
-    c("tf_gilded",   "GILDED",    "Metallic gold-leaf — reads as expensive.",       "👑", "tile_fx", "legendary", 1000, "#D4AF37"),
+    c("tf_holo",     "IRIDESCENT","An oil-slick chromatic shimmer plays over your land.",  "🪩", "tile_fx", "legendary", 900, ""),
+    c("tf_galaxy",   "GALAXY",    "A drifting starfield twinkles across your territory.",   "🌠", "tile_fx", "legendary", 900, "#b388ff"),
+    c("tf_gilded",   "GILDED",    "Molten gold leaf with a sweeping specular sheen.",       "🏆", "tile_fx", "legendary", 1000, "#D4AF37"),
     Cosmetic { id:"tf_auroraveil", name:"AURORA VEIL", desc:"A drifting aurora sheen — bundle exclusive.",
                icon:"🌈", category:"tile_fx", slot:"tile_fx", rarity:"legendary", price_gems:1000, params:"#7CFFCB",
                bundle_only:true, experimental:false },
-
-    // ---- Queen emblems (accessory drawn on the queen) ----
-    c("qe_crown",    "QUEEN'S CROWN","A golden crown above your queen.",          "👑", "queen_emblem", "rare", 500, "👑"),
-    c("qe_laurel",   "LAUREL WREATH","A victor's laurel frames your queen.",      "🌿", "queen_emblem", "rare", 400, "🌿"),
-    c("qe_cape",     "ROYAL CAPE", "A draped royal cape behind your queen.",      "🧣", "queen_emblem", "rare", 400, "🧣"),
 ];
 
 /// Bundles (price anchors). Members may include `bundle_only` exclusives.
 pub const BUNDLES: &[Bundle] = &[
     Bundle {
         id: "bn_glowup", name: "GLOW-UP STARTER", icon: "🌟",
-        desc: "Vibrant colours + the Glow effect + a Halo aura.",
-        price_gems: 800, sticker_gems: 1500,
+        desc: "Vibrant colours + the Bloom effect + a Halo aura.",
+        price_gems: 800, sticker_gems: 1400,
         members: &["rc_crimson","rc_cobalt","rc_emerald","rc_violet","glow","au_halo"],
     },
     Bundle {
+        id: "bn_cosmic", name: "COSMIC SET", icon: "🌌",
+        desc: "Deep space — Galaxy territory, a Stardust aura, an Aurora trail, and cosmic colours.",
+        price_gems: 1200, sticker_gems: 2200,
+        members: &["tf_galaxy","au_sparkle","tr_aurora","rc_ultra","rc_cobalt","rc_violet"],
+    },
+    Bundle {
         id: "bn_prismatic", name: "PRISMATIC BUNDLE", icon: "💎",
-        desc: "The flagship set — exclusive Aurora Veil + Prism Aura, Holographic, Sparkle, colours, Aurora trail, Queen's Crown.",
-        price_gems: 2000, sticker_gems: 4500,
+        desc: "The flagship — exclusive Aurora Veil + Prism Halo, plus Iridescent, Gilded, Stardust, colours, and an Aurora trail.",
+        price_gems: 2000, sticker_gems: 5250,
         members: &["tf_auroraveil","tf_holo","au_prism","au_sparkle","rc_crimson","rc_cobalt",
                    "rc_emerald","rc_violet","rc_amber","rc_fuchsia","rc_tangerine","rc_aqua",
-                   "tr_aurora","qe_crown"],
+                   "tr_aurora","tf_gilded"],
     },
 ];
 

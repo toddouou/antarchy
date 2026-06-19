@@ -149,7 +149,6 @@ impl PlayerSnapshot {
             tile_fx:             None,   // runtime caches; reloaded from the account on connect
             aura:                None,
             trail:               None,
-            emblem:              None,
         }
     }
 }

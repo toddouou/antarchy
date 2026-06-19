@@ -843,7 +843,7 @@ pub fn handle_message(
         world.auth.save();
         // Mirror the equipped slot onto the live Player so renders update without a reconnect.
         // `recolor` overrides the live colour (equip) / reverts to the account base colour (unequip);
-        // the rest feed the fx palette (tile_fx) or the ~1 Hz cosmetics roster (aura/trail/emblem).
+        // the rest feed the fx palette (tile_fx) or the ~1 Hz cosmetics roster (aura/trail).
         if slot == "recolor" {
             let base = world.auth.users.get(&uname).map(|u| u.color.clone()).unwrap_or_default();
             let new_color = if id.is_empty() { base.clone() }
@@ -858,7 +858,6 @@ pub fn handle_message(
                 "tile_fx"      => p.tile_fx = val,
                 "aura"         => p.aura = val,
                 "trail"        => p.trail = val,
-                "queen_emblem" => p.emblem = val,
                 _ => {}
             }
         }
@@ -1459,7 +1458,7 @@ fn create_or_reconnect_player(
     // Equipped cosmetics (wipe-proof account state) → live runtime caches so they reach every viewer
     // (tile_fx via the fx palette; aura/trail/emblem via the ~1 Hz roster). A `recolor` overrides the
     // player's colour. All computed up front in a block so the &auth borrow drops before &mut players.
-    let (tile_fx, aura, trail, emblem, eff_color) = {
+    let (tile_fx, aura, trail, eff_color) = {
         let eq = world.auth.users.get(username).map(|u| &u.equipped);
         let get = |slot: &str| eq.and_then(|e| e.get(slot).cloned());
         let eff_color = eq.and_then(|e| e.get("recolor"))
@@ -1467,7 +1466,7 @@ fn create_or_reconnect_player(
             .filter(|c| c.category == "recolor" && !c.params.is_empty())
             .map(|c| c.params.to_string())
             .unwrap_or_else(|| color.to_string());
-        (get("tile_fx"), get("aura"), get("trail"), get("queen_emblem"), eff_color)
+        (get("tile_fx"), get("aura"), get("trail"), eff_color)
     };
 
     if world.players.contains_key(&id) {
@@ -1477,7 +1476,7 @@ fn create_or_reconnect_player(
             p.conn_gen += 1;
             p.tx = Some(tx);
             p.tile_fx = tile_fx;
-            p.aura = aura; p.trail = trail; p.emblem = emblem;
+            p.aura = aura; p.trail = trail;
             p.color = eff_color;
             p.away.take()
         };
@@ -1491,7 +1490,7 @@ fn create_or_reconnect_player(
         next_refill: now + 24 * 3600 * 1000,
         tx: Some(tx),
         conn_gen: 1,
-        tile_fx, aura, trail, emblem,
+        tile_fx, aura, trail,
         ..Default::default()
     });
     println!("[connect] {username} ({})", id);
