@@ -1519,11 +1519,13 @@ function cosmGuard(name, fn){
 function cosmGovern(rms){
   _renderEma += (rms-_renderEma)*0.12;
   if (_renderEma>COSM_OFF_MS){
-    if (fxQuality<4){ fxQuality++; _fxLast.key=''; }                 // coarsen mask (cheaper) first
+    if (_auraQuality>0.5){ _auraQuality=Math.max(0.5,_auraQuality-0.05); }  // thin the auras first (cheapest)
+    else if (fxQuality<4){ fxQuality++; _fxLast.key=''; }                   // then coarsen the tile-fx mask
     else if (!cosmPerfOff){ cosmPerfOff=true; console.warn('[cosmetics] shed — render EMA '+_renderEma.toFixed(1)+'ms'); }
   } else if (_renderEma<COSM_ON_MS){
     if (cosmPerfOff){ cosmPerfOff=false; console.info('[cosmetics] restored — render EMA '+_renderEma.toFixed(1)+'ms'); }
-    else if (fxQuality>2){ fxQuality--; _fxLast.key=''; }            // refine mask back up when there's headroom
+    else if (fxQuality>2){ fxQuality--; _fxLast.key=''; }                   // refine mask back up
+    else if (_auraQuality<1){ _auraQuality=Math.min(1,_auraQuality+0.03); } // then restore full auras
   }
 }
 // Last-resort global capture — surfaces the exact stack the next time any fault occurs live.
@@ -1573,121 +1575,145 @@ function drawTrail(cp){
   }
   ctx.restore();
 }
-// ===== Entity auras — bounded particle / light systems (no shadowBlur) ===========================
-// Auras render as real light: soft concentric rings, orbiting sprite motes, expanding sonar pulses,
-// and — for the trailing kinds — a single GLOBAL particle pool (fixed-size typed arrays, recycled via
-// swap-remove, hard-capped at PCAP). NO `shadowBlur` (its software-raster path was the perf cliff) and
-// NO emoji. Particles live in WORLD space so they anchor to the land as the camera pans; the pool is
-// updated+drawn once per frame (`stepAuraParticles`). Queens get the grandest variant of each aura.
-// All motion freezes to a static ring under reduce-effects. Emission is gated to on-screen entities
-// (queens always; ants only at cp≥4 ⇒ bounded count), and the whole subsystem rides `cosmActive()`.
-const _auraSprites=[];                              // soft radial-dot sprites (one tint per aura colour)
-function _dotSprite(hex){ const R=16, c=document.createElement('canvas'); c.width=c.height=R*2;
-  const g=c.getContext('2d'), [r,gg,b]=toRGB(hex), grd=g.createRadialGradient(R,R,0,R,R,R);
-  grd.addColorStop(0,`rgba(${r},${gg},${b},1)`); grd.addColorStop(.35,`rgba(${r},${gg},${b},.55)`);
-  grd.addColorStop(1,`rgba(${r},${gg},${b},0)`); g.fillStyle=grd; g.fillRect(0,0,R*2,R*2);
-  return _auraSprites.push(c)-1; }
-const AURA={};                                      // id -> { kind, color, _rgb, _spr } (rgb/sprite lazy)
-function _defAura(id,kind,color){ AURA[id]={kind,color,_rgb:null,_spr:-1}; }
-_defAura('au_halo',   'halo',     '#FFD166');       // soft golden ring + orbiting motes
-_defAura('au_phantom','comet',    '#cfe3ff');       // trailing comet sparks (pooled)
-_defAura('au_sparkle','stardust', '#ffffff');       // drifting twinkles (pooled)
-_defAura('au_cyber',  'sonar',    '#00F5D4');       // expanding sonar pulses
-_defAura('au_prism',  'prism',    '#ff66cc');       // refractive rainbow motes (bundle exclusive)
-_defAura('au_frost',  'stardust', '#90E0EF');       // legacy SKU (cut in catalogue Phase 5) → cold dust
-// rgb string + sprite are computed LAZILY on first render — NOT at module-load: `toRGB` reads `rgbCache`
-// and `_dotSprite` builds a canvas, neither of which is ready during top-level execution. Doing it at
-// load threw a TDZ ('Cannot access rgbCache before initialization') that aborted the script → the page
-// froze on the connecting splash. (node --check can't catch this; only executing the script does.)
-function auraRgb(spec){ return spec._rgb || (spec._rgb=toRGB(spec.color).join(',')); }
-function auraSpr(spec){ return spec._spr>=0 ? spec._spr : (spec._spr=_dotSprite(spec.color)); }
-// --- global particle pool (world-space) ---
-const PCAP=900;
+// ===== Entity auras — breathtaking particle / light systems (no shadowBlur, no rings, no emoji) ===
+// Each aura = a soft additive CORE GLOW (the luminance) + a kind-specific PARTICLE STREAM around/above
+// the entity: energy flames, twinkling sparkles, rising smoke, comet tails, rainbow energy. Particles
+// live in ONE fixed-size world-space pool (swap-remove recycled, hard-capped) drawn once per frame in
+// two blend passes (additive sparks, then source-over smoke). Sprites are pre-coloured + cached LAZILY
+// (never at module-load — that TDZ'd on rgbCache and froze the page). Queens get the full spectacle;
+// ants a scaled-down hint. Reduce-effects → a calm static glow, no motion. WCAG: "flicker" is per-
+// particle (no whole-aura flash); the core breathes slowly. Whole subsystem rides `cosmActive()`.
+let _auraQuality=1;                                 // governor shaves this (1→0.5) before shedding
+// Any-CSS-colour → [r,g,b] (handles hex AND hsl, for the rainbow sprites) via a 1×1 scratch context.
+const _cssRgbC=document.createElement('canvas').getContext('2d');
+function cssToRgb(color){ try{ _cssRgbC.clearRect(0,0,1,1); _cssRgbC.fillStyle=color; _cssRgbC.fillRect(0,0,1,1);
+  const d=_cssRgbC.getImageData(0,0,1,1).data; return [d[0],d[1],d[2]]; }catch(_){ return [255,255,255]; } }
+// Pre-coloured sprite factory. `type`: glow|dot|star|smoke|flame. Returned canvases are cached by
+// "colour|type" and referenced by index from the particle pool.
+function _mkSprite(color,type){
+  const [r,g,b]=cssToRgb(color), rgb=`${r},${g},${b}`, c=document.createElement('canvas'), x=c.getContext('2d');
+  if(type==='glow'){ const R=48; c.width=c.height=R*2; const gr=x.createRadialGradient(R,R,0,R,R,R);
+    gr.addColorStop(0,`rgba(${rgb},.95)`); gr.addColorStop(.25,`rgba(${rgb},.45)`); gr.addColorStop(1,`rgba(${rgb},0)`);
+    x.fillStyle=gr; x.fillRect(0,0,R*2,R*2); }
+  else if(type==='dot'){ const R=16; c.width=c.height=R*2; const gr=x.createRadialGradient(R,R,0,R,R,R);
+    gr.addColorStop(0,'rgba(255,255,255,1)'); gr.addColorStop(.3,`rgba(${rgb},.85)`); gr.addColorStop(1,`rgba(${rgb},0)`);
+    x.fillStyle=gr; x.fillRect(0,0,R*2,R*2); }
+  else if(type==='star'){ const R=20; c.width=c.height=R*2; x.translate(R,R);
+    const gr=x.createRadialGradient(0,0,0,0,0,R); gr.addColorStop(0,'rgba(255,255,255,1)');
+    gr.addColorStop(.4,`rgba(${rgb},.5)`); gr.addColorStop(1,`rgba(${rgb},0)`); x.fillStyle=gr;
+    for(let k=0;k<2;k++){ x.save(); x.rotate(k*Math.PI/4);
+      x.beginPath(); x.moveTo(0,-R); x.lineTo(R*0.16,0); x.lineTo(0,R); x.lineTo(-R*0.16,0); x.closePath(); x.fill();
+      x.beginPath(); x.moveTo(-R,0); x.lineTo(0,R*0.16); x.lineTo(R,0); x.lineTo(0,-R*0.16); x.closePath(); x.fill(); x.restore(); }
+    x.beginPath(); x.arc(0,0,R*0.2,0,6.283); x.fillStyle='#fff'; x.fill(); }
+  else if(type==='smoke'){ const R=40; c.width=c.height=R*2;
+    for(let k=0;k<3;k++){ const ox=R+(Math.random()-0.5)*R*0.5, oy=R+(Math.random()-0.5)*R*0.5, rr=R*(0.5+Math.random()*0.4);
+      const gr=x.createRadialGradient(ox,oy,0,ox,oy,rr); gr.addColorStop(0,`rgba(${rgb},.5)`); gr.addColorStop(1,`rgba(${rgb},0)`);
+      x.fillStyle=gr; x.fillRect(0,0,R*2,R*2); } }
+  else { /* flame */ const W=24, Hh=48; c.width=W; c.height=Hh; const gr=x.createLinearGradient(0,Hh,0,0);
+    gr.addColorStop(0,`rgba(${rgb},0)`); gr.addColorStop(.4,`rgba(${rgb},.7)`); gr.addColorStop(.85,'rgba(255,255,255,.9)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+    x.fillStyle=gr; x.beginPath(); x.moveTo(W/2,0); x.quadraticCurveTo(W,Hh,W/2,Hh); x.quadraticCurveTo(0,Hh,W/2,0); x.fill(); }
+  return c;
+}
+const _auraSprList=[];                              // sprite canvases; particles store an index into this
+const _auraSprIdx={};                               // "colour|type" -> index (lazy)
+function auraSprite(color,type){ const k=color+'|'+type; let i=_auraSprIdx[k];
+  if(i===undefined){ i=_auraSprList.push(_mkSprite(color,type))-1; _auraSprIdx[k]=i; } return i; }
+let _rainbowIdx=null;                               // 12 hue glow sprites for prism (lazy)
+function rainbowGlow(i){ if(!_rainbowIdx){ _rainbowIdx=[]; for(let h=0;h<12;h++) _rainbowIdx.push(_auraSprList.push(_mkSprite(`hsl(${h*30},100%,60%)`,'glow'))-1); }
+  return _rainbowIdx[((i%12)+12)%12]; }
+const AURA={};                                      // id -> { kind, color }
+function _defAura(id,kind,color){ AURA[id]={kind,color}; }
+_defAura('au_halo',   'halo',    '#FFD166');        // radiant breathing bloom + a crown of light motes
+_defAura('au_phantom','comet',   '#cfe3ff');        // blazing head + a streaming tail behind movement
+_defAura('au_sparkle','sparkle', '#CAF0F8');        // twinkling 4-point stars orbiting + drifting up
+_defAura('au_cyber',  'energy',  '#00F5D4');        // Super-Saiyan: rising energy flames + crackle
+_defAura('au_prism',  'prism',   '#ff66cc');        // rainbow energy streaming up (bundle exclusive)
+_defAura('au_frost',  'smoke',   '#90E0EF');        // cold mist/smoke curling upward
+// --- global particle pool (world-space; Padd: 1=additive spark, 0=source-over smoke) ---
+const PCAP=1400;
 const Px=new Float32Array(PCAP), Py=new Float32Array(PCAP), Pvx=new Float32Array(PCAP), Pvy=new Float32Array(PCAP);
-const Pl=new Float32Array(PCAP), Pml=new Float32Array(PCAP), Psz=new Float32Array(PCAP), Pspr=new Int16Array(PCAP);
+const Pl=new Float32Array(PCAP), Pml=new Float32Array(PCAP), Psz=new Float32Array(PCAP), Pgrow=new Float32Array(PCAP);
+const Pseed=new Float32Array(PCAP), Pspr=new Int16Array(PCAP), Padd=new Uint8Array(PCAP);
 let pcount=0, _auraLastT=performance.now();
-function _spawn(wx,wy,vx,vy,life,size,spr){ if(pcount>=PCAP) return; const i=pcount++;
-  Px[i]=wx; Py[i]=wy; Pvx[i]=vx; Pvy[i]=vy; Pl[i]=life; Pml[i]=life; Psz[i]=size; Pspr[i]=spr; }
-// Emit pooled particles for the trailing kinds at the entity's WORLD centre (wx,wy). `rad` is screen px;
-// (hx,hy) is the entity's unit heading (0,0 = stationary, e.g. a queen). Emission is randomised so it
-// stays even across many entities and never bursts the pool.
+function _spawn(wx,wy,vx,vy,life,size,grow,spr,add,seed){ if(pcount>=PCAP) return; const i=pcount++;
+  Px[i]=wx;Py[i]=wy;Pvx[i]=vx;Pvy[i]=vy;Pl[i]=life;Pml[i]=life;Psz[i]=size;Pgrow[i]=grow;Pspr[i]=spr;Padd[i]=add;Pseed[i]=seed; }
+// Emit the kind's particle stream at the entity's WORLD centre (wx,wy). `rad` is screen-px radius;
+// (hx,hy) is the unit heading. Randomised so it stays even across a swarm and never bursts the pool.
 function emitAura(wx,wy,rad,spec,isQueen,hx,hy){
-  const cp=CELL*view.zoom, wr=rad/cp, big=isQueen?2.0:1;   // wr = entity radius in world cells
-  if(spec.kind==='stardust'){
-    if(Math.random()<0.42*big){ const a=Math.random()*Math.PI*2, r=wr*(0.3+Math.random()*0.9);
-      _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, (Math.random()-0.5)*0.001*wr, -0.0016*wr*(0.6+Math.random()),
-             800+Math.random()*700, Math.max(2,rad*0.22), auraSpr(spec)); }
-  } else if(spec.kind==='comet'){
-    // A real tail: stream sparks BEHIND the heading so a moving ant draws a comet; a stationary queen
-    // (no heading) gets a gentle rising-ember bloom instead.
-    const moving=(hx||hy), n=isQueen?2:1;
-    for(let k=0;k<n;k++){
-      if(moving){ const sp=0.0026*wr*(0.7+Math.random()*0.6), jx=(Math.random()-0.5)*0.0012*wr, jy=(Math.random()-0.5)*0.0012*wr;
-        _spawn(wx, wy, -hx*sp+jx, -hy*sp+jy, 420+Math.random()*420, Math.max(2,rad*0.26), auraSpr(spec)); }
-      else { const a=Math.random()*Math.PI*2, sp=0.0016*wr*(0.5+Math.random());
-        _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.0014*wr, 520+Math.random()*520, Math.max(2,rad*0.26), auraSpr(spec)); }
-    }
+  const cp=CELL*view.zoom, wr=rad/cp, big=isQueen?1:0.5, rate=(isQueen?1:0.3)*_auraQuality, k=spec.kind, col=spec.color, t=performance.now();
+  if(k==='energy'){
+    const n=isQueen?3:1; for(let j=0;j<n;j++){ if(Math.random()>rate) continue;
+      _spawn(wx+(Math.random()-0.5)*wr*0.7, wy+wr*0.5, (Math.random()-0.5)*0.0008*wr, -(0.004+Math.random()*0.004)*wr,
+             340+Math.random()*340, Math.max(2,rad*0.24*big), -0.0006*wr, auraSprite(col,'flame'), 1, Math.random()); }
+    if(Math.random()<0.14*rate) _spawn(wx+(Math.random()-0.5)*wr, wy, (Math.random()-0.5)*0.003*wr, -0.013*wr,
+             200+Math.random()*160, Math.max(2,rad*0.16*big), -0.001*wr, auraSprite(col,'dot'), 1, Math.random());
+  } else if(k==='sparkle'){
+    if(Math.random()<0.5*rate){ const a=Math.random()*6.283, r=wr*(0.4+Math.random()*1.0);
+      _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, (Math.random()-0.5)*0.0008*wr, -0.0012*wr*(0.5+Math.random()),
+             700+Math.random()*700, Math.max(2,rad*0.32*big), 0, auraSprite(col,'star'), 1, Math.random()); }
+  } else if(k==='smoke'){
+    if(Math.random()<0.4*rate){ _spawn(wx+(Math.random()-0.5)*wr*0.8, wy+wr*0.3, (Math.random()-0.5)*0.0006*wr, -0.0014*wr*(0.6+Math.random()),
+             1100+Math.random()*900, Math.max(3,rad*0.45*big), 0.004*wr, auraSprite(col,'smoke'), 0, Math.random()); }
+  } else if(k==='comet'){
+    const moving=(hx||hy), n=isQueen?3:1; for(let j=0;j<n;j++){ if(Math.random()>rate) continue;
+      if(moving){ const sp=0.0028*wr*(0.7+Math.random()*0.6);
+        _spawn(wx, wy, -hx*sp+(Math.random()-0.5)*0.0012*wr, -hy*sp+(Math.random()-0.5)*0.0012*wr, 340+Math.random()*360, Math.max(2,rad*0.3*big), -0.0004*wr, auraSprite(col,'dot'), 1, Math.random()); }
+      else { const a=Math.random()*6.283, sp=0.0016*wr*(0.5+Math.random());
+        _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.0016*wr, 500+Math.random()*400, Math.max(2,rad*0.28*big), -0.0004*wr, auraSprite(col,'dot'), 1, Math.random()); } }
+  } else if(k==='halo'){
+    if(Math.random()<0.3*rate){ const a=Math.random()*6.283, r=wr*(0.3+Math.random()*0.6);
+      _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, 0, -0.0012*wr*(0.4+Math.random()), 800+Math.random()*600, Math.max(2,rad*0.18*big), -0.0002*wr, auraSprite(col,'dot'), 1, Math.random()); }
+  } else if(k==='prism'){
+    const n=isQueen?2:1; for(let j=0;j<n;j++){ if(Math.random()>rate) continue;
+      _spawn(wx+(Math.random()-0.5)*wr*0.8, wy+wr*0.4, (Math.random()-0.5)*0.001*wr, -(0.003+Math.random()*0.004)*wr,
+             480+Math.random()*420, Math.max(2,rad*0.28*big), -0.0005*wr, rainbowGlow((t*0.012+j*3)|0), 1, Math.random()); }
   }
 }
-// Update + draw the whole pool once per frame (additive sprite blits — no shadowBlur).
+// Update the pool once, then draw in two blend passes (additive sparks, then source-over smoke).
 function stepAuraParticles(cp){
   let dt=performance.now()-_auraLastT; _auraLastT+=dt; if(dt>50)dt=50; if(dt<0)dt=0;
   if(!pcount) return;
-  const W=cvs.width, H=cvs.height;
-  ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.imageSmoothingEnabled=true;
-  for(let i=0;i<pcount;i++){
-    Pl[i]-=dt;
-    if(Pl[i]<=0){ const j=--pcount; Px[i]=Px[j];Py[i]=Py[j];Pvx[i]=Pvx[j];Pvy[i]=Pvy[j];Pl[i]=Pl[j];Pml[i]=Pml[j];Psz[i]=Psz[j];Pspr[i]=Pspr[j]; i--; continue; }
-    Px[i]+=Pvx[i]*dt; Py[i]+=Pvy[i]*dt;
-    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp;
-    if(sx<-16||sy<-16||sx>W+16||sy>H+16) continue;
-    const spr=_auraSprites[Pspr[i]]; if(!spr) continue;
-    const s=Math.max(1.5,Psz[i]); ctx.globalAlpha=(Pl[i]/Pml[i])*0.9;
-    ctx.drawImage(spr, sx-s, sy-s, s*2, s*2);
-  }
+  const W=cvs.width, H=cvs.height, t=performance.now();
+  for(let i=0;i<pcount;i++){ Pl[i]-=dt;
+    if(Pl[i]<=0){ const j=--pcount; Px[i]=Px[j];Py[i]=Py[j];Pvx[i]=Pvx[j];Pvy[i]=Pvy[j];Pl[i]=Pl[j];Pml[i]=Pml[j];Psz[i]=Psz[j];Pgrow[i]=Pgrow[j];Pseed[i]=Pseed[j];Pspr[i]=Pspr[j];Padd[i]=Padd[j]; i--; continue; }
+    Px[i]+=Pvx[i]*dt; Py[i]+=Pvy[i]*dt; Psz[i]+=Pgrow[i]*dt; }
+  ctx.save(); ctx.imageSmoothingEnabled=true;
+  ctx.globalCompositeOperation='lighter';                       // additive sparks/energy/stars
+  for(let i=0;i<pcount;i++){ if(!Padd[i]) continue;
+    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-24||sy<-24||sx>W+24||sy>H+24) continue;
+    const f=Pl[i]/Pml[i], tw=0.7+0.3*Math.sin(t*0.012+Pseed[i]*99), s=Math.max(1,Psz[i]);
+    ctx.globalAlpha=Math.min(1,f*1.6)*tw; ctx.drawImage(_auraSprList[Pspr[i]], sx-s, sy-s, s*2, s*2); }
+  ctx.globalCompositeOperation='source-over';                   // soft smoke (fades in then out)
+  for(let i=0;i<pcount;i++){ if(Padd[i]) continue;
+    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-80||sy<-80||sx>W+80||sy>H+80) continue;
+    const f=Pl[i]/Pml[i], s=Math.max(2,Psz[i]); ctx.globalAlpha=(1-Math.abs(1-2*f))*0.35;
+    ctx.drawImage(_auraSprList[Pspr[i]], sx-s, sy-s, s*2, s*2); }
   ctx.restore();
 }
-function drawStaticRing(g,cx,cy,rad,hex){ g.save(); g.globalAlpha=0.5; g.strokeStyle=hex;
-  g.lineWidth=Math.max(1.5,rad*0.12); g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke(); g.restore(); }
-// Deterministic, context-agnostic aura renderer (used by the live map for ring kinds AND by the shop
-// preview for everything). No pool, no shadowBlur. (cx,cy)=screen centre, `rad`=screen-px radius.
-function drawAura(g, cx, cy, rad, auraId, isQueen){
-  if(!auraId) return; const spec=AURA[auraId]; if(!spec) return;
-  if(effReduce()){ drawStaticRing(g,cx,cy,rad,spec.color||'#fff'); return; }
-  const t=performance.now(); g.save(); g.globalCompositeOperation='lighter';
-  if(spec.kind==='halo'){
-    const p=0.6+0.4*Math.sin(t/700), col=auraRgb(spec);
-    for(let k=0;k<3;k++){ g.strokeStyle=`rgba(${col},${(0.24*p*(1-k*0.3)).toFixed(3)})`;
-      g.lineWidth=Math.max(1.5,rad*0.18*(1-k*0.22)); g.beginPath(); g.arc(cx,cy,rad*(1+k*0.12),0,Math.PI*2); g.stroke(); }
-    const n=isQueen?6:3, spr=_auraSprites[auraSpr(spec)], s=Math.max(2,rad*0.18);
-    for(let i=0;i<n;i++){ const a=t/900+i*(6.283/n), mx=cx+Math.cos(a)*rad*1.05, my=cy+Math.sin(a)*rad*1.05;
-      g.globalAlpha=0.85; g.drawImage(spr, mx-s, my-s, s*2, s*2); }
-  } else if(spec.kind==='sonar'){
-    const col=auraRgb(spec), rings=isQueen?3:2;
-    for(let k=0;k<rings;k++){ const ph=((t/1400)+k/rings)%1; g.strokeStyle=`rgba(${col},${((1-ph)*0.5).toFixed(3)})`;
-      g.lineWidth=Math.max(1.5,rad*0.12); g.beginPath(); g.arc(cx,cy,rad*(0.55+ph*1.7),0,Math.PI*2); g.stroke(); }
-    const spr=_auraSprites[auraSpr(spec)], s=Math.max(2,rad*0.22); g.globalAlpha=0.7; g.drawImage(spr,cx-s,cy-s,s*2,s*2);
-  } else if(spec.kind==='prism'){
-    const n=isQueen?8:5;
-    for(let i=0;i<n;i++){ const a=t/700+i*(6.283/n), hue=(t/12+i*(360/n))%360, rr=rad*(1+0.08*Math.sin(t/300+i));
-      const mx=cx+Math.cos(a)*rr, my=cy+Math.sin(a)*rr, s=Math.max(2,rad*0.16);
-      g.fillStyle=`hsl(${hue|0},100%,62%)`; g.beginPath(); g.arc(mx,my,s,0,Math.PI*2); g.fill(); }
-    g.globalAlpha=0.4; g.strokeStyle=`hsla(${(t/12)%360|0},100%,65%,1)`; g.lineWidth=Math.max(1.2,rad*0.12);
-    g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke();
-  } else { // comet / stardust — deterministic approximation (for the preview sandbox)
-    const spr=_auraSprites[auraSpr(spec)], n=9;
-    for(let i=0;i<n;i++){ const ph=((t/700)+i/n)%1, a=t/500+i*(6.283/n), rr=rad*(0.25+ph*1.0);
-      const mx=cx+Math.cos(a)*rr, my=cy+Math.sin(a)*rr-(spec.kind==='stardust'?ph*rad*0.8:0);
-      const s=Math.max(2,rad*0.2)*(1-ph*0.7); g.globalAlpha=(1-ph)*0.9; g.drawImage(spr,mx-s,my-s,s*2,s*2); }
-  }
-  g.restore();
-}
-// Live-map dispatcher: ring kinds draw deterministically on the main ctx; trailing kinds EMIT into the
-// global pool (drawn later by stepAuraParticles) at the entity's world centre (wx,wy).
+// Live dispatcher: draws the per-entity CORE GLOW (+ energy column / halo motes) on the main ctx, then
+// emits the kind's particle stream. (cx,cy)=screen centre, (wx,wy)=world centre, (hx,hy)=unit heading.
 function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy, hx, hy){
   const spec=AURA[auraId]; if(!spec) return;
-  if(!effReduce() && (spec.kind==='comet'||spec.kind==='stardust')) emitAura(wx,wy,rad,spec,isQueen,hx||0,hy||0);
-  else drawAura(ctx, cx, cy, rad, auraId, isQueen);
+  const big=isQueen?1:0.55, t=performance.now(), red=effReduce(), q=_auraQuality;
+  // CORE GLOW — the shared luminance (soft additive bloom, slow breathe; static under reduce-effects).
+  const glowSpr=_auraSprList[ spec.kind==='prism' ? rainbowGlow((t*0.01)|0) : auraSprite(spec.color,'glow') ];
+  const breathe=red?0.5 : 0.42+0.18*Math.sin(t*0.0022+(wx+wy)), gs=rad*(spec.kind==='energy'?2.6:2.0)*big;
+  ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.imageSmoothingEnabled=true;
+  ctx.globalAlpha=breathe*(isQueen?0.9:0.6)*q; ctx.drawImage(glowSpr, cx-gs, cy-gs, gs*2, gs*2); ctx.restore();
+  if(red) return;                                               // reduced motion: glow only
+  if(spec.kind==='energy' && isQueen){                          // rising energy column behind the queen
+    const cw=rad*1.5, ch=rad*4.4; ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=(0.16+0.06*Math.sin(t*0.004))*q;
+    ctx.drawImage(_auraSprList[auraSprite(spec.color,'flame')], cx-cw/2, cy-ch+rad*0.6, cw, ch); ctx.restore();
+  }
+  if(spec.kind==='halo'){                                       // orbiting crown of light motes (not a ring)
+    const n=isQueen?9:5, spr=_auraSprList[auraSprite(spec.color,'dot')], s=Math.max(2,rad*0.16*big);
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<n;i++){ const a=t/1100+i*(6.283/n), mx=cx+Math.cos(a)*rad*1.15, my=cy+Math.sin(a)*rad*1.15;
+      ctx.globalAlpha=(0.55+0.4*Math.sin(t*0.004+i))*q; ctx.drawImage(spr, mx-s, my-s, s*2, s*2); }
+    ctx.restore();
+  }
+  emitAura(wx, wy, rad, spec, isQueen, hx||0, hy||0);
 }
 // Alliances (declared here, beside `palette`, so the render-loop recolour reads are never in a TDZ).
 let myAlliance=null, factionsAll=[], factionIcon={}, incomingInvites=[], maydayPings=[], _allianceTab='mine';
@@ -2989,8 +3015,10 @@ function cosmSwatch(it){
   const sz='width:32px;height:32px;border-radius:6px;border:2px solid var(--ink);margin:0 auto 2px';
   let bg;
   if(it.category==='recolor'){ bg=it.params||'#888'; }
-  else if(it.category==='aura'){ const c=(AURA[it.id]&&AURA[it.id].color)||(it.params&&it.params[0]==='#'?it.params:'#fff');
-    bg=`radial-gradient(circle at 50% 50%, ${c} 0%, ${c}66 42%, transparent 72%), #0d0d0d`; }
+  else if(it.category==='aura'){
+    if(it.id==='au_prism'){ bg='radial-gradient(circle,#fff 0%,transparent 18%),conic-gradient(from 0deg,#ff004c,#ffb703,#06d6a0,#00f5d4,#3a86ff,#8338ec,#ff004c)'; }
+    else { const c=(AURA[it.id]&&AURA[it.id].color)||(it.params&&it.params[0]==='#'?it.params:'#fff');
+      bg=`radial-gradient(circle at 50% 50%, #fff 0%, ${c} 30%, ${c}55 55%, transparent 78%), #0d0d0d`; } }
   else if(it.category==='trail'){ const st=String(it.params||'').split('>').filter(s=>s); st.push((me&&me.color)||'#E63946');
     bg=`linear-gradient(90deg, ${st.join(',')})`; }
   else if(it.category==='tile_fx'){ bg=TILEFX_SWATCH[it.id]||`radial-gradient(circle,#fff,transparent 70%),#0d0d0d`; }

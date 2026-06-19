@@ -96,11 +96,12 @@ pub const COSMETICS: &[Cosmetic] = &[
     c("tr_ember",    "EMBER",     "New tiles burn in from ember-orange.",                          "🔥", "trail", "rare", 250, "#6A040F>#FFB703>"),
 
     // ---- Auras (bounded particle / light systems around your ants + queen) ----
-    c("au_halo",     "HALO",       "A soft ring of light with orbiting motes.",        "😇", "aura", "epic", 500, "#FFD166"),
-    c("au_phantom",  "COMET TRAIL","A tail of fading sparks streams off your colony.",  "☄",  "aura", "epic", 500, "#cfe3ff"),
-    c("au_sparkle",  "STARDUST",   "Drifting twinkles rise around your entities.",      "✨", "aura", "epic", 600, "#FFFFFF"),
-    c("au_cyber",    "SONAR",      "Expanding pulse rings sweep outward from you.",     "📡", "aura", "epic", 700, "#00F5D4"),
-    Cosmetic { id:"au_prism", name:"PRISM HALO", desc:"A refractive rainbow ring of motes — bundle exclusive.",
+    c("au_halo",     "HALO",      "A radiant breathing aura ringed by a crown of light.",  "✨", "aura", "epic", 500, "#FFD166"),
+    c("au_phantom",  "COMET",     "A blazing comet tail streams off every worker.",        "☄", "aura", "epic", 500, "#cfe3ff"),
+    c("au_sparkle",  "STARDUST",  "Twinkling stars orbit and drift around your colony.",   "✨", "aura", "epic", 600, "#CAF0F8"),
+    c("au_cyber",    "OVERDRIVE", "A surge of energy flames erupts upward — pure power.",   "⚡", "aura", "epic", 700, "#00F5D4"),
+    c("au_frost",    "FROST MIST","A cold mist coils and rises around your colony.",        "🌫", "aura", "epic", 600, "#90E0EF"),
+    Cosmetic { id:"au_prism", name:"PRISM", desc:"Rainbow energy streams skyward — bundle exclusive.",
                icon:"🌈", category:"aura", slot:"aura", rarity:"epic", price_gems:700, params:"#ff66cc",
                bundle_only:true, experimental:false },
 
