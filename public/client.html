@@ -1630,44 +1630,38 @@ _defAura('au_cyber',  'energy',  '#00F5D4');        // Super-Saiyan: rising ener
 _defAura('au_prism',  'prism',   '#ff66cc');        // rainbow energy streaming up (bundle exclusive)
 _defAura('au_frost',  'smoke',   '#90E0EF');        // cold mist/smoke curling upward
 // --- global particle pool (world-space; Padd: 1=additive spark, 0=source-over smoke) ---
-const PCAP=1400;
+const PCAP=2000;
 const Px=new Float32Array(PCAP), Py=new Float32Array(PCAP), Pvx=new Float32Array(PCAP), Pvy=new Float32Array(PCAP);
 const Pl=new Float32Array(PCAP), Pml=new Float32Array(PCAP), Psz=new Float32Array(PCAP), Pgrow=new Float32Array(PCAP);
 const Pseed=new Float32Array(PCAP), Pspr=new Int16Array(PCAP), Padd=new Uint8Array(PCAP);
 let pcount=0, _auraLastT=performance.now();
 function _spawn(wx,wy,vx,vy,life,size,grow,spr,add,seed){ if(pcount>=PCAP) return; const i=pcount++;
   Px[i]=wx;Py[i]=wy;Pvx[i]=vx;Pvy[i]=vy;Pl[i]=life;Pml[i]=life;Psz[i]=size;Pgrow[i]=grow;Pspr[i]=spr;Padd[i]=add;Pseed[i]=seed; }
-// Emit the kind's particle stream at the entity's WORLD centre (wx,wy). `rad` is screen-px radius;
-// (hx,hy) is the unit heading. Randomised so it stays even across a swarm and never bursts the pool.
+// Emit the kind's particle BURST at the entity's WORLD centre (wx,wy). Sizes + speeds are SCREEN-px
+// based (floored, NOT scaled to the tiny entity), converted to world only for the pool — so the aura
+// stays big & cinematic at any zoom and the particles visibly SHOOT OUT. `rad`=entity screen radius;
+// (hx,hy)=unit heading. `AR`=screen-px aura radius with a strong floor (queens huge, ants always ≥22px).
 function emitAura(wx,wy,rad,spec,isQueen,hx,hy){
-  const cp=CELL*view.zoom, wr=rad/cp, big=isQueen?1:0.5, rate=(isQueen?1:0.3)*_auraQuality, k=spec.kind, col=spec.color, t=performance.now();
-  if(k==='energy'){
-    const n=isQueen?3:1; for(let j=0;j<n;j++){ if(Math.random()>rate) continue;
-      _spawn(wx+(Math.random()-0.5)*wr*0.7, wy+wr*0.5, (Math.random()-0.5)*0.0008*wr, -(0.004+Math.random()*0.004)*wr,
-             340+Math.random()*340, Math.max(2,rad*0.24*big), -0.0006*wr, auraSprite(col,'flame'), 1, Math.random()); }
-    if(Math.random()<0.14*rate) _spawn(wx+(Math.random()-0.5)*wr, wy, (Math.random()-0.5)*0.003*wr, -0.013*wr,
-             200+Math.random()*160, Math.max(2,rad*0.16*big), -0.001*wr, auraSprite(col,'dot'), 1, Math.random());
-  } else if(k==='sparkle'){
-    if(Math.random()<0.5*rate){ const a=Math.random()*6.283, r=wr*(0.4+Math.random()*1.0);
-      _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, (Math.random()-0.5)*0.0008*wr, -0.0012*wr*(0.5+Math.random()),
-             700+Math.random()*700, Math.max(2,rad*0.32*big), 0, auraSprite(col,'star'), 1, Math.random()); }
-  } else if(k==='smoke'){
-    if(Math.random()<0.4*rate){ _spawn(wx+(Math.random()-0.5)*wr*0.8, wy+wr*0.3, (Math.random()-0.5)*0.0006*wr, -0.0014*wr*(0.6+Math.random()),
-             1100+Math.random()*900, Math.max(3,rad*0.45*big), 0.004*wr, auraSprite(col,'smoke'), 0, Math.random()); }
-  } else if(k==='comet'){
-    const moving=(hx||hy), n=isQueen?3:1; for(let j=0;j<n;j++){ if(Math.random()>rate) continue;
-      if(moving){ const sp=0.0028*wr*(0.7+Math.random()*0.6);
-        _spawn(wx, wy, -hx*sp+(Math.random()-0.5)*0.0012*wr, -hy*sp+(Math.random()-0.5)*0.0012*wr, 340+Math.random()*360, Math.max(2,rad*0.3*big), -0.0004*wr, auraSprite(col,'dot'), 1, Math.random()); }
-      else { const a=Math.random()*6.283, sp=0.0016*wr*(0.5+Math.random());
-        _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.0016*wr, 500+Math.random()*400, Math.max(2,rad*0.28*big), -0.0004*wr, auraSprite(col,'dot'), 1, Math.random()); } }
-  } else if(k==='halo'){
-    if(Math.random()<0.3*rate){ const a=Math.random()*6.283, r=wr*(0.3+Math.random()*0.6);
-      _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, 0, -0.0012*wr*(0.4+Math.random()), 800+Math.random()*600, Math.max(2,rad*0.18*big), -0.0002*wr, auraSprite(col,'dot'), 1, Math.random()); }
-  } else if(k==='prism'){
-    const n=isQueen?2:1; for(let j=0;j<n;j++){ if(Math.random()>rate) continue;
-      _spawn(wx+(Math.random()-0.5)*wr*0.8, wy+wr*0.4, (Math.random()-0.5)*0.001*wr, -(0.003+Math.random()*0.004)*wr,
-             480+Math.random()*420, Math.max(2,rad*0.28*big), -0.0005*wr, rainbowGlow((t*0.012+j*3)|0), 1, Math.random()); }
+  const cp=CELL*view.zoom, q=_auraQuality, k=spec.kind, col=spec.color, t=performance.now();
+  const AR=isQueen?Math.max(70,rad*1.3):Math.max(22,rad*1.5);
+  const psz=AR*0.16+(isQueen?5:3);                          // particle radius in SCREEN px (floored)
+  const n=Math.max(1,Math.round((isQueen?6:1.6)*q));        // particles this frame
+  for(let j=0;j<n;j++){
+    if(!isQueen && Math.random()>0.7*q) continue;            // ants thinner so a swarm stays light
+    let a, spd, sprite, add=1, life, grow=0, size=psz;
+    if(k==='energy'){       a=-Math.PI/2+(Math.random()-0.5)*2.2; spd=0.07+Math.random()*0.12; sprite=auraSprite(col,'flame'); life=420+Math.random()*400; }
+    else if(k==='sparkle'){ a=Math.random()*6.283;               spd=0.035+Math.random()*0.07; sprite=auraSprite(col,'star');  life=620+Math.random()*620; size=psz*1.15; }
+    else if(k==='smoke'){   a=-Math.PI/2+(Math.random()-0.5)*2.6; spd=0.022+Math.random()*0.04; sprite=auraSprite(col,'smoke'); life=1100+Math.random()*900; size=psz*1.5; add=0; grow=0.012; }
+    else if(k==='comet'){   const m=(hx||hy); a=m?Math.atan2(-hy,-hx)+(Math.random()-0.5)*0.9:Math.random()*6.283; spd=0.06+Math.random()*0.09; sprite=auraSprite(col,'dot'); life=380+Math.random()*380; }
+    else if(k==='halo'){    a=Math.random()*6.283;               spd=0.03+Math.random()*0.055; sprite=auraSprite(col,'dot');  life=720+Math.random()*520; }
+    else if(k==='prism'){   a=Math.random()*6.283;               spd=0.06+Math.random()*0.10; sprite=rainbowGlow((t*0.012+j*3)|0); life=500+Math.random()*460; }
+    else {                  a=Math.random()*6.283;               spd=0.045+Math.random()*0.075; sprite=auraSprite(col,'dot'); life=520+Math.random()*460; }
+    _spawn(wx, wy, Math.cos(a)*spd/cp, Math.sin(a)*spd/cp, life, size, grow, sprite, add, Math.random());
   }
+  // energy crackle — a fast bright bolt rocketing upward
+  if(k==='energy' && Math.random()<0.7*q)
+    _spawn(wx+(Math.random()-0.5)*AR*0.4/cp, wy, (Math.random()-0.5)*0.04/cp, -(0.2+Math.random()*0.14)/cp,
+           160+Math.random()*120, psz*0.85, 0, auraSprite(col,'dot'), 1, Math.random());
 }
 // Update the pool once, then draw in two blend passes (additive sparks, then source-over smoke).
 function stepAuraParticles(cp){
@@ -1680,13 +1674,13 @@ function stepAuraParticles(cp){
   ctx.save(); ctx.imageSmoothingEnabled=true;
   ctx.globalCompositeOperation='lighter';                       // additive sparks/energy/stars
   for(let i=0;i<pcount;i++){ if(!Padd[i]) continue;
-    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-24||sy<-24||sx>W+24||sy>H+24) continue;
-    const f=Pl[i]/Pml[i], tw=0.7+0.3*Math.sin(t*0.012+Pseed[i]*99), s=Math.max(1,Psz[i]);
-    ctx.globalAlpha=Math.min(1,f*1.6)*tw; ctx.drawImage(_auraSprList[Pspr[i]], sx-s, sy-s, s*2, s*2); }
+    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-64||sy<-64||sx>W+64||sy>H+64) continue;
+    const f=Pl[i]/Pml[i], tw=0.72+0.28*Math.sin(t*0.012+Pseed[i]*99), s=Math.max(1,Psz[i]);
+    ctx.globalAlpha=Math.min(1,f*2.2)*tw; ctx.drawImage(_auraSprList[Pspr[i]], sx-s, sy-s, s*2, s*2); }
   ctx.globalCompositeOperation='source-over';                   // soft smoke (fades in then out)
   for(let i=0;i<pcount;i++){ if(Padd[i]) continue;
-    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-80||sy<-80||sx>W+80||sy>H+80) continue;
-    const f=Pl[i]/Pml[i], s=Math.max(2,Psz[i]); ctx.globalAlpha=(1-Math.abs(1-2*f))*0.35;
+    const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-140||sy<-140||sx>W+140||sy>H+140) continue;
+    const f=Pl[i]/Pml[i], s=Math.max(2,Psz[i]); ctx.globalAlpha=(1-Math.abs(1-2*f))*0.42;
     ctx.drawImage(_auraSprList[Pspr[i]], sx-s, sy-s, s*2, s*2); }
   ctx.restore();
 }
@@ -1694,22 +1688,25 @@ function stepAuraParticles(cp){
 // emits the kind's particle stream. (cx,cy)=screen centre, (wx,wy)=world centre, (hx,hy)=unit heading.
 function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy, hx, hy){
   const spec=AURA[auraId]; if(!spec) return;
-  const big=isQueen?1:0.55, t=performance.now(), red=effReduce(), q=_auraQuality;
-  // CORE GLOW — the shared luminance (soft additive bloom, slow breathe; static under reduce-effects).
+  const t=performance.now(), red=effReduce(), q=_auraQuality;
+  const AR=isQueen?Math.max(70,rad*1.3):Math.max(22,rad*1.5);  // screen-px aura radius (floored — visible at any zoom)
+  // CORE GLOW — a big soft additive bloom that breathes. Queen gets a layered double-glow for richness.
   const glowSpr=_auraSprList[ spec.kind==='prism' ? rainbowGlow((t*0.01)|0) : auraSprite(spec.color,'glow') ];
-  const breathe=red?0.5 : 0.42+0.18*Math.sin(t*0.0022+(wx+wy)), gs=rad*(spec.kind==='energy'?2.6:2.0)*big;
+  const breathe=red?0.55 : 0.5+0.2*Math.sin(t*0.0024+(wx+wy)), gs=AR*(spec.kind==='energy'?2.4:1.9);
   ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.imageSmoothingEnabled=true;
-  ctx.globalAlpha=breathe*(isQueen?0.9:0.6)*q; ctx.drawImage(glowSpr, cx-gs, cy-gs, gs*2, gs*2); ctx.restore();
+  ctx.globalAlpha=breathe*(isQueen?0.9:0.62)*q; ctx.drawImage(glowSpr, cx-gs, cy-gs, gs*2, gs*2);
+  if(isQueen){ const gi=AR*1.0; ctx.globalAlpha=Math.min(1,breathe*1.05)*q; ctx.drawImage(glowSpr, cx-gi, cy-gi, gi*2, gi*2); }  // bright inner core
+  ctx.restore();
   if(red) return;                                               // reduced motion: glow only
-  if(spec.kind==='energy' && isQueen){                          // rising energy column behind the queen
-    const cw=rad*1.5, ch=rad*4.4; ctx.save(); ctx.globalCompositeOperation='lighter';
-    ctx.globalAlpha=(0.16+0.06*Math.sin(t*0.004))*q;
-    ctx.drawImage(_auraSprList[auraSprite(spec.color,'flame')], cx-cw/2, cy-ch+rad*0.6, cw, ch); ctx.restore();
+  if(spec.kind==='energy' && isQueen){                          // towering energy column behind the queen
+    const cw=AR*1.6, ch=AR*5; ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=(0.22+0.08*Math.sin(t*0.004))*q;
+    ctx.drawImage(_auraSprList[auraSprite(spec.color,'flame')], cx-cw/2, cy-ch+AR*0.4, cw, ch); ctx.restore();
   }
   if(spec.kind==='halo'){                                       // orbiting crown of light motes (not a ring)
-    const n=isQueen?9:5, spr=_auraSprList[auraSprite(spec.color,'dot')], s=Math.max(2,rad*0.16*big);
+    const n=isQueen?10:6, spr=_auraSprList[auraSprite(spec.color,'dot')], s=Math.max(3,AR*0.14);
     ctx.save(); ctx.globalCompositeOperation='lighter';
-    for(let i=0;i<n;i++){ const a=t/1100+i*(6.283/n), mx=cx+Math.cos(a)*rad*1.15, my=cy+Math.sin(a)*rad*1.15;
+    for(let i=0;i<n;i++){ const a=t/1100+i*(6.283/n), mx=cx+Math.cos(a)*AR*1.1, my=cy+Math.sin(a)*AR*1.1;
       ctx.globalAlpha=(0.55+0.4*Math.sin(t*0.004+i))*q; ctx.drawImage(spr, mx-s, my-s, s*2, s*2); }
     ctx.restore();
   }
@@ -4603,7 +4600,7 @@ function render() {
       }
     }
     // Ant AURA cosmetic — only when zoomed in (cp>=4 ⇒ bounded ant count on screen) to stay in budget.
-    if (auraAny && cp>=4 && cosmActive()){ const ar=cosmRoster[owner];
+    if (auraAny && cp>=2.5 && cosmActive()){ const ar=cosmRoster[owner];
       if (ar&&ar.aura) cosmGuard('ant-aura', ()=>{ const half=(kind===1?cp:cp/2), c=(kind===1?1:0.5);
         drawEntityAura(px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura, kind===1, lx+c, ly+c, adx, ady); }); }
   }
