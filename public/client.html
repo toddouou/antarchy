@@ -1651,8 +1651,8 @@ function emitAura(wx,wy,rad,spec,isQueen,hx,hy){
     let a, spd, sprite, add=1, life, grow=0, size=psz;
     if(k==='energy'){       a=-Math.PI/2+(Math.random()-0.5)*2.2; spd=0.07+Math.random()*0.12; sprite=auraSprite(col,'flame'); life=420+Math.random()*400; }
     else if(k==='sparkle'){ a=Math.random()*6.283;               spd=0.035+Math.random()*0.07; sprite=auraSprite(col,'star');  life=620+Math.random()*620; size=psz*1.15; }
-    else if(k==='smoke'){   a=-Math.PI/2+(Math.random()-0.5)*2.6; spd=0.022+Math.random()*0.04; sprite=auraSprite(col,'smoke'); life=1100+Math.random()*900; size=psz*1.5; add=0; grow=0.012; }
-    else if(k==='comet'){   const m=(hx||hy); a=m?Math.atan2(-hy,-hx)+(Math.random()-0.5)*0.9:Math.random()*6.283; spd=0.06+Math.random()*0.09; sprite=auraSprite(col,'dot'); life=380+Math.random()*380; }
+    else if(k==='smoke'){   a=-Math.PI/2+(Math.random()-0.5)*1.5; spd=0.03+Math.random()*0.045; sprite=auraSprite(col,'smoke'); life=1100+Math.random()*900; size=psz*1.8; add=0; grow=0.016; }
+    else if(k==='comet'){   const m=(hx||hy); a=m?Math.atan2(-hy,-hx)+(Math.random()-0.5)*0.9:-Math.PI/2+(Math.random()-0.5)*1.8; spd=0.06+Math.random()*0.09; sprite=auraSprite(col,'dot'); life=380+Math.random()*380; }
     else if(k==='halo'){    a=Math.random()*6.283;               spd=0.03+Math.random()*0.055; sprite=auraSprite(col,'dot');  life=720+Math.random()*520; }
     else if(k==='prism'){   a=Math.random()*6.283;               spd=0.06+Math.random()*0.10; sprite=rainbowGlow((t*0.012+j*3)|0); life=500+Math.random()*460; }
     else {                  a=Math.random()*6.283;               spd=0.045+Math.random()*0.075; sprite=auraSprite(col,'dot'); life=520+Math.random()*460; }
@@ -1680,7 +1680,7 @@ function stepAuraParticles(cp){
   ctx.globalCompositeOperation='source-over';                   // soft smoke (fades in then out)
   for(let i=0;i<pcount;i++){ if(Padd[i]) continue;
     const sx=W/2+(Px[i]-view.x)*cp, sy=H/2+(Py[i]-view.y)*cp; if(sx<-140||sy<-140||sx>W+140||sy>H+140) continue;
-    const f=Pl[i]/Pml[i], s=Math.max(2,Psz[i]); ctx.globalAlpha=(1-Math.abs(1-2*f))*0.42;
+    const f=Pl[i]/Pml[i], s=Math.max(2,Psz[i]); ctx.globalAlpha=(1-Math.abs(1-2*f))*0.58;
     ctx.drawImage(_auraSprList[Pspr[i]], sx-s, sy-s, s*2, s*2); }
   ctx.restore();
 }
@@ -1692,10 +1692,10 @@ function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy, hx, hy){
   const AR=isQueen?Math.max(70,rad*1.3):Math.max(22,rad*1.5);  // screen-px aura radius (floored — visible at any zoom)
   // CORE GLOW — a big soft additive bloom that breathes. Queen gets a layered double-glow for richness.
   const glowSpr=_auraSprList[ spec.kind==='prism' ? rainbowGlow((t*0.01)|0) : auraSprite(spec.color,'glow') ];
-  const breathe=red?0.55 : 0.5+0.2*Math.sin(t*0.0024+(wx+wy)), gs=AR*(spec.kind==='energy'?2.4:1.9);
+  const breathe=red?0.55 : 0.5+0.2*Math.sin(t*0.0024+(wx+wy)), gs=AR*(spec.kind==='energy'?1.5:1.2);
   ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.imageSmoothingEnabled=true;
-  ctx.globalAlpha=breathe*(isQueen?0.9:0.62)*q; ctx.drawImage(glowSpr, cx-gs, cy-gs, gs*2, gs*2);
-  if(isQueen){ const gi=AR*1.0; ctx.globalAlpha=Math.min(1,breathe*1.05)*q; ctx.drawImage(glowSpr, cx-gi, cy-gi, gi*2, gi*2); }  // bright inner core
+  ctx.globalAlpha=breathe*(isQueen?0.5:0.38)*q; ctx.drawImage(glowSpr, cx-gs, cy-gs, gs*2, gs*2);     // soft outer halo
+  const gi=AR*(isQueen?0.5:0.38); ctx.globalAlpha=breathe*(isQueen?0.62:0.48)*q; ctx.drawImage(glowSpr, cx-gi, cy-gi, gi*2, gi*2);  // tight hot core
   ctx.restore();
   if(red) return;                                               // reduced motion: glow only
   if(spec.kind==='energy' && isQueen){                          // towering energy column behind the queen
@@ -1704,10 +1704,10 @@ function drawEntityAura(cx, cy, rad, auraId, isQueen, wx, wy, hx, hy){
     ctx.drawImage(_auraSprList[auraSprite(spec.color,'flame')], cx-cw/2, cy-ch+AR*0.4, cw, ch); ctx.restore();
   }
   if(spec.kind==='halo'){                                       // orbiting crown of light motes (not a ring)
-    const n=isQueen?10:6, spr=_auraSprList[auraSprite(spec.color,'dot')], s=Math.max(3,AR*0.14);
+    const n=isQueen?10:6, spr=_auraSprList[auraSprite(spec.color,'dot')], s=Math.max(4,AR*0.2);
     ctx.save(); ctx.globalCompositeOperation='lighter';
-    for(let i=0;i<n;i++){ const a=t/1100+i*(6.283/n), mx=cx+Math.cos(a)*AR*1.1, my=cy+Math.sin(a)*AR*1.1;
-      ctx.globalAlpha=(0.55+0.4*Math.sin(t*0.004+i))*q; ctx.drawImage(spr, mx-s, my-s, s*2, s*2); }
+    for(let i=0;i<n;i++){ const a=t/1100+i*(6.283/n), mx=cx+Math.cos(a)*AR*1.25, my=cy+Math.sin(a)*AR*1.25;
+      ctx.globalAlpha=(0.75+0.25*Math.sin(t*0.004+i))*q; ctx.drawImage(spr, mx-s, my-s, s*2, s*2); }
     ctx.restore();
   }
   emitAura(wx, wy, rad, spec, isQueen, hx||0, hy||0);
