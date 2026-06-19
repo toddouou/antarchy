@@ -1587,14 +1587,20 @@ function _dotSprite(hex){ const R=16, c=document.createElement('canvas'); c.widt
   grd.addColorStop(0,`rgba(${r},${gg},${b},1)`); grd.addColorStop(.35,`rgba(${r},${gg},${b},.55)`);
   grd.addColorStop(1,`rgba(${r},${gg},${b},0)`); g.fillStyle=grd; g.fillRect(0,0,R*2,R*2);
   return _auraSprites.push(c)-1; }
-const AURA={};                                      // id -> { kind, color, rgb:"r,g,b", spr }
-function _defAura(id,kind,color){ AURA[id]={kind,color,rgb:toRGB(color).join(','),spr:_dotSprite(color)}; }
+const AURA={};                                      // id -> { kind, color, _rgb, _spr } (rgb/sprite lazy)
+function _defAura(id,kind,color){ AURA[id]={kind,color,_rgb:null,_spr:-1}; }
 _defAura('au_halo',   'halo',     '#FFD166');       // soft golden ring + orbiting motes
 _defAura('au_phantom','comet',    '#cfe3ff');       // trailing comet sparks (pooled)
 _defAura('au_sparkle','stardust', '#ffffff');       // drifting twinkles (pooled)
 _defAura('au_cyber',  'sonar',    '#00F5D4');       // expanding sonar pulses
 _defAura('au_prism',  'prism',    '#ff66cc');       // refractive rainbow motes (bundle exclusive)
 _defAura('au_frost',  'stardust', '#90E0EF');       // legacy SKU (cut in catalogue Phase 5) → cold dust
+// rgb string + sprite are computed LAZILY on first render — NOT at module-load: `toRGB` reads `rgbCache`
+// and `_dotSprite` builds a canvas, neither of which is ready during top-level execution. Doing it at
+// load threw a TDZ ('Cannot access rgbCache before initialization') that aborted the script → the page
+// froze on the connecting splash. (node --check can't catch this; only executing the script does.)
+function auraRgb(spec){ return spec._rgb || (spec._rgb=toRGB(spec.color).join(',')); }
+function auraSpr(spec){ return spec._spr>=0 ? spec._spr : (spec._spr=_dotSprite(spec.color)); }
 // --- global particle pool (world-space) ---
 const PCAP=900;
 const Px=new Float32Array(PCAP), Py=new Float32Array(PCAP), Pvx=new Float32Array(PCAP), Pvy=new Float32Array(PCAP);
@@ -1610,16 +1616,16 @@ function emitAura(wx,wy,rad,spec,isQueen,hx,hy){
   if(spec.kind==='stardust'){
     if(Math.random()<0.42*big){ const a=Math.random()*Math.PI*2, r=wr*(0.3+Math.random()*0.9);
       _spawn(wx+Math.cos(a)*r, wy+Math.sin(a)*r, (Math.random()-0.5)*0.001*wr, -0.0016*wr*(0.6+Math.random()),
-             800+Math.random()*700, Math.max(2,rad*0.22), spec.spr); }
+             800+Math.random()*700, Math.max(2,rad*0.22), auraSpr(spec)); }
   } else if(spec.kind==='comet'){
     // A real tail: stream sparks BEHIND the heading so a moving ant draws a comet; a stationary queen
     // (no heading) gets a gentle rising-ember bloom instead.
     const moving=(hx||hy), n=isQueen?2:1;
     for(let k=0;k<n;k++){
       if(moving){ const sp=0.0026*wr*(0.7+Math.random()*0.6), jx=(Math.random()-0.5)*0.0012*wr, jy=(Math.random()-0.5)*0.0012*wr;
-        _spawn(wx, wy, -hx*sp+jx, -hy*sp+jy, 420+Math.random()*420, Math.max(2,rad*0.26), spec.spr); }
+        _spawn(wx, wy, -hx*sp+jx, -hy*sp+jy, 420+Math.random()*420, Math.max(2,rad*0.26), auraSpr(spec)); }
       else { const a=Math.random()*Math.PI*2, sp=0.0016*wr*(0.5+Math.random());
-        _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.0014*wr, 520+Math.random()*520, Math.max(2,rad*0.26), spec.spr); }
+        _spawn(wx, wy, Math.cos(a)*sp, Math.sin(a)*sp-0.0014*wr, 520+Math.random()*520, Math.max(2,rad*0.26), auraSpr(spec)); }
     }
   }
 }
@@ -1650,17 +1656,17 @@ function drawAura(g, cx, cy, rad, auraId, isQueen){
   if(effReduce()){ drawStaticRing(g,cx,cy,rad,spec.color||'#fff'); return; }
   const t=performance.now(); g.save(); g.globalCompositeOperation='lighter';
   if(spec.kind==='halo'){
-    const p=0.6+0.4*Math.sin(t/700), col=spec.rgb;
+    const p=0.6+0.4*Math.sin(t/700), col=auraRgb(spec);
     for(let k=0;k<3;k++){ g.strokeStyle=`rgba(${col},${(0.24*p*(1-k*0.3)).toFixed(3)})`;
       g.lineWidth=Math.max(1.5,rad*0.18*(1-k*0.22)); g.beginPath(); g.arc(cx,cy,rad*(1+k*0.12),0,Math.PI*2); g.stroke(); }
-    const n=isQueen?6:3, spr=_auraSprites[spec.spr], s=Math.max(2,rad*0.18);
+    const n=isQueen?6:3, spr=_auraSprites[auraSpr(spec)], s=Math.max(2,rad*0.18);
     for(let i=0;i<n;i++){ const a=t/900+i*(6.283/n), mx=cx+Math.cos(a)*rad*1.05, my=cy+Math.sin(a)*rad*1.05;
       g.globalAlpha=0.85; g.drawImage(spr, mx-s, my-s, s*2, s*2); }
   } else if(spec.kind==='sonar'){
-    const col=spec.rgb, rings=isQueen?3:2;
+    const col=auraRgb(spec), rings=isQueen?3:2;
     for(let k=0;k<rings;k++){ const ph=((t/1400)+k/rings)%1; g.strokeStyle=`rgba(${col},${((1-ph)*0.5).toFixed(3)})`;
       g.lineWidth=Math.max(1.5,rad*0.12); g.beginPath(); g.arc(cx,cy,rad*(0.55+ph*1.7),0,Math.PI*2); g.stroke(); }
-    const spr=_auraSprites[spec.spr], s=Math.max(2,rad*0.22); g.globalAlpha=0.7; g.drawImage(spr,cx-s,cy-s,s*2,s*2);
+    const spr=_auraSprites[auraSpr(spec)], s=Math.max(2,rad*0.22); g.globalAlpha=0.7; g.drawImage(spr,cx-s,cy-s,s*2,s*2);
   } else if(spec.kind==='prism'){
     const n=isQueen?8:5;
     for(let i=0;i<n;i++){ const a=t/700+i*(6.283/n), hue=(t/12+i*(360/n))%360, rr=rad*(1+0.08*Math.sin(t/300+i));
@@ -1669,7 +1675,7 @@ function drawAura(g, cx, cy, rad, auraId, isQueen){
     g.globalAlpha=0.4; g.strokeStyle=`hsla(${(t/12)%360|0},100%,65%,1)`; g.lineWidth=Math.max(1.2,rad*0.12);
     g.beginPath(); g.arc(cx,cy,rad,0,Math.PI*2); g.stroke();
   } else { // comet / stardust — deterministic approximation (for the preview sandbox)
-    const spr=_auraSprites[spec.spr], n=9;
+    const spr=_auraSprites[auraSpr(spec)], n=9;
     for(let i=0;i<n;i++){ const ph=((t/700)+i/n)%1, a=t/500+i*(6.283/n), rr=rad*(0.25+ph*1.0);
       const mx=cx+Math.cos(a)*rr, my=cy+Math.sin(a)*rr-(spec.kind==='stardust'?ph*rad*0.8:0);
       const s=Math.max(2,rad*0.2)*(1-ph*0.7); g.globalAlpha=(1-ph)*0.9; g.drawImage(spr,mx-s,my-s,s*2,s*2); }
