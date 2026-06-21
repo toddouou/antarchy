@@ -506,15 +506,19 @@ if(location.pathname==='/reset' || new URLSearchParams(location.search).get('tok
 const CELL=5;
 const cv=$('stage'), ctx=cv.getContext('2d');
 let view={x:32768,y:32768,zoom:0.5}, panTarget=null, zoomTarget=0.5;
-let WORLD=null, palette={0:'#ffffff'}, SNAP_BASE='', SNAP_ON=false, SNAP_EPOCH=0, SNAP_CHUNK=1024, BASEMAP_URL='';
-let roster=[], ants=[], metros=[], prevAnt=new Map(), lastAntAt=performance.now(), antDt=0;
-// D1: livecam focus anchor — push the action to the right of the hero text on desktop, keep it
-// centred on phones (where the hero text isn't left-pinned). Used by render/drawSnap/drawTrail/setViewport.
-const FOCUS_FY=0.5; function focusFX(){ return window.innerWidth<760 ? 0.5 : 0.75; }
-// D2: bounded "fresh paint" trail accumulated from the live ant feed (no tile egress) — see applyAnts/drawTrail.
-const trail=new Map(), TRAIL_CAP=20000;
+let WORLD=null, palette={0:'#ffffff'}, SNAP_BASE='', SNAP_ON=false, SNAP_EPOCH=0, SNAP_CHUNK=1024;
+let roster=[], ants=[], metros=[], monuments=[], prevAnt=new Map(), lastAntAt=performance.now(), antDt=0;
+const qById=new Map();   // id → queen (besieged detection, director targets, ant ownership colour)
+// Livecam focus anchor — push the action right of the hero text on desktop, centre it on phones
+// (where the hero text isn't left-pinned). Used by every draw layer + setViewport so they share one
+// world→screen transform: screen = anchor + (world − view)·cp.
+const FOCUS_FY=0.46; function focusFX(){ return window.innerWidth<760 ? 0.5 : 0.7; }
+// Bounded "fresh paint" trail accumulated from the live ant feed (no tile egress) — see applyAnts.
+const trail=new Map(), TRAIL_CAP=26000;
+const sparks=[];                       // transient battle-clash particles (world-space; see drawSparks)
+let callout={mode:'',color:'#fff',born:0};   // brief on-canvas battle title-card (see drawCallout)
 const _td=new TextDecoder();
-const osmCache=new Map(), snapCache=new Map(); const OSM_RETRY=20000, SNAP_RETRY=15000;
+const snapCache=new Map(); const SNAP_RETRY=15000;
 
 function resize(){ const r=cv.getBoundingClientRect(), d=window.devicePixelRatio||1;
   cv.width=Math.max(1,r.width*d); cv.height=Math.max(1,r.height*d); ctx.setTransform(d,0,0,d,0,0); }
@@ -555,24 +559,27 @@ function applyAnts(m){
   const np=new Map(); for(const a of ants) np.set(a[0],{x:a[1],y:a[2]}); prevAnt=np;
   ants=m.ants||[]; const now=performance.now(), dt=now-lastAntAt;
   if(dt>4&&dt<500) antDt=antDt?antDt*0.6+dt*0.4:dt; lastAntAt=now;
-  // D2: record each ant's tile as freshly-claimed territory (bounded, oldest-evicted).
+  // Record each ant's tile as freshly-claimed territory (bounded, oldest-evicted) so painted ground
+  // visibly grows in real time on top of the slow-refresh snapshot.
   for(const a of ants){ const k=a[1]+'_'+a[2];
     if(trail.size>=TRAIL_CAP && !trail.has(k)) trail.delete(trail.keys().next().value);
     trail.set(k,{x:a[1],y:a[2],owner:a[5]}); }
 }
+// Rebuild the id→queen index + colour palette whenever a fresh roster arrives (WS or free poll).
+function reindexRoster(){ qById.clear(); for(const q of roster){ qById.set(q.id,q); if(q.color) palette[q.id]=q.color; } }
 function handle(m){
   switch(m.t){
     case 'logged-in':{ const me=m.me||{};
-      WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY};
+      WORLD={w:me.worldW,h:me.worldH,spawnX:me.spawnX,spawnY:me.spawnY};   // no geo for guests (concealed)
       if(me.snapshotBase!=null){ SNAP_BASE=me.snapshotBase; SNAP_ON=true; }  // ''=same-origin (dev /snap)
       if(me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells;
       if(me.epoch!=null){ SNAP_EPOCH=me.epoch; snapCache.clear(); }
-      if(me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
       if(me.id!=null&&me.color) palette[me.id]=me.color;
       if(WORLD&&view.x===32768){ view.x=WORLD.spawnX; view.y=WORLD.spawnY; }
       break; }
-    case 'queen-roster':{ roster=m.queens||[]; for(const q of roster) palette[q.id]=q.color;
+    case 'queen-roster':{ roster=m.queens||[]; reindexRoster();
       if(!director.started&&roster.length) startDirector(); break; }
+    case 'monuments': monuments=m.list||[]; break;
     case 'regions': metros=m.metros||[]; break;   // metro centres (tile x/y + squared radius r2)
     case 'server-stats': applyStats(m); break;
     case 'spectator-full': goFreeFallback(); break;
@@ -589,207 +596,291 @@ function fmt(n){ if(n==null) return '—'; if(n>=1e6) return (n/1e6).toFixed(1)+
 //-- FREE fallback: guest cap hit. Poll the cached roster so the map still lives; no WS ant feed. --
 let freeMode=false;
 function goFreeFallback(){ if(freeMode) return; freeMode=true; try{ws.close();}catch(_){}
-  if(!WORLD){ fetch('/world-info').then(r=>r.json()).then(w=>{ WORLD={w:w.worldW||w.world_w,h:w.worldH||w.world_h,geo:w.geo,spawnX:w.spawnX||w.spawn_x,spawnY:w.spawnY||w.spawn_y}; if(WORLD&&view.x===32768){view.x=WORLD.spawnX;view.y=WORLD.spawnY;} }).catch(()=>{}); }
-  const poll=()=>{ fetch('/api/roster').then(r=>r.json()).then(d=>{ roster=d.queens||[]; for(const q of roster) palette[q.id]=q.color; if(!director.started&&roster.length) startDirector(); }).catch(()=>{}); };
+  if(!WORLD){ fetch('/world-info').then(r=>r.json()).then(w=>{ WORLD={w:w.worldW||w.world_w,h:w.worldH||w.world_h,spawnX:w.spawnX||w.spawn_x,spawnY:w.spawnY||w.spawn_y}; if(WORLD&&view.x===32768){view.x=WORLD.spawnX;view.y=WORLD.spawnY;} }).catch(()=>{}); }
+  const poll=()=>{ fetch('/api/roster').then(r=>r.json()).then(d=>{ roster=d.queens||[]; reindexRoster(); if(!director.started&&roster.length) startDirector(); }).catch(()=>{}); };
   poll(); setInterval(poll,5000);
   fetch('/health').then(r=>r.json()).then(h=>applyStats({online:h.connected,ants:h.ants,queens:h.queens,spectators:0})).catch(()=>{});
 }
 
 //==================================================================================================
-//  GEO PROJECTION + LAYER RENDERING  (ported from the game client — identical Mercator math)
+//  STYLIZED IN-GAME RENDERER  — no basemap / no real geography (privacy): a living tactical world.
+//  Every layer shares one world→screen transform: X = ax + (worldX − view.x)·cp  (ax,ay = focus
+//  anchor). Back-to-front: backdrop (space + map grid) → territory (snapshot PNGs + live trail) →
+//  vignette → monuments → queens (auras/HP) → ants → clash sparks → battle call-out.
 //==================================================================================================
-function osmTileUrl(z,x,y){ const s=['a','b','c'][(x+y)%3];
-  if(BASEMAP_URL) return BASEMAP_URL.replace('{s}',s).replace('{z}',z).replace('{x}',x).replace('{y}',y);
-  return `https://${s}.tile.openstreetmap.org/${z}/${x}/${y}.png`; }
 function getImg(cache,key,url,retry){ const c=cache.get(key);
   if(c){ if(!(c.failed&&performance.now()-c.failedAt>retry)) return c; }
   const img=new Image(); img.crossOrigin='anonymous';
   const e={img,loaded:false,failed:false,failedAt:0};
   img.onload=()=>{e.loaded=true;e.failed=false;}; img.onerror=()=>{e.failed=true;e.failedAt=performance.now();};
   img.src=url; cache.set(key,e); if(cache.size>1024) cache.delete(cache.keys().next().value); return e; }
-function gameToOsmTile(tx,ty,n,geo,cl){ const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
-  const mY=mY0+(WORLD.spawnY-ty)*geo.tileMeters/(111111*(180/Math.PI)*cl);
-  const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cl);
-  return {x:Math.max(0,Math.min(n-1,Math.floor(((lon+180)/360)*n))),y:Math.max(0,Math.min(n-1,Math.floor((1-mY/Math.PI)*n/2)))}; }
-function osmCorner(ox,oy,n,geo,cl){ const lon=ox/n*360-180, mY=Math.PI*(1-2*oy/n);
-  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
-  return {tx:WORLD.spawnX+(lon-geo.capitolLon)*111111*cl/geo.tileMeters,
-          ty:WORLD.spawnY-(mY-mY0)*111111*(180/Math.PI)*cl/geo.tileMeters}; }
-function drawOsm(cp,W,H){ if(!WORLD||!WORLD.geo) return; const geo=WORLD.geo, cl=Math.cos(geo.capitolLat*Math.PI/180)||1;
-  const z=Math.max(1,Math.min(18,Math.round(Math.log2(cp*40075016.686*cl/(geo.tileMeters*256))))), n=Math.pow(2,z);
-  const gx0=view.x-W/(2*cp),gy0=view.y-H/(2*cp),gx1=view.x+W/(2*cp),gy1=view.y+H/(2*cp);
-  const tl=gameToOsmTile(gx0,gy0,n,geo,cl), br=gameToOsmTile(gx1,gy1,n,geo,cl);
-  for(let ox=tl.x-1;ox<=br.x+1;ox++) for(let oy=tl.y-1;oy<=br.y+1;oy++){
-    if(ox<0||oy<0||ox>=n||oy>=n) continue;
-    const e=getImg(osmCache,`${z}/${ox}/${oy}`,osmTileUrl(z,ox,oy),OSM_RETRY); if(!e.loaded) continue;
-    const a=osmCorner(ox,oy,n,geo,cl), b=osmCorner(ox+1,oy+1,n,geo,cl);
-    const px=(W/2+(a.tx-view.x)*cp)|0, py=(H/2+(a.ty-view.y)*cp)|0;
-    const pw=((W/2+(b.tx-view.x)*cp)|0)-px, ph=((H/2+(b.ty-view.y)*cp)|0)-py;
-    if(pw>0&&ph>0) ctx.drawImage(e.img,px,py,pw,ph); } }
-function drawSnap(cp,W,H){ if(!SNAP_ON||!WORLD) return;
-  const ax=W*focusFX(), ay=H*FOCUS_FY;
+function toRGB(hex){ hex=hex||'#9b3027'; if(hex[0]==='#') hex=hex.slice(1);
+  if(hex.length===3) hex=hex.split('').map(c=>c+c).join(''); const n=parseInt(hex,16);
+  return [(n>>16)&255,(n>>8)&255,n&255]; }
+function withA(hex,a){ const [r,g,b]=toRGB(hex); return `rgba(${r},${g},${b},${a})`; }
+function lighten(hex,f){ let [r,g,b]=toRGB(hex); r+=(255-r)*f; g+=(255-g)*f; b+=(255-b)*f; return `rgb(${r|0},${g|0},${b|0})`; }
+function hpColor(t){ const r=Math.round(255*(1-t)+60*t), g=Math.round(60*(1-t)+210*t); return `rgb(${r},${g},70)`; }
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function isDark(){ return document.documentElement.dataset.theme!=='light'; }
+function niceStep(t){ return Math.max(256, Math.pow(2, Math.ceil(Math.log2(Math.max(1,t)/256)))*256); }
+
+// Parallax starfield — fixed screen-fraction seeds, drifted by the camera at a fraction of its speed.
+const stars=[]; for(let i=0;i<170;i++) stars.push({x:Math.random(),y:Math.random(),z:0.2+Math.random()*0.8,r:Math.random()});
+
+// 1) Deep stylized backdrop: depth gradient + drifting nebula haze + parallax stars + world map grid.
+function drawBackdrop(cp,W,H,ax,ay){
+  const dark=isDark(), now=performance.now();
+  let g=ctx.createLinearGradient(0,0,0,H);
+  if(dark){ g.addColorStop(0,'#0b1018'); g.addColorStop(0.55,'#070a11'); g.addColorStop(1,'#04060a'); }
+  else    { g.addColorStop(0,'#eef1f7'); g.addColorStop(1,'#dde3ec'); }
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // drifting depth haze (3 soft blobs)
+  const tm=now*0.00006;
+  ctx.save(); ctx.globalCompositeOperation=dark?'lighter':'multiply';
+  const hz=dark?['rgba(40,80,140,0.11)','rgba(95,45,125,0.08)','rgba(30,115,125,0.09)']
+               :['rgba(120,150,200,0.05)','rgba(165,140,200,0.05)','rgba(120,170,190,0.05)'];
+  for(let i=0;i<3;i++){ const fx=(0.5+0.42*Math.sin(tm+i*2.1))*W, fy=(0.5+0.32*Math.cos(tm*0.8+i*1.7))*H;
+    const rr=Math.max(W,H)*0.55, rg=ctx.createRadialGradient(fx,fy,0,fx,fy,rr);
+    rg.addColorStop(0,hz[i]); rg.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=rg; ctx.fillRect(0,0,W,H); }
+  ctx.restore();
+  // parallax stars (dark only — reads as deep space)
+  if(dark){ const t2=now*0.001;
+    for(const s of stars){ const k=0.04*s.z;
+      const px=((s.x*W - view.x*cp*k)%W+W)%W, py=((s.y*H - view.y*cp*k)%H+H)%H;
+      const tw=0.5+0.5*Math.sin(t2*1.6*(0.4+s.r)+s.x*40);
+      ctx.globalAlpha=(0.22+0.6*s.z)*tw; ctx.fillStyle='#cfe0f8';
+      const r=s.z>0.78?1.7:1; ctx.fillRect(px|0,py|0,r,r); }
+    ctx.globalAlpha=1; }
+  // world-anchored map grid — the "flying across the map" cue (minor + brighter major lines).
+  const gxL=view.x-ax/cp, gxR=view.x+(W-ax)/cp, gyT=view.y-ay/cp, gyB=view.y+(H-ay)/cp;
+  const drawGrid=(step,style)=>{ ctx.beginPath();
+    for(let wx=Math.ceil(gxL/step)*step; wx<=gxR; wx+=step){ const X=(ax+(wx-view.x)*cp)|0; ctx.moveTo(X+0.5,0); ctx.lineTo(X+0.5,H); }
+    for(let wy=Math.ceil(gyT/step)*step; wy<=gyB; wy+=step){ const Y=(ay+(wy-view.y)*cp)|0; ctx.moveTo(0,Y+0.5); ctx.lineTo(W,Y+0.5); }
+    ctx.strokeStyle=style; ctx.lineWidth=1; ctx.stroke(); };
+  const g0=niceStep(78/cp);
+  drawGrid(g0,  dark?'rgba(120,165,220,0.055)':'rgba(40,70,110,0.06)');
+  drawGrid(g0*4,dark?'rgba(130,180,240,0.13)' :'rgba(40,70,110,0.13)');
+}
+
+// 2a) Painted territory from the FREE snapshot PNGs (transparent where unclaimed → backdrop shows).
+function drawSnap(cp,W,H,ax,ay){ if(!SNAP_ON||!WORLD) return;
   const gx0=view.x-ax/cp,gy0=view.y-ay/cp,gx1=view.x+(W-ax)/cp,gy1=view.y+(H-ay)/cp;
   const cx0=Math.floor(gx0/SNAP_CHUNK),cy0=Math.floor(gy0/SNAP_CHUNK),cx1=Math.floor(gx1/SNAP_CHUNK),cy1=Math.floor(gy1/SNAP_CHUNK);
   if((cx1-cx0+1)*(cy1-cy0+1)>400) return;
-  ctx.globalAlpha=0.82;
+  ctx.globalAlpha=0.9; ctx.imageSmoothingEnabled=false;
   for(let cx=cx0;cx<=cx1;cx++) for(let cy=cy0;cy<=cy1;cy++){ if(cx<0||cy<0) continue;
     const e=getImg(snapCache,`${SNAP_EPOCH}/${cx}/${cy}`,`${SNAP_BASE}/snap/${SNAP_EPOCH}/0/${cx}/${cy}.png`,SNAP_RETRY);
     if(!e.loaded) continue; const wx=cx*SNAP_CHUNK,wy=cy*SNAP_CHUNK;
     const px=(ax+(wx-view.x)*cp)|0, py=(ay+(wy-view.y)*cp)|0, sz=(SNAP_CHUNK*cp)|0;
-    if(sz>0){ ctx.imageSmoothingEnabled=false; ctx.drawImage(e.img,px,py,sz+1,sz+1); } }
+    if(sz>0) ctx.drawImage(e.img,px,py,sz+1,sz+1); }
   ctx.globalAlpha=1; }
-// D2: draw the live "fresh paint" cells the ant feed has walked, in full territory colour, over the
-// (slow-refreshing) R2 snapshot — so territory visibly grows in real time. Bounded by TRAIL_CAP.
-function drawTrail(cp,W,H){ if(!WORLD||!trail.size) return;
-  const ax=W*focusFX(), ay=H*FOCUS_FY, sz=Math.max(1.5,cp)|0;
+// 2b) Live "fresh paint" the ant feed has walked, in full territory colour over the slow snapshot.
+function drawTrail(cp,W,H,ax,ay){ if(!WORLD||!trail.size) return;
+  const sz=Math.max(1.5,cp)|0;
   for(const c of trail.values()){
     const px=(ax+(c.x-view.x)*cp)|0, py=(ay+(c.y-view.y)*cp)|0;
     if(px<-sz||py<-sz||px>W||py>H) continue;
     ctx.fillStyle=palette[c.owner]||'#9b3027'; ctx.fillRect(px,py,sz,sz); } }
-function toRGB(hex){ hex=hex||'#9b3027'; if(hex[0]==='#') hex=hex.slice(1);
-  if(hex.length===3) hex=hex.split('').map(c=>c+c).join(''); const n=parseInt(hex,16);
-  return [(n>>16)&255,(n>>8)&255,n&255]; }
 
-function render(){
-  const W=cv.clientWidth, H=cv.clientHeight, cp=CELL*view.zoom;
-  const ax=W*focusFX(), ay=H*FOCUS_FY;   // D1: focus anchor (action right of the hero text on desktop)
-  // Theme-aware backdrop (dark/light). The public spectator view deliberately draws NO basemap so a
-  // top player's real-world location can't be read off the map — only their territory + queens show.
-  ctx.clearRect(0,0,W,H); ctx.fillStyle=BG_COLOR; ctx.fillRect(0,0,W,H);
-  if(WORLD){ drawSnap(cp,W,H); drawTrail(cp,W,H); }
-  // queens
-  for(const q of roster){
-    const px=ax+(q.x-view.x)*cp, py=ay+(q.y-view.y)*cp;
-    if(px<-40||py<-40||px>W+40||py>H+40) continue;
-    const s=Math.max(8,Math.min(26,cp*(2+q.level*0.15)));
-    ctx.fillStyle=q.color||'#ddd';
-    ctx.fillRect((px-s/2)|0,(py-s/2)|0,s|0,s|0);
-    ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=2; ctx.strokeRect((px-s/2)|0,(py-s/2)|0,s|0,s|0);
-    if(cp>1.2){ ctx.font='10px IBM Plex Mono'; ctx.textAlign='center';
-      const lbl='♛ '+(q.name||''); ctx.lineJoin='round'; ctx.lineWidth=3;
-      ctx.strokeStyle='rgba(0,0,0,.85)'; ctx.strokeText(lbl,px,py-s/2-4);
-      ctx.fillStyle='#fff'; ctx.fillText(lbl,px,py-s/2-4); }
-  }
-  // ants (interpolated, color by owner)
+// 3) Atmospheric vignette — frames the action; subtle in light theme.
+function drawVignette(W,H,ax,ay){ const dark=isDark(), r=Math.max(W,H)*0.78;
+  const g=ctx.createRadialGradient(ax,ay,r*0.32,ax,ay,r);
+  g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,dark?'rgba(2,4,8,0.62)':'rgba(40,50,70,0.18)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+
+// 4) Monuments — king-of-the-hill landmarks: capture ring, pulsing glow, diamond, name + holder.
+function drawMonuments(cp,W,H,ax,ay){ if(!monuments.length) return; const now=performance.now();
+  for(const mo of monuments){ const X=ax+(mo.x-view.x)*cp, Y=ay+(mo.y-view.y)*cp, rr=Math.sqrt(mo.r2||0)*cp;
+    if(X<-rr-50||Y<-rr-50||X>W+rr+50||Y>H+rr+50) continue;
+    const held=mo.holderId!=null, col=mo.color||'#ffd166', s=Math.max(7,Math.min(20,cp*5));
+    if(rr>3){ ctx.beginPath(); ctx.arc(X,Y,rr,0,6.2832); ctx.globalAlpha=0.5; ctx.lineWidth=1.5;
+      ctx.strokeStyle=held?col:'rgba(255,209,102,0.6)'; ctx.stroke(); ctx.globalAlpha=1; }
+    const pul=0.6+0.4*Math.sin(now*0.004);
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const gg=ctx.createRadialGradient(X,Y,0,X,Y,s*2.6); gg.addColorStop(0,withA(col,0.5*pul)); gg.addColorStop(1,withA(col,0));
+    ctx.fillStyle=gg; ctx.fillRect(X-s*2.6,Y-s*2.6,s*5.2,s*5.2); ctx.restore();
+    ctx.beginPath(); ctx.moveTo(X,Y-s); ctx.lineTo(X+s*0.72,Y); ctx.lineTo(X,Y+s); ctx.lineTo(X-s*0.72,Y); ctx.closePath();
+    ctx.fillStyle=col; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,0.65)'; ctx.stroke();
+    ctx.textAlign='center'; ctx.lineJoin='round';
+    const nm=(mo.name||'MONUMENT').slice(0,22); ctx.font='700 11px IBM Plex Mono'; ctx.lineWidth=3;
+    ctx.strokeStyle='rgba(0,0,0,0.85)'; ctx.strokeText(nm,X,Y-s-7); ctx.fillStyle='#fff'; ctx.fillText(nm,X,Y-s-7);
+    ctx.font='10px IBM Plex Mono'; const hl=held?('♛ '+(mo.holder||'')):'UNCLAIMED'; ctx.lineWidth=3;
+    ctx.strokeStyle='rgba(0,0,0,0.85)'; ctx.strokeText(hl,X,Y+s+13); ctx.fillStyle=held?col:'#9aa3ad'; ctx.fillText(hl,X,Y+s+13); }
+}
+
+// count enemy ants within `rad` tiles of a queen (early-out at 8) — drives the besieged ring.
+function enemiesNear(q,rad){ const r2=rad*rad; let n=0;
+  for(const a of ants){ if(a[5]===q.id) continue; const dx=a[1]-q.x, dy=a[2]-q.y; if(dx*dx+dy*dy<=r2){ if(++n>=8) break; } } return n; }
+
+// 5) Queens — aura glow scaled by level+health, rounded body, crown, HP/shield bars, besieged ring.
+function drawQueens(cp,W,H,ax,ay){ const now=performance.now();
+  for(const q of roster){ const sz=q.size||2, cxw=q.x+sz/2, cyw=q.y+sz/2;
+    const X=ax+(cxw-view.x)*cp, Y=ay+(cyw-view.y)*cp; if(X<-120||Y<-120||X>W+120||Y>H+120) continue;
+    const lvl=q.level||1, col=q.color||'#ddd';
+    const hpR=(q.maxHp>0)?Math.max(0,Math.min(1,q.hp/q.maxHp)):1;
+    const m=Math.max(9,Math.min(42,cp*sz*1.3+lvl*0.25));
+    // aura
+    const pul=0.78+0.22*Math.sin(now*0.005+q.id), R=m*(1.8+lvl*0.03)*pul;
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const gg=ctx.createRadialGradient(X,Y,0,X,Y,R);
+    gg.addColorStop(0,withA(col,0.30+0.25*hpR)); gg.addColorStop(0.5,withA(col,0.12)); gg.addColorStop(1,withA(col,0));
+    ctx.fillStyle=gg; ctx.fillRect(X-R,Y-R,R*2,R*2); ctx.restore();
+    // besieged ring
+    if(enemiesNear(q,90)){ const rp=0.5+0.5*Math.sin(now*0.012);
+      ctx.beginPath(); ctx.arc(X,Y,m*1.25+4+rp*4,0,6.2832); ctx.strokeStyle=`rgba(255,60,70,${0.35+0.4*rp})`; ctx.lineWidth=2; ctx.stroke(); }
+    // body
+    const bs=m, x0=(X-bs/2)|0, y0=(Y-bs/2)|0;
+    const bg=ctx.createLinearGradient(x0,y0,x0,y0+bs); bg.addColorStop(0,lighten(col,0.28)); bg.addColorStop(1,col);
+    ctx.fillStyle=bg; roundRect(x0,y0,bs,bs,Math.max(2,bs*0.18)); ctx.fill();
+    ctx.lineWidth=Math.max(1.5,bs*0.08); ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.stroke();
+    // crown
+    ctx.fillStyle='#ffe28a'; ctx.font=`${Math.max(9,bs*0.66)|0}px IBM Plex Mono`; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('♛',X,Y+1); ctx.textBaseline='alphabetic';
+    // HP + shield bars
+    if(cp>0.85){ const bw=Math.max(20,bs*1.6), bx=X-bw/2, by=Y+bs/2+4, bh=3;
+      ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(bx-1,by-1,bw+2,bh+2);
+      ctx.fillStyle=hpColor(hpR); ctx.fillRect(bx,by,bw*hpR,bh);
+      if(q.shield>0){ const sR=Math.min(1,q.shield/(q.maxHp||q.shield)); ctx.fillStyle='rgba(73,182,255,0.92)'; ctx.fillRect(bx,by-bh-1,bw*sR,bh-1); } }
+    // name + level
+    if(cp>1.0){ const lbl='♛ '+(q.name||'queen').slice(0,18)+'  L'+lvl; ctx.font='700 11px IBM Plex Mono'; ctx.textAlign='center';
+      ctx.lineJoin='round'; ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.85)'; ctx.strokeText(lbl,X,y0-6);
+      ctx.fillStyle='#fff'; ctx.fillText(lbl,X,y0-6); }
+  } }
+
+// 6) Ants — Manhattan-aware interpolation, brute emphasis, clash sparks near the framed enemy queen.
+function spawnSpark(wx,wy,col){ if(sparks.length>240) return; const a=Math.random()*6.2832, sp=0.6+Math.random()*1.6;
+  sparks.push({x:wx,y:wy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:0,max:380+Math.random()*260,col:col||'#ffd27f'}); }
+function drawAnts(cp,W,H,ax,ay){
   const tickI=antDt||(1000/15), t=Math.min(1,(performance.now()-lastAntAt)/tickI);
-  for(const a of ants){ const [id,ax,ay,adx,ady,owner,kind]=a;
-    const p=prevAnt.get(id); let lx=ax,ly=ay;
-    if(p){ const dxT=ax-p.x,dyT=ay-p.y; let tr=(Math.abs(dxT)+Math.abs(dyT))*t;
+  const sq=director.shotQueen;
+  for(const a of ants){ const id=a[0],gx=a[1],gy=a[2],adx=a[3],ady=a[4],owner=a[5],kind=a[6];
+    const p=prevAnt.get(id); let lx=gx,ly=gy;
+    if(p){ const dxT=gx-p.x,dyT=gy-p.y; let tr=(Math.abs(dxT)+Math.abs(dyT))*t;
       if(adx!==0){ const ys=Math.min(tr,Math.abs(dyT)); ly=p.y+Math.sign(dyT)*ys; tr-=ys; lx=p.x+Math.sign(dxT)*Math.min(tr,Math.abs(dxT)); }
       else{ const xs=Math.min(tr,Math.abs(dxT)); lx=p.x+Math.sign(dxT)*xs; tr-=xs; ly=p.y+Math.sign(dyT)*Math.min(tr,Math.abs(dyT)); } }
-    const px=ax+(lx-view.x)*cp, py=ay+(ly-view.y)*cp;
-    if(px<-8||py<-8||px>W+8||py>H+8) continue;
-    const [r,g,b]=toRGB(palette[owner]); ctx.fillStyle=`rgb(${(r*0.5)|0},${(g*0.5)|0},${(b*0.5)|0})`;
-    if(kind===1){ const bs=Math.max(3,cp*2); ctx.fillRect(px|0,py|0,bs|0,bs|0); }
-    else{ const sz=Math.max(1.5,cp*0.9); ctx.fillRect(px|0,py|0,sz|0,sz|0); }
-  }
+    const X=ax+(lx-view.x)*cp, Y=ay+(ly-view.y)*cp; if(X<-8||Y<-8||X>W+8||Y>H+8) continue;
+    if(sq&&owner!==sq.id){ const dx=gx-(sq.x+(sq.size||2)/2), dy=gy-(sq.y+(sq.size||2)/2);
+      if(dx*dx+dy*dy<36 && (adx||ady) && Math.random()<0.16) spawnSpark(lx,ly,palette[owner]); }
+    const [r,g,b]=toRGB(palette[owner]);
+    if(kind===1){ const bs=Math.max(3,cp*2.2); ctx.fillStyle=`rgb(${r},${g},${b})`; ctx.fillRect((X-bs/2)|0,(Y-bs/2)|0,bs|0,bs|0);
+      ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.strokeRect((X-bs/2)|0,(Y-bs/2)|0,bs|0,bs|0); }
+    else{ const s=Math.max(1.4,cp*0.95); ctx.fillStyle=`rgb(${(r*0.72)|0},${(g*0.72)|0},${(b*0.72)|0})`; ctx.fillRect((X-s/2)|0,(Y-s/2)|0,s|0,s|0); }
+  } }
+function drawSparks(cp,W,H,ax,ay,dt){ if(!sparks.length) return;
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(let i=sparks.length-1;i>=0;i--){ const s=sparks[i]; s.life+=dt; if(s.life>=s.max){ sparks.splice(i,1); continue; }
+    s.x+=s.vx*dt*0.03; s.y+=s.vy*dt*0.03; const k=1-s.life/s.max;
+    const X=ax+(s.x-view.x)*cp, Y=ay+(s.y-view.y)*cp, [r,g,b]=toRGB(s.col), rr=Math.max(1,cp*0.8*k+0.6);
+    ctx.fillStyle=`rgba(${r},${g},${b},${0.72*k})`; ctx.fillRect((X-rr)|0,(Y-rr)|0,(rr*2)|0,(rr*2)|0); }
+  ctx.restore(); }
+
+// 7) Battle call-out — brief title-card on shots flagged by the director (siege / brute at the gates).
+function drawCallout(W,H,now){ if(!callout.born) return; const age=now-callout.born; if(age>2600) return;
+  const al=Math.min(Math.min(1,age/220),Math.min(1,(2600-age)/420));
+  ctx.save(); ctx.globalAlpha=al; ctx.textAlign='center'; ctx.font='700 16px IBM Plex Mono'; ctx.lineJoin='round';
+  ctx.lineWidth=4; ctx.strokeStyle='rgba(0,0,0,0.8)'; ctx.strokeText(callout.mode,W*focusFX(),H*0.2);
+  ctx.fillStyle=callout.color; ctx.fillText(callout.mode,W*focusFX(),H*0.2); ctx.restore(); }
+
+function render(now,dt){
+  const W=cv.clientWidth, H=cv.clientHeight, cp=CELL*view.zoom, ax=W*focusFX(), ay=H*FOCUS_FY;
+  ctx.clearRect(0,0,W,H);
+  drawBackdrop(cp,W,H,ax,ay);
+  if(WORLD){ drawSnap(cp,W,H,ax,ay); drawTrail(cp,W,H,ax,ay); }
+  drawVignette(W,H,ax,ay);
+  drawMonuments(cp,W,H,ax,ay);
+  drawQueens(cp,W,H,ax,ay);
+  drawAnts(cp,W,H,ax,ay);
+  drawSparks(cp,W,H,ax,ay,dt);
+  drawCallout(W,H,now);
 }
 
 //==================================================================================================
-//  SPECTATOR DIRECTOR — weighted "shot" selection: high-level queens in the 10 metro regions first,
-//  then largest queens worldwide + their workers, plus interesting shots (workers near an enemy
-//  queen, brutes on the move). Fewer transitions = less load → one tunable dwell constant.
+//  SPECTATOR DIRECTOR — weighted "shot" selection cycling queens → workers → brutes → monuments,
+//  with priority on sieges + metro queens, the occasional wide establishing sweep, and a queen→worker
+//  hand-off mid-shot so a frame is never static. One tunable dwell constant.
 //==================================================================================================
-// ---- Director config (tune these) --------------------------------------------------------------
-const SHOT_DURATION_MS=12000;            // single dwell-per-shot constant — raise to reduce transitions
-const SHOT_WEIGHTS={ metroQueen:100, worldQueen:40, workerNearEnemy:60, bruteMoving:50, bruteMovingNearEnemy:90 };
-const QUEEN_LEVEL_BONUS=4;               // extra weight per queen level (favours high-level queens)
-const ENEMY_NEAR_TILES=260, ENEMY_NEAR_R2=ENEMY_NEAR_TILES*ENEMY_NEAR_TILES; // "near a queen" radius²
-const ANT_SCAN_CAP=4000;                 // bound the per-shot ant scan for interesting moments
-// STUB: per-metro points of interest (downtowns / landmarks / POIs). Fill with {name,lat,lon} later;
-// until then metro shots centre on the queen (the de-facto "downtown"). Keyed by exact metro name.
-const METRO_POIS={ /* 'New York':[{name:'Midtown',lat:40.7549,lon:-73.984}], 'Paris':[...], ... */ };
-const director={started:false,mode:'idle',followId:null,recent:[]};
-function setViewport(){ if(!WORLD) return; const W=cv.clientWidth,H=cv.clientHeight,cp=CELL*view.zoom;
+const SHOT_MS=11000;
+const W_METRO=100, W_WORLD=42, W_SIEGE=120, W_BRUTE=55, W_BRUTE_ENEMY=95, W_WORKER_ENEMY=62, W_MONUMENT=70, W_ESTABLISH=22;
+const QLEVEL_BONUS=4;
+const ENEMY_NEAR=260, ENEMY_NEAR2=ENEMY_NEAR*ENEMY_NEAR;   // "near a queen" radius²
+const ANT_SCAN_CAP=4000;
+const director={started:false,mode:'idle',followId:null,recent:[],shotQueen:null};
+let lastVS=0;
+function setViewport(){ if(!WORLD||!ws||ws.readyState!==1) return; const W=cv.clientWidth,H=cv.clientHeight,cp=CELL*view.zoom;
   const ax=W*focusFX(), ay=H*FOCUS_FY;   // match the render anchor so off-centre ants still load
   const x0=Math.floor(view.x-ax/cp),y0=Math.floor(view.y-ay/cp),x1=Math.ceil(view.x+(W-ax)/cp),y1=Math.ceil(view.y+(H-ay)/cp);
-  if(ws&&ws.readyState===1) ws.send(JSON.stringify({t:'view-set',x0,y0,x1,y1})); }
-let lastVS=0;
+  ws.send(JSON.stringify({t:'view-set',x0,y0,x1,y1})); }
 function startDirector(){ if(director.started) return; director.started=true; nextShot(); }
 
 function dist2(ax,ay,bx,by){ const dx=ax-bx,dy=ay-by; return dx*dx+dy*dy; }
 function nearestQueen(x,y){ let best=null,bd=1e18; for(const q of roster){ const d=dist2(x,y,q.x,q.y); if(d<bd){bd=d;best=q;} } return best?{q:best,d2:bd}:null; }
 function metroForQueen(q){ for(const m of metros){ if((m.r2||0)>0 && dist2(q.x,q.y,m.x,m.y)<=m.r2) return m; } return null; }
+function besiegers(q){ let n=0; for(const a of ants){ if(a[5]===q.id) continue; if(dist2(a[1],a[2],q.x,q.y)<=ENEMY_NEAR2){ if(++n>=12) break; } } return n; }
 
-// lat/lon → world tile (inverse of the client Mercator above; used for metro POIs).
-function llToTile(lat,lon){ if(!WORLD||!WORLD.geo) return null; const geo=WORLD.geo, cl=Math.cos(geo.capitolLat*Math.PI/180)||1;
-  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4)), mY=Math.log(Math.tan(lat*Math.PI/360+Math.PI/4));
-  return { x:WORLD.spawnX+(lon-geo.capitolLon)*111111*cl/geo.tileMeters,
-           y:WORLD.spawnY-(mY-mY0)*111111*(180/Math.PI)*cl/geo.tileMeters }; }
-// Favour a downtown/landmark POI when we have data; else frame the queen (downtown stub).
-function poiTarget(metro,q){ const pois=METRO_POIS[metro.name];
-  if(pois&&pois.length){ let best=null,bd=1e18; for(const p of pois){ const t=llToTile(p.lat,p.lon); if(!t) continue;
-    const d=dist2(t.x,t.y,q.x,q.y); if(d<bd){bd=d;best=t;} } if(best) return best; }
-  return {x:q.x,y:q.y}; }
-
-// Build the weighted candidate shot list from the current roster + ant frame.
+// Build the weighted candidate shot list from the current roster + monuments + ant frame.
 function buildShots(){
   const shots=[];
-  for(const q of roster){ const m=metroForQueen(q);
-    if(m){ const t=poiTarget(m,q);
-      shots.push({key:'q'+q.id,weight:SHOT_WEIGHTS.metroQueen+q.level*QUEEN_LEVEL_BONUS,
-        x:t.x,y:t.y,zoom:0.7,queen:q,label:'· '+m.name}); }
-    else { shots.push({key:'q'+q.id,weight:SHOT_WEIGHTS.worldQueen+q.level*(QUEEN_LEVEL_BONUS/2),
-        x:q.x,y:q.y,zoom:0.7,queen:q,label:'· holding the line'}); }
+  for(const q of roster){ const m=metroForQueen(q), sieg=besiegers(q);
+    if(sieg>=3) shots.push({key:'s'+q.id,w:W_SIEGE+sieg*6,x:q.x,y:q.y,zoom:1.5,queen:q,battle:true,label:'· under siege',mode:'⚔ UNDER SIEGE'});
+    if(m) shots.push({key:'q'+q.id,w:W_METRO+q.level*QLEVEL_BONUS,x:q.x,y:q.y,zoom:0.8,queen:q,label:'· '+m.name});
+    else  shots.push({key:'q'+q.id,w:W_WORLD+q.level*(QLEVEL_BONUS/2),x:q.x,y:q.y,zoom:0.8,queen:q,label:'· holding the line'});
   }
+  for(const mo of monuments){ const held=mo.holderId!=null;
+    shots.push({key:'mo'+mo.id,w:W_MONUMENT+(held?20:0),x:mo.x,y:mo.y,zoom:0.7,
+      queen:held?qById.get(mo.holderId):null,monument:mo,label:'· '+(mo.name||'monument'),mode:'⬥ '+(mo.name||'MONUMENT').toUpperCase()}); }
   let scanned=0;
   for(const a of ants){ if(scanned++>ANT_SCAN_CAP) break;
-    const moving=a[3]!==0||a[4]!==0, brute=a[6]===1;
-    if(!brute && !moving) continue;                 // only brutes / movers are "interesting"
-    const nq=nearestQueen(a[1],a[2]);
-    const nearEnemy=!!nq && nq.d2<ENEMY_NEAR_R2 && nq.q.id!==a[5];
-    if(brute && moving){
-      shots.push({key:'a'+a[0],weight:nearEnemy?SHOT_WEIGHTS.bruteMovingNearEnemy:SHOT_WEIGHTS.bruteMoving,
-        x:a[1],y:a[2],zoom:1.8,antId:a[0],queen:nearEnemy?nq.q:null,
-        label:nearEnemy?'· brute at the gates':'· brute on the move'}); }
-    else if(nearEnemy){
-      shots.push({key:'a'+a[0],weight:SHOT_WEIGHTS.workerNearEnemy,
-        x:a[1],y:a[2],zoom:1.7,antId:a[0],queen:nq.q,label:'· workers at the gates'}); }
+    const moving=a[3]!==0||a[4]!==0, brute=a[6]===1; if(!brute && !moving) continue;
+    const nq=nearestQueen(a[1],a[2]); const nearEnemy=!!nq && nq.d2<ENEMY_NEAR2 && nq.q.id!==a[5];
+    if(brute && moving) shots.push({key:'a'+a[0],w:nearEnemy?W_BRUTE_ENEMY:W_BRUTE,x:a[1],y:a[2],zoom:1.9,antId:a[0],
+      queen:nearEnemy?nq.q:null,battle:nearEnemy,label:nearEnemy?'· brute at the gates':'· brute on the move',mode:nearEnemy?'⚔ BRUTE AT THE GATES':''});
+    else if(nearEnemy) shots.push({key:'a'+a[0],w:W_WORKER_ENEMY,x:a[1],y:a[2],zoom:1.8,antId:a[0],queen:nq.q,battle:true,
+      label:'· workers at the gates',mode:'⚔ WORKERS AT THE GATES'});
   }
+  // occasional wide establishing sweep over a top queen's region.
+  if(roster.length){ const q=roster[(Math.random()*Math.min(6,roster.length))|0];
+    shots.push({key:'est',w:W_ESTABLISH,x:q.x,y:q.y,zoom:0.34,queen:null,label:'· the front'}); }
   return shots;
 }
 function pickShot(shots){ if(!shots.length) return null;
   let pool=shots.filter(s=>!director.recent.includes(s.key)); if(!pool.length) pool=shots;
-  let sum=0; for(const s of pool) sum+=s.weight; let r=Math.random()*sum;
-  for(const s of pool){ r-=s.weight; if(r<=0) return s; } return pool[pool.length-1]; }
+  let sum=0; for(const s of pool) sum+=s.w; let r=Math.random()*sum;
+  for(const s of pool){ r-=s.w; if(r<=0) return s; } return pool[pool.length-1]; }
 function applyShot(s){
-  trail.clear();   // D2: start each shot with a clean paint layer (don't carry a region's trail to the next cut)
-  director.recent.push(s.key); if(director.recent.length>4) director.recent.shift();
+  trail.clear(); sparks.length=0;   // start each cut with a clean paint + spark layer
+  director.recent.push(s.key); if(director.recent.length>5) director.recent.shift();
   panTarget={x:s.x,y:s.y}; zoomTarget=s.zoom;
-  director.mode=s.antId!=null?'followAnt':'toQueen';
-  director.followId=s.antId!=null?s.antId:null;
-  $('watch-sw').style.background=(s.queen&&s.queen.color)||'#fff';
-  $('watch-name').textContent=(s.queen&&s.queen.name)||(s.antId!=null?'a worker':'a queen');
+  director.mode=s.antId!=null?'followAnt':'static'; director.followId=s.antId!=null?s.antId:null;
+  director.shotQueen=s.battle?(s.queen||null):null;   // concentrate clash sparks on the framed queen
+  $('watch-sw').style.background=(s.queen&&s.queen.color)||(s.monument&&s.monument.color)||'#ffd166';
+  $('watch-name').textContent=(s.queen&&s.queen.name)||(s.monument&&s.monument.name)||(s.antId!=null?'a worker':'the front');
   $('watch-mode').textContent=s.label||'';
-  // queen shots: lock onto a nearby worker partway through so the shot has motion.
-  if(s.antId==null && s.queen){ const q=s.queen;
-    setTimeout(()=>{ if(director.mode==='toQueen') followNearAnt(q); }, SHOT_DURATION_MS*0.35); }
+  if(s.mode) callout={mode:s.mode,color:s.battle?'#ff6b78':'#ffd166',born:performance.now()};
+  // queen shots: hand off to a nearby worker partway through so the frame has motion.
+  if(s.antId==null && s.queen && !s.monument){ const q=s.queen;
+    setTimeout(()=>{ if(director.mode==='static') followNearAnt(q); }, SHOT_MS*0.4); }
 }
 function nextShot(){ if(!roster.length){ setTimeout(nextShot,3000); return; }
-  const s=pickShot(buildShots()); if(s) applyShot(s);
-  setTimeout(nextShot,SHOT_DURATION_MS); }
-function followNearAnt(q){
-  let best=null,bd=1e18;
+  const s=pickShot(buildShots()); if(s) applyShot(s); setTimeout(nextShot,SHOT_MS); }
+function followNearAnt(q){ let best=null,bd=1e18;
   for(const a of ants){ if(a[5]!==q.id) continue; const d=dist2(a[1],a[2],q.x,q.y); if(d<bd){bd=d;best=a;} }
-  if(best){ director.mode='followAnt'; director.followId=best[0]; zoomTarget=1.9;
-    $('watch-mode').textContent='· following a worker'; }
-}
+  if(best){ director.mode='followAnt'; director.followId=best[0]; zoomTarget=1.95; $('watch-mode').textContent='· following a worker'; } }
 function tickDirector(){
-  if(director.mode==='followAnt'&&director.followId!=null){
-    const a=ants.find(x=>x[0]===director.followId);
-    if(a){ panTarget={x:a[1],y:a[2]}; } else { director.followId=null; }
-  }
-}
+  if(director.mode==='followAnt'&&director.followId!=null){ const a=ants.find(x=>x[0]===director.followId);
+    if(a){ panTarget={x:a[1],y:a[2]}; } else { director.followId=null; } } }
 
 //==================================================================================================
-//  MAIN LOOP — camera lerp + render + throttled viewport
+//  MAIN LOOP — frame-rate-independent camera glide + render + throttled viewport
 //==================================================================================================
+let lastNow=performance.now();
 function frame(now){
+  const dt=Math.min(64,now-lastNow); lastNow=now;
   tickDirector();
-  if(panTarget){ view.x+=(panTarget.x-view.x)*0.08; view.y+=(panTarget.y-view.y)*0.08; }
-  view.zoom+=(zoomTarget-view.zoom)*0.06;
+  if(panTarget){ const pf=1-Math.exp(-2.6*dt/1000); view.x+=(panTarget.x-view.x)*pf; view.y+=(panTarget.y-view.y)*pf; }
+  view.zoom+=(zoomTarget-view.zoom)*(1-Math.exp(-2.0*dt/1000));
   if(now-lastVS>180){ setViewport(); lastVS=now; }
-  render();
+  render(now,dt);
   requestAnimationFrame(frame);
 }
 

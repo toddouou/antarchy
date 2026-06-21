@@ -177,6 +177,11 @@ pub fn handle_message(
         // Metro centres so the landing-page spectator camera can prioritise queens inside metros.
         let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
         let _ = tx.send(build_queen_roster(world));
+        // Monuments (king-of-the-hill landmarks) so the spectator camera can frame them immediately
+        // instead of waiting for the ~10 s holder-broadcast cycle. Tiny — only if any exist.
+        if !world.monuments.is_empty() {
+            let _ = tx.send(crate::network::build_monuments(world));
+        }
         return;
     }
 

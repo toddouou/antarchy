@@ -154,6 +154,13 @@ pub fn build_queen_roster(world: &World) -> String {
                 "color": p.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
                 "level": q.level,
                 "x": q.x, "y": q.y,
+                // Health/shield/prestige so the spectator canvas can draw real HP bars + scale the
+                // queen aura by health (guest-only, ≤200 queens @ ~0.75 Hz → negligible egress).
+                "hp":     q.hp,
+                "maxHp":  q.max_hp,
+                "shield": q.shield,
+                "size":   q.size,
+                "prestige": p.map(|p| p.prestige).unwrap_or(0),
             }))
         })
         .collect();
