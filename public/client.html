@@ -1541,9 +1541,27 @@ function setCatalog(cat){
   CATALOG=cat||{items:[],bundles:[]};
   catItemsById={}; for (const it of (CATALOG.items||[])) catItemsById[it.id]=it;
 }
-function applyCosmRoster(map){
-  cosmRoster=map||{}; trailAny=false; auraAny=false;
+// Render OUR OWN equipped aura/trail straight from me.equipped — the authoritative, always-present
+// account state (it rides every `me` push + the equip response). The roster broadcast below is
+// SEND-ON-CHANGE, so after a relog (nothing changed) it may never re-announce us; overlaying self
+// from me.equipped guarantees own effects show on (re)login and update live on equip/unequip.
+function overlaySelfCosm(){
+  if (!me || !me.id) return;
+  const eq=me.equipped||{}, self={};
+  if (eq.aura)  self.aura=eq.aura;
+  if (eq.trail) self.trail=eq.trail;
+  if (self.aura||self.trail) cosmRoster[me.id]=self; else delete cosmRoster[me.id];
+}
+function recomputeCosmGates(){
+  trailAny=false; auraAny=false;
   for (const k in cosmRoster){ const c=cosmRoster[k]; if(c.trail)trailAny=true; if(c.aura)auraAny=true; }
+}
+// Re-seed just our own slice (on login + every `me` push) without waiting for a roster broadcast.
+function refreshSelfCosm(){ overlaySelfCosm(); recomputeCosmGates(); }
+function applyCosmRoster(map){
+  cosmRoster=map||{};
+  overlaySelfCosm();           // own effects never depend on the send-on-change roster reaching us
+  recomputeCosmGates();
 }
 function lerpHex(a,b,f){ const A=toRGB(a),B=toRGB(b);
   return `rgb(${(A[0]+(B[0]-A[0])*f)|0},${(A[1]+(B[1]-A[1])*f)|0},${(A[2]+(B[2]-A[2])*f)|0})`; }
@@ -2534,6 +2552,7 @@ function handle(msg) {
     case 'logged-in':
       me=msg.me;
       if (me.catalog) setCatalog(me.catalog);   // cosmetics catalogue rides the full login payload
+      refreshSelfCosm();   // show our own equipped aura/trail at once, before any roster broadcast
       applyFowFromMe();   // level-scaled fog-of-war radii + territory AABB
       document.body.classList.add('booted');   // cookie auth resolved → drop the connecting splash
       sessionStorage.setItem('hive-active','1');
@@ -2590,6 +2609,7 @@ function handle(msg) {
     case 'me':
       me={...me,...msg};
       if (msg.catalog) setCatalog(msg.catalog);   // server-authoritative cosmetics catalogue (login)
+      refreshSelfCosm();   // equipped rides every `me` push → own aura/trail update live on equip
       applyFowFromMe();   // FoW radii / territory AABB grow live as the player levels + paints
       // Phase-6: epoch flips on a world wipe → cache-bust the snapshot tiles (double-buffer).
       if (msg.epoch!=null && msg.epoch!==SNAP_EPOCH) { SNAP_EPOCH=msg.epoch; snapCache.clear(); }
