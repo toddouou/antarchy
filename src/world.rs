@@ -301,6 +301,16 @@ pub struct MetroHolder {
     pub tiles: u64,
 }
 
+/// King-of-the-hill result for one admin-placed monument: its single holder (top tile-owner inside
+/// the capture radius) + the sampled tile count. `id` keys back to the `World.monuments` entry (which
+/// owns the name/position), so the client matches markers to holders by id.
+#[derive(Debug, Clone)]
+pub struct MonumentHolder {
+    pub id:    u32,
+    pub owner: Option<u32>,
+    pub tiles: u64,
+}
+
 pub struct World {
     pub tiles:           TileMap,
     pub ants:            Vec<Ant>,
@@ -332,6 +342,14 @@ pub struct World {
     pub dirty_tick:      u64,
     /// Metro king-of-the-hill holders, recomputed on a throttle (simulation.rs::recompute_holders).
     pub metro_holders:   Vec<MetroHolder>,
+    /// Admin-placed monuments (permanent landmarks). Loaded from `monuments.json` under HIVE_DATA_DIR
+    /// on boot (NOT the bincode world.snapshot, and NOT cleared by a wipe), saved atomically on every
+    /// admin add/remove/rename. See `crate::monuments`.
+    pub monuments:       Vec<crate::monuments::Monument>,
+    /// King-of-the-hill holders for `monuments`, recomputed on the same cadence as `metro_holders`.
+    pub monument_holders: Vec<MonumentHolder>,
+    /// Monotonic id allocator for monuments (never reused, so client markers stay stable).
+    pub next_monument_id: u32,
     /// Round-robin cursor into `ants` for throttled discovery (visited-region) sampling.
     pub visit_sample_cursor: usize,
     /// Ring buffer of recent tick-window durations (ms) for `/health` p50/p99 — the scaling
@@ -414,6 +432,9 @@ impl World {
             admin_fog_preview: FxHashSet::default(),
             dirty_tick:      0,
             metro_holders:   Vec::new(),
+            monuments:       Vec::new(),
+            monument_holders: Vec::new(),
+            next_monument_id: 1,
             visit_sample_cursor: 0,
             tick_ms_ring:    Vec::with_capacity(TICK_RING_CAP),
             tick_ms_pos:     0,

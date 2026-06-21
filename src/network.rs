@@ -201,6 +201,33 @@ pub fn build_region_holders(world: &World) -> String {
     json!({"t": "region-holders", "holders": holders}).to_string()
 }
 
+/// Admin-placed monuments + their live single holder, for the client's map markers:
+/// `{t:"monuments", list:[{id,name,x,y,r2,holderId,holder,color,tiles}]}`. Tiny (a handful) — sent on
+/// the holder-recompute cadence + on every admin add/remove/rename + once on connect.
+pub fn build_monuments(world: &World) -> String {
+    let list: Vec<Value> = world.monuments.iter().map(|m| {
+        let holder = world.monument_holders.iter().find(|h| h.id == m.id);
+        let owner  = holder.and_then(|h| h.owner);
+        let tiles  = holder.map(|h| h.tiles).unwrap_or(0);
+        let (name, color) = match owner.and_then(|id| world.players.get(&id)) {
+            Some(p) => (Some(p.username.clone()), Some(p.color.clone())),
+            None    => (None, None),
+        };
+        json!({
+            "id":       m.id,
+            "name":     m.name,
+            "x":        m.x,
+            "y":        m.y,
+            "r2":       m.r2,
+            "holderId": owner,
+            "holder":   name,
+            "color":    color,
+            "tiles":    tiles,
+        })
+    }).collect();
+    json!({"t": "monuments", "list": list}).to_string()
+}
+
 /// Build the `me` payload. `full=true` (sent once in `logged-in`) includes the **static** block
 /// (`tickRate`, world size, spawn, geo projection, cfg constants); `full=false` (the ≥1 Hz periodic
 /// push) omits it — the client retains the static fields from `logged-in` and merges the dynamic
@@ -438,6 +465,7 @@ pub fn build_player_info(
             "LEVEL_CAP":         c.xp_level_cap,
             "ARMY_CAP":          c.army_cap,
             "NECTAR_PER_100K_DAY": c.nectar_per_100k_day,
+            "MONUMENT_NECTAR_PER_DAY": c.monument_nectar_per_day,
         });
         // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
@@ -560,7 +588,17 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     // AoI hard cap (OWASP A01, defense-in-depth): re-clamp the stored span so even a view that
     // bypassed `view-set` can't widen the live-entity window past max_view_span. `view-set` already
     // clamps on store; this guarantees the invariant at the serialization boundary too.
-    let (vx0, vy0, vx1, vy1) = crate::config::clamp_view_span(v.x0, v.y0, v.x1, v.y1);
+    // EXCEPTION: an admin in god-view (fog preview OFF) bypasses the clamp so they can frame the WHOLE
+    // planet — the LOD pyramid below still caps the served grid at ≤ MAX_DIM cells/axis (ants skipped,
+    // queens capped), so the cost stays bounded. A non-admin (and an admin previewing player-view) is
+    // always clamped — the security boundary is unchanged for them.
+    let is_admin = world.auth.is_admin_id(player_id);
+    let god_view = is_admin && !world.admin_fog_preview.contains(&player_id);
+    let (vx0, vy0, vx1, vy1) = if god_view {
+        (v.x0, v.y0, v.x1, v.y1)
+    } else {
+        crate::config::clamp_view_span(v.x0, v.y0, v.x1, v.y1)
+    };
 
     let x0 = vx0.max(0);
     let y0 = vy0.max(0);
@@ -581,14 +619,13 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     let x1 = x0 + (w as i32) * step;
     let y1 = y0 + (h as i32) * step;
 
-    let is_admin = world.auth.is_admin_id(player_id);
-
     // Level-scaled fog radii, in served-grid cells (÷ step at LOD), from the viewer's own queen
     // level (default L1 while placing). `pad` (off-screen ownership ring the distance transform
     // needs) is sized to the feather end so panning toward off-screen territory clears smoothly.
     // Admins get an all-zero fog field (god view) → skip the padded slice entirely (pad 0, radii
     // unused) UNLESS they enabled the fog preview, in which case they're treated like a player.
-    let skip_fog = is_admin && !world.admin_fog_preview.contains(&player_id);
+    // `god_view` (computed above) is exactly that condition.
+    let skip_fog = god_view;
     let (clear_grid, grad_grid, fog_pad) = if include_tiles && !skip_fog {
         let c = cfg();
         let lvl = world.queens.get(&player_id).map(|q| q.level).unwrap_or(1);
@@ -998,6 +1035,37 @@ mod tests {
     use super::*;
 
     use std::io::Read;
+
+    /// An admin in god-view bypasses the AoI span clamp (so they can frame the whole planet, bounded by
+    /// the LOD pyramid), while a non-admin — and an admin previewing player-view — stays clamped to
+    /// `max_view_span`. Guards the security boundary: only admins-in-god-view get the wide window.
+    #[test]
+    fn admin_god_view_bypasses_span_clamp_only_for_admins() {
+        crate::regions::init();
+        let mut w = crate::world::World::new();
+        let admin_id = w.auth.users.values().find(|u| u.is_admin).map(|u| u.id).expect("admin account");
+        let whole = || crate::world::PlayerView { x0: 0, y0: 0, x1: w.world_w as i32, y1: w.world_h as i32 };
+        let span = |rv: &RawView| rv.w as i64 * rv.lod_step as i64;
+        let max = crate::config::max_view_span() as i64;
+
+        // Admin, god-view (not previewing): the planet-scale span is served.
+        w.players.insert(admin_id, crate::world::Player {
+            id: admin_id, username: "ADMIN".into(), view: Some(whole()), ..Default::default() });
+        let admin_span = span(&snapshot_view(&w, admin_id, true).expect("admin view"));
+        assert!(admin_span > 100_000, "admin god-view sees a planet-scale span, got {admin_span}");
+
+        // Non-admin with the SAME whole-world request is clamped (security boundary intact).
+        let pid = 4242u32;
+        w.players.insert(pid, crate::world::Player {
+            id: pid, username: "BOB".into(), view: Some(whole()), ..Default::default() });
+        let bob = snapshot_view(&w, pid, true).expect("bob view");
+        assert!(span(&bob) <= max + bob.lod_step as i64, "non-admin clamped to ~{max}, got {}", span(&bob));
+
+        // Admin previewing PLAYER-view (in admin_fog_preview) is clamped like a player too.
+        w.admin_fog_preview.insert(admin_id);
+        let prev = snapshot_view(&w, admin_id, true).expect("admin preview");
+        assert!(span(&prev) <= max + prev.lod_step as i64, "admin player-preview clamped, got {}", span(&prev));
+    }
 
     fn inflate(data: &[u8]) -> Vec<u8> {
         let mut d = flate2::read::DeflateDecoder::new(data);

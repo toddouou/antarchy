@@ -95,6 +95,9 @@ pub fn handle_message(
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
+        // Push the current aura/trail roster immediately so this client renders everyone's (incl. its
+        // own, already reloaded above) equipped decorations at once — not after the ~5 s heartbeat.
+        let _ = tx.send(crate::network::build_cosmetics_roster(world));
         if let Some(w) = welcome { let _ = tx.send(w); }
         return;
     }
@@ -122,6 +125,7 @@ pub fn handle_message(
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
+        let _ = tx.send(crate::network::build_cosmetics_roster(world));
         if let Some(w) = welcome { let _ = tx.send(w); }
         return;
     }
@@ -142,6 +146,7 @@ pub fn handle_message(
         let lb = build_leaderboard(world);
         let _ = tx.send(json!({"t":"logged-in","me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         let _ = tx.send(lb);
+        let _ = tx.send(crate::network::build_cosmetics_roster(world));
         if let Some(w) = welcome { let _ = tx.send(w); }
         return;
     }
@@ -220,7 +225,12 @@ pub fn handle_message(
         // AoI hard cap (OWASP A01, anti map-hack): clamp the client-reported span server-side BEFORE
         // storing it, so no client zoom widens the live-entity window past max_view_span. The fog
         // transform and queen filter both key off this stored rect; snapshot_view re-clamps defensively.
-        let (x0, y0, x1, y1) = crate::config::clamp_view_span(x0, y0, x1, y1);
+        // EXCEPTION: an admin in god-view (fog preview OFF) stores the RAW span so they can see the
+        // whole planet — snapshot_view applies the same bypass, and the LOD pyramid caps the served
+        // grid regardless. Non-admins / admins previewing player-view are always clamped (unchanged).
+        let god_view = is_admin && !world.admin_fog_preview.contains(&pid);
+        let (x0, y0, x1, y1) = if god_view { (x0, y0, x1, y1) }
+                               else { crate::config::clamp_view_span(x0, y0, x1, y1) };
         if let Some(p) = world.players.get_mut(&pid) {
             p.view = Some(PlayerView { x0, y0, x1, y1 });
         }
@@ -666,6 +676,62 @@ pub fn handle_message(
         world.ants.push(Ant::new(ant_id, target_id, x, y, adx, ady, lifespan));
         world.dirty_tick = world.tick; // tiles are about to change
         let _ = tx.send(json!({"t":"ant-placed","x":x,"y":y}).to_string());
+        return;
+    }
+
+    // ---- Admin: place a permanent MONUMENT at a map location (persisted to monuments.json) ----
+    // Monuments are king-of-the-hill landmarks whose single holder (top tile-owner in the radius)
+    // earns flat daily nectar. They live in their own runtime file → survive restarts AND wipes.
+    if t == "admin-place-monument" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let x = msg["x"].as_i64().unwrap_or(-1) as i32;
+        let y = msg["y"].as_i64().unwrap_or(-1) as i32;
+        let ww = world.world_w as i32; let wh = world.world_h as i32;
+        if x < 0 || y < 0 || x >= ww || y >= wh { let _ = tx.send(err("Out of bounds")); return; }
+        let id = world.next_monument_id;
+        let name: String = {
+            let n: String = msg["name"].as_str().unwrap_or("").trim().chars().take(40).collect();
+            if n.is_empty() { format!("Monument {id}") } else { n }
+        };
+        // Default 40 km capture radius (≈ a metro); admin may override via `radiusKm`.
+        let radius_km = msg["radiusKm"].as_f64().filter(|r| *r > 0.0).unwrap_or(40.0).clamp(1.0, 2000.0);
+        let r2 = crate::regions::radius_km_to_r2(x, y, radius_km);
+        world.next_monument_id += 1;
+        world.monuments.push(crate::monuments::Monument { id, name: name.clone(), x, y, r2 });
+        crate::monuments::save(&world.monuments);
+        crate::simulation::recompute_monument_holders(world); // populate the holder for the new spot now
+        world.broadcast(&crate::network::build_monuments(world));
+        let _ = tx.send(json!({"t":"event","msg":format!("MONUMENT PLACED · {name}")}).to_string());
+        return;
+    }
+
+    // ---- Admin: remove a monument by id ----
+    if t == "admin-remove-monument" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let id = msg["id"].as_u64().unwrap_or(0) as u32;
+        let before = world.monuments.len();
+        world.monuments.retain(|m| m.id != id);
+        if world.monuments.len() == before { let _ = tx.send(err("No such monument")); return; }
+        world.monument_holders.retain(|h| h.id != id);
+        crate::monuments::save(&world.monuments);
+        world.broadcast(&crate::network::build_monuments(world));
+        let _ = tx.send(json!({"t":"event","msg":"MONUMENT REMOVED"}).to_string());
+        return;
+    }
+
+    // ---- Admin: rename a monument by id ----
+    if t == "admin-rename-monument" {
+        if !is_admin { let _ = tx.send(err("Admin only")); return; }
+        let id = msg["id"].as_u64().unwrap_or(0) as u32;
+        let name: String = msg["name"].as_str().unwrap_or("").trim().chars().take(40).collect();
+        if name.is_empty() { let _ = tx.send(err("Bad name")); return; }
+        let Some(m) = world.monuments.iter_mut().find(|m| m.id == id) else {
+            let _ = tx.send(err("No such monument")); return;
+        };
+        m.name = name;
+        crate::monuments::save(&world.monuments);
+        world.broadcast(&crate::network::build_monuments(world));
+        let _ = tx.send(json!({"t":"event","msg":"MONUMENT RENAMED"}).to_string());
         return;
     }
 
@@ -1454,6 +1520,11 @@ fn create_or_reconnect_player(
 
     // Metro list for the header region switcher (name + centre tile to fly to).
     let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
+    // Monument markers + their current holders, so a fresh client renders them at once (don't wait
+    // for the next ~10 s holder-broadcast cycle). Tiny — only sent when any monument exists.
+    if !world.monuments.is_empty() {
+        let _ = tx.send(crate::network::build_monuments(world));
+    }
 
     // Equipped cosmetics (wipe-proof account state) → live runtime caches so they reach every viewer
     // (tile_fx via the fx palette; aura/trail/emblem via the ~1 Hz roster). A `recolor` overrides the

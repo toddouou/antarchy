@@ -215,3 +215,14 @@ pub fn metros_json() -> Vec<Value> {
 pub fn metros_for_holder() -> Vec<(String, i32, i32, i64)> {
     regions().metros.iter().map(|m| (m.name.clone(), m.cx, m.cy, m.r2)).collect()
 }
+
+/// Convert a ground radius (km) at world tile (x,y) into a **squared tile radius**, using the same
+/// Mercator-aware metres-per-tile as the metro circles (`build`). Used by admin monument placement so
+/// a monument's capture circle covers the same real-world area a metro of that radius would.
+pub fn radius_km_to_r2(x: i32, y: i32, radius_km: f64) -> i64 {
+    let (lat, _lon) = game_to_lat_lon(x, y);
+    let tm = cfg().tile_meters;
+    let cos = (lat * PI / 180.0).cos().abs().max(0.05);
+    let r_tiles = radius_km * 1000.0 / (tm * cos);
+    (r_tiles * r_tiles) as i64
+}

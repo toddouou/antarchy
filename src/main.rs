@@ -7,6 +7,7 @@ mod email;
 mod fog;
 mod handlers;
 mod metrics;
+mod monuments;
 mod network;
 mod persist;
 mod regions;
@@ -82,6 +83,12 @@ async fn main() {
         let n = persist::replay_wal(&mut w, &persist::wal_path(&save_file));
         if n > 0 { println!("[persist] WAL replay: {n} chunk deltas applied"); }
     }
+    // Admin-placed monuments live in their own runtime file (HIVE_DATA_DIR/monuments.json), NOT the
+    // bincode snapshot — so they survive restarts AND world wipes. Load after restore so nothing
+    // clobbers them; pin the id allocator past the highest existing id so a restart never reuses one.
+    w.monuments = monuments::load();
+    w.next_monument_id = w.monuments.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+
     // Build the runtime player→alliance index from the persisted roster (users.json) now that both
     // accounts and the world are loaded. Drops any membership pointing at an account that no longer
     // exists (e.g. a wipe-orphaned id), so the hot-path index can't reference a ghost.

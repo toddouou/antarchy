@@ -143,6 +143,9 @@ pub struct Config {
     /// Passive nectar granted per real day per 100,000 metro tiles a player holds (leads). Paid once
     /// per 00:00-UTC window in the sim loop. 0 disables passive accrual.
     pub nectar_per_100k_day: f64,
+    /// Flat passive nectar granted per real day for EACH admin-placed monument a player holds (is the
+    /// top tile-owner within its radius). Paid in the same daily pass as metro nectar. 0 disables.
+    pub monument_nectar_per_day: f64,
     // ---- Alliances ----
     /// Master switch for alliance nectar costs. OFF by default so create/join are FREE for testing;
     /// flip on for the intended late-game pricing (PRICE_ALLIANCE_*).
@@ -203,6 +206,7 @@ impl Default for Config {
             // season via the slider (apply_admin_param) if desired.
             season_secs:       0,
             nectar_per_100k_day: 1.0,
+            monument_nectar_per_day: 50.0,
             alliance_econ_enabled: false,
             phalanx_r:              600.0,
             phalanx_per_stack:        0.05,
@@ -267,6 +271,7 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("army_cap",          1.0, 1_000_000.0),
     ("season_secs",       0.0, 31_536_000.0),   // 0 (off) … 365 days
     ("nectar_per_100k_day", 0.0,   1_000.0),
+    ("monument_nectar_per_day", 0.0, 100_000.0),
     ("alliance_econ_enabled", 0.0,          1.0),
     ("phalanx_r",             0.0,     50_000.0),
     ("phalanx_per_stack",     0.0,          1.0),
@@ -307,6 +312,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "army_cap"          => c.army_cap           = v as i32,
         "season_secs"       => c.season_secs        = v as u64,
         "nectar_per_100k_day" => c.nectar_per_100k_day = v,
+        "monument_nectar_per_day" => c.monument_nectar_per_day = v,
         "alliance_econ_enabled" => c.alliance_econ_enabled = v != 0.0,
         "phalanx_r"             => c.phalanx_r             = v,
         "phalanx_per_stack"     => c.phalanx_per_stack     = v,
@@ -781,6 +787,7 @@ fn params_of(c: &Config) -> Vec<(&'static str, f64)> {
         ("army_cap",          c.army_cap as f64),
         ("season_secs",       c.season_secs as f64),
         ("nectar_per_100k_day", c.nectar_per_100k_day),
+        ("monument_nectar_per_day", c.monument_nectar_per_day),
         ("alliance_econ_enabled", if c.alliance_econ_enabled { 1.0 } else { 0.0 }),
         ("phalanx_r",             c.phalanx_r),
         ("phalanx_per_stack",     c.phalanx_per_stack),

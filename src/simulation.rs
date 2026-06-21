@@ -8,7 +8,7 @@ use crate::config::{
     BRUTE_DMG_MULT, DEFENDER_RANGE, TILE_MILESTONES,
     GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE,
 };
-use crate::world::{Ant, MetroHolder, Player, Queen, QueenHit, World, XpGrant};
+use crate::world::{Ant, MetroHolder, MonumentHolder, Player, Queen, QueenHit, World, XpGrant};
 
 // ---- Discovery + metro-holder throttles ----
 const HOLDER_INTERVAL:    u64   = 500;  // ~10 s @ 50 Hz — king-of-the-hill recompute cadence
@@ -1022,6 +1022,7 @@ pub fn tick_world(world: &mut World) {
     if world.tick.is_multiple_of(DISCOVERY_INTERVAL) { sample_visited(world); }
     if world.tick.is_multiple_of(HOLDER_INTERVAL) {
         recompute_holders(world);
+        recompute_monument_holders(world);
         // United Front: refresh Phalanx stacks + alliance HP-buff headroom on the same cadence
         // (bounded — ≤10 members per alliance, few alliances).
         crate::handlers::recompute_alliance_auras(world);
@@ -1030,6 +1031,10 @@ pub fn tick_world(world: &mut World) {
             std::sync::Arc::from(crate::network::ctl_frame(crate::network::CTL_REGION_HOLDERS, &holders)),
             &holders,
         );
+        // Monuments + live holders (tiny JSON; markers/holder names stay current for every viewer).
+        if !world.monuments.is_empty() {
+            world.broadcast(&crate::network::build_monuments(world));
+        }
     }
 
     // Season upkeep: sweep Dense chunks that became solid-one-owner (via clash conversions,
@@ -1147,22 +1152,68 @@ fn recompute_holders(world: &mut World) {
     world.metro_holders = holders;
 }
 
-/// Passive metro-region nectar: once per 00:00-UTC day, every player LEADING one or more metros
-/// earns `nectar_per_100k_day` nectar per 100,000 tiles they hold there. Idempotent per account via
-/// `UserRecord.last_accrual_day` (users.json) — safe to call repeatedly: a restart mid-day re-scans
-/// but already-paid players are skipped. NPCs are excluded. Returns the number of players paid.
+/// Throttled king-of-the-hill for admin-placed **monuments** — same strided scan as
+/// `recompute_holders`, but over `world.monuments` (exactly one holder each). Called on the same
+/// `HOLDER_INTERVAL` cadence, and immediately by the admin place handler so a new monument shows its
+/// holder at once. Cheap: a handful of monuments, each bounded by the chunks near it.
+pub fn recompute_monument_holders(world: &mut World) {
+    if world.monuments.is_empty() { world.monument_holders.clear(); return; }
+    // Snapshot (id, centre, radius) so the tile scan doesn't co-borrow `world.monuments`.
+    let mons: Vec<(u32, i32, i32, i64)> = world.monuments.iter()
+        .map(|m| (m.id, m.x, m.y, m.r2)).collect();
+    let mut holders: Vec<MonumentHolder> = Vec::with_capacity(mons.len());
+    let mut tally: FxHashMap<u32, u64> = FxHashMap::default();
+    let scale = (HOLDER_STRIDE as u64) * (HOLDER_STRIDE as u64);
+    for (id, cx, cy, r2) in mons {
+        tally.clear();
+        world.tiles.tally_owners_in_circle(cx, cy, r2, HOLDER_STRIDE, &mut tally);
+        let best = tally.iter().max_by_key(|(_, &c)| c).map(|(&pid, &c)| (pid, c));
+        let (owner, tiles) = match best {
+            Some((pid, c)) => (Some(pid), c * scale),
+            None           => (None, 0),
+        };
+        holders.push(MonumentHolder { id, owner, tiles });
+    }
+    world.monument_holders = holders;
+}
+
+/// Passive holdings nectar: once per 00:00-UTC day, every player LEADING one or more **metros** and/or
+/// **monuments** is paid. Metro payout = `nectar_per_100k_day` per 100,000 tiles held (king-of-the-hill);
+/// monument payout = a flat `monument_nectar_per_day` for EACH monument held. Both are summed and paid
+/// in this one pass under a single `UserRecord.last_accrual_day` guard (users.json) — so the two layers
+/// can't double-mark/double-block each other. Idempotent per account: a restart mid-day re-scans but
+/// already-paid players are skipped. NPCs/guests are excluded. Returns the number of players paid.
 /// Caller (sim loop) gates the call on a UTC-day change and persists `auth` afterwards.
 pub fn accrue_metro_nectar(world: &mut World, now: u64) -> usize {
-    let rate = cfg().nectar_per_100k_day;
-    if rate <= 0.0 { return 0; }
+    let c = cfg();
+    let metro_rate = c.nectar_per_100k_day;
+    let mon_rate   = c.monument_nectar_per_day;
+    drop(c);
+    if metro_rate <= 0.0 && mon_rate <= 0.0 { return 0; }
     let today = crate::config::utc_day(now);
-    // Tiles held per owner across all metro holders (king-of-the-hill leaders).
-    let mut by_owner: FxHashMap<u32, u64> = FxHashMap::default();
-    for h in &world.metro_holders {
-        if let Some(owner) = h.owner { *by_owner.entry(owner).or_insert(0) += h.tiles; }
+
+    // Nectar owed per owner = metro tile-scaled payout + flat per-monument payout. Metro tiles are
+    // summed per owner FIRST, then scaled once (preserves the original rounding behaviour).
+    let mut owed: FxHashMap<u32, u64> = FxHashMap::default();
+    if metro_rate > 0.0 {
+        let mut tiles_by_owner: FxHashMap<u32, u64> = FxHashMap::default();
+        for h in &world.metro_holders {
+            if let Some(owner) = h.owner { *tiles_by_owner.entry(owner).or_insert(0) += h.tiles; }
+        }
+        for (owner, tiles) in tiles_by_owner {
+            let amt = (tiles as f64 / 100_000.0 * metro_rate).round() as u64;
+            *owed.entry(owner).or_insert(0) += amt;
+        }
     }
+    if mon_rate > 0.0 {
+        let flat = mon_rate.round() as u64;
+        for h in &world.monument_holders {
+            if let Some(owner) = h.owner { *owed.entry(owner).or_insert(0) += flat; }
+        }
+    }
+
     let mut paid = 0usize;
-    for (pid, tiles) in by_owner {
+    for (pid, amount) in owed {
         // Real, logged-in-or-persisted accounts only (NPCs/guests have no UserRecord).
         let username = match world.players.get(&pid) {
             Some(p) if !p.npc && !p.guest => p.username.clone(),
@@ -1172,9 +1223,10 @@ pub fn accrue_metro_nectar(world: &mut World, now: u64) -> usize {
             Some(u) if u.last_accrual_day < today => {}
             _ => continue,   // already accrued today, or no account record
         }
+        // Mark the day FIRST so a holder owing 0 (sub-threshold metros) still can't be re-scanned into a
+        // payout later the same day.
         if let Some(u) = world.auth.users.get_mut(&username) { u.last_accrual_day = today; }
-        let amount = (tiles as f64 / 100_000.0 * rate).round() as u64;
-        if amount == 0 { continue; }   // marked for today, but below the 100k threshold → nothing owed
+        if amount == 0 { continue; }
         if let Some(p) = world.players.get_mut(&pid) { p.nectar = p.nectar.saturating_add(amount); }
         world.send_to(pid, json!({"t":"event","msg":format!("+{amount} NECTAR FROM YOUR REGIONS")}).to_string());
         paid += 1;
@@ -1235,6 +1287,52 @@ mod tests {
         w.players.get_mut(&pid).unwrap().npc = true;
         assert_eq!(accrue_metro_nectar(&mut w, 20_002 * DAY), 0);
         assert_eq!(w.players[&pid].nectar, 6);
+    }
+
+    #[test]
+    fn monument_nectar_is_flat_per_held_monument() {
+        use crate::auth::UserRecord;
+        const DAY: u64 = 86_400_000;
+        // Flat 20 nectar per monument held. This World has NO metro holders, so the metro rate (which
+        // other tests may set globally) can't affect the asserted amount — monument payout is isolated.
+        crate::config::apply_admin_param("monument_nectar_per_day", 20.0);
+        let mut w = World::new();
+        let pid = 11u32;
+        w.players.insert(pid, Player { id: pid, username: "AMY".into(), ..Default::default() });
+        w.auth.users.insert("AMY".into(), UserRecord { id: pid, username: "AMY".into(), ..Default::default() });
+        // AMY holds two monuments (tile count is irrelevant to the flat payout); an unheld one pays 0.
+        w.monument_holders = vec![
+            MonumentHolder { id: 1, owner: Some(pid), tiles: 12_345 },
+            MonumentHolder { id: 2, owner: Some(pid), tiles: 1 },
+            MonumentHolder { id: 3, owner: None,      tiles: 0 },
+        ];
+        let now = 30_000 * DAY + 5_000;
+        // 2 monuments × 20 = 40, paid once for the day.
+        assert_eq!(accrue_metro_nectar(&mut w, now), 1);
+        assert_eq!(w.players[&pid].nectar, 40);
+        // Idempotent within the same UTC day; the next window pays the flat amount again.
+        assert_eq!(accrue_metro_nectar(&mut w, now), 0);
+        assert_eq!(w.players[&pid].nectar, 40);
+        assert_eq!(accrue_metro_nectar(&mut w, 30_001 * DAY), 1);
+        assert_eq!(w.players[&pid].nectar, 80);
+    }
+
+    #[test]
+    fn monument_holder_is_top_owner_in_radius() {
+        let mut w = World::new();
+        // Owner 5 paints more tiles than owner 6 inside a small circle; owner 5 should hold it.
+        for x in 1000..1040 { for y in 1000..1010 { w.tiles.set(x, y, 5); } } // 400 tiles
+        for x in 1000..1010 { for y in 1010..1020 { w.tiles.set(x, y, 6); } } // 100 tiles
+        let r2 = 80i64 * 80;
+        w.monuments.push(crate::monuments::Monument { id: 1, name: "Spire".into(), x: 1010, y: 1010, r2 });
+        recompute_monument_holders(&mut w);
+        assert_eq!(w.monument_holders.len(), 1);
+        assert_eq!(w.monument_holders[0].owner, Some(5), "the top tile-owner in the radius holds it");
+        // A monument over empty ground is unclaimed (no payout).
+        w.monuments.push(crate::monuments::Monument { id: 2, name: "Void".into(), x: 600_000, y: 300_000, r2: 400 });
+        recompute_monument_holders(&mut w);
+        let void = w.monument_holders.iter().find(|h| h.id == 2).unwrap();
+        assert_eq!(void.owner, None, "no painted tiles in the radius → unclaimed");
     }
 
     /// Regression for the WORKERS lifespan-bar bug: worker expiry must read the LIVE global

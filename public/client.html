@@ -1127,6 +1127,11 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="btn-row" style="margin-bottom:6px;">
       <button class="btn-sm" id="adm-fog-btn" style="width:100%;" onclick="admToggleFog()">🌫 FOG: OFF (GOD VIEW)</button>
     </div>
+    <div class="adm-subsec">MONUMENTS</div>
+    <div class="btn-row" style="margin-bottom:6px;">
+      <button class="btn-sm" id="adm-mon-place-btn" style="width:100%;" onclick="admToggleMonumentPlace()">⬩ PLACE MONUMENT</button>
+    </div>
+    <div id="adm-mon-list" style="margin-bottom:8px;font-size:7px;line-height:1.6;"></div>
     <div class="adm-subsec">SPEED</div>
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:3px;margin-bottom:8px;">
       <button class="btn-sm adm-speed" data-hz="25" onclick="admSetSpeed(25)">0.5×</button>
@@ -1490,6 +1495,7 @@ let paletteFx={};
 let CATALOG={items:[],bundles:[]};
 let catItemsById={};               // id -> catalogue item (price/params/category/…)
 let cosmRoster={};                 // ownerId -> {aura,trail,emblem}
+let monuments=[];                  // admin-placed landmarks: [{id,name,x,y,r2,holderId,holder,color,tiles}]
 let trailAny=false, auraAny=false; // cheap gates so the common (no-cosmetics) case stays zero-cost
 const trailCells=new Map();        // worldKey -> {t:tick, o:owner} — recent painted cells for trails
 // ===== Cosmetics health & perf guard (Phase 0 instrumentation) ===================================
@@ -2614,6 +2620,7 @@ function handle(msg) {
     case 'server-stats': applyServerStats(msg); break;
     case 'kill': pushKill(msg); break;
     case 'regions': regionMetros=msg.metros||[]; buildRegionSwitcher(); break;
+    case 'monuments': monuments=msg.list||[]; if(typeof renderMonumentAdminList==='function') renderMonumentAdminList(); break;
     case 'region-holders': regionHolders=msg.holders||[]; buildRegionSwitcher(); if(winIsOpen('lb')) renderLbWindow(); break;
     case 'welcome-back': showWelcomeBack(msg); break;
     case 'queen-placed':
@@ -3367,10 +3374,10 @@ const settings = {
   sfx:   localStorage.getItem('hive-sfx')   !== '0',
   music: localStorage.getItem('hive-music') !== '0',
   scan:  localStorage.getItem('hive-scan')  !== '0',
-  // Reduce effects: no stored choice → follow the OS prefers-reduced-motion default (accessibility);
-  // an explicit toggle wins thereafter. Read by effReduce() to calm every animated cosmetic.
-  reduce:(()=>{ const s=localStorage.getItem('hive-reduce'); if(s==='1')return true; if(s==='0')return false;
-                try{ return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(_){ return false; } })(),
+  // Reduce effects: full effects are the default — no stored choice → OFF. The manual toggle (below)
+  // wins and persists thereafter. We deliberately no longer auto-calm from OS prefers-reduced-motion;
+  // anyone who wants it can flip the switch. Read by effReduce() to calm every animated cosmetic.
+  reduce:(()=>{ const s=localStorage.getItem('hive-reduce'); return s==='1'; })(),
   vol:   (()=>{ const v=parseFloat(localStorage.getItem('hive-vol')); return isNaN(v)?0.6:v; })(),
 };
 function applySettings(){
@@ -3397,7 +3404,7 @@ function renderSettingsWindow(){
   html+=tog('MUSIC','Looping chiptune soundtrack.', settings.music, "toggleSetting('music')");
   html+=tog('BASE MAP','OpenStreetMap geography under your territory.', mapVisible, "toggleSetting('map')");
   html+=tog('SCANLINES','Retro CRT scanline overlay.', settings.scan, "toggleSetting('scan')");
-  html+=tog('REDUCE EFFECTS','Calm cosmetic animations — gentle glow, no pulsing or flashing. On by default if your system requests reduced motion.', settings.reduce, "toggleSetting('reduce')");
+  html+=tog('REDUCE EFFECTS','Calm cosmetic animations — gentle glow, no pulsing or flashing. Off by default; flip it on if you prefer.', settings.reduce, "toggleSetting('reduce')");
   html+=`<div class="set-row"><div class="set-info"><div class="set-name">MASTER VOLUME</div>
     <div class="set-desc">Overall loudness of the game.</div></div>
     <div class="set-vol"><input type="range" min="0" max="100" value="${Math.round(settings.vol*100)}"
@@ -3625,7 +3632,9 @@ function clampView() {
   // your tiles (`ownerBounds`) inflated by the reveal radius (`loadVoidR`). Both halves of a
   // split empire sit inside this box, so you can always pan across the fog to your far island.
   // Skipped while browsable (placement/relocate) so the player can frame the whole planet.
-  const leashed = !worldBrowsable();
+  // ALSO skipped for an admin in GOD VIEW (fog off): the operator gets an unleashed camera — free pan
+  // to the world edges + zoom all the way out to the whole planet (paint streams via the LOD pyramid).
+  const leashed = !worldBrowsable() && !(me?.isAdmin && !admFogOn);
   const leash = leashed ? territoryAABB(loadVoidR) : null;   // PAN box (full reveal, split-empire safe)
   if (leashed) {
     // ZOOM-OUT CAP: frame your WHOLE territory (full ownerBounds + clear ring), so at max zoom-out the
@@ -4697,6 +4706,42 @@ function render() {
     }
   }
 
+  // 10c) MONUMENT markers — admin-placed permanent landmarks. Each is a diamond at its world tile with
+  // its name + current holder (in the holder's colour, else UNCLAIMED) and a faint capture ring. Pinned
+  // in world space so they pan/zoom with the map. Only a handful → cheap; off-screen ones are culled.
+  if (monuments && monuments.length) {
+    ctx.save();
+    ctx.textAlign='center';
+    for (const mo of monuments) {
+      const msx = W/2 + (mo.x - view.x)*cp, msy = H/2 + (mo.y - view.y)*cp;
+      if (msx < -60 || msx > W+60 || msy < -70 || msy > H+60) continue;   // off-screen
+      const held = !!mo.holder, hcol = held ? safeColor(mo.color, '#ffd166') : '#ffd166';
+      // faint capture ring (sqrt(r2) tiles → screen px), skipped when tiny or absurdly large
+      const rr = Math.sqrt(Math.max(0, mo.r2||0)) * cp;
+      if (rr > 6 && rr < Math.max(W,H)*1.6) {
+        ctx.beginPath(); ctx.arc(msx, msy, rr, 0, Math.PI*2);
+        ctx.strokeStyle = held ? safeColor(mo.color,'rgba(255,209,102,0.7)') : 'rgba(255,209,102,0.6)';
+        ctx.globalAlpha = 0.18; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;
+      }
+      // diamond glyph
+      const s = 8;
+      ctx.beginPath();
+      ctx.moveTo(msx, msy-s); ctx.lineTo(msx+s, msy); ctx.lineTo(msx, msy+s); ctx.lineTo(msx-s, msy);
+      ctx.closePath();
+      ctx.shadowColor='rgba(0,0,0,0.7)'; ctx.shadowBlur=5;
+      ctx.fillStyle = held ? hcol : 'rgba(255,209,102,0.9)'; ctx.fill();
+      ctx.shadowBlur=0; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.lineWidth=1.5; ctx.stroke();
+      // name + holder labels above the glyph
+      ctx.font='7px "Press Start 2P",monospace'; ctx.textBaseline='bottom';
+      ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=4;
+      ctx.fillStyle='#fff'; ctx.fillText((mo.name||'MONUMENT').slice(0,24), msx, msy - s - 10);
+      ctx.fillStyle = held ? hcol : 'rgba(255,255,255,0.55)';
+      ctx.fillText(held ? mo.holder : 'UNCLAIMED', msx, msy - s - 2);
+      ctx.shadowBlur=0;
+    }
+    ctx.restore();
+  }
+
   // 11) Location — real-world phrase from the nearest city; raw coordinates are never shown.
   const loc=describeLocation(view.x,view.y);
   const lhtml = loc ? `<span class="t0">${esc(loc.l1)}</span>`+(loc.l2?`<br><span class="t1">${esc(loc.l2)}</span>`:'') : '—';
@@ -4826,6 +4871,13 @@ cvs.addEventListener('mousedown', e => {
     send({t:'admin-place-ant', targetId:admAntTargetId, x:tile.x, y:tile.y});
     toast(`ANT PLACED AT (${tile.x}, ${tile.y})`);
     // stay in mode — each click places another ant
+    return;
+  } else if (mode==='admin-place-monument') {
+    if (!tile) return;
+    const nm=(prompt('Monument name:','')||'').trim();
+    send({t:'admin-place-monument', x:tile.x, y:tile.y, name:nm});
+    mode='idle'; cvs.style.cursor='';
+    const b=$('adm-mon-place-btn'); if(b){ b.textContent='⬩ PLACE MONUMENT'; b.style.background=''; b.style.color=''; }
     return;
   } else if (mode==='shop-brute') {
     if (tileInForbiddenZone(tile)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
@@ -5084,6 +5136,10 @@ function _onTouchEnd(e){
         if (tile) { send({t:'admin-spawn-at',x:tile.x,y:tile.y}); toast(`NPC PLACED AT (${tile.x}, ${tile.y})`); }
       } else if (mode==='admin-place-ant') {
         if (tile) { send({t:'admin-place-ant',targetId:admAntTargetId,x:tile.x,y:tile.y}); toast(`ANT PLACED AT (${tile.x}, ${tile.y})`); }
+      } else if (mode==='admin-place-monument') {
+        if (tile) { const nm=(prompt('Monument name:','')||'').trim(); send({t:'admin-place-monument',x:tile.x,y:tile.y,name:nm}); }
+        mode='idle'; cvs.style.cursor='';
+        const b=$('adm-mon-place-btn'); if(b){ b.textContent='⬩ PLACE MONUMENT'; b.style.background=''; b.style.color=''; }
       } else {
         // Idle tap → inspect whatever is under the finger (mirrors the desktop click→inspect path).
         inspectAtTile(tile);
@@ -5379,6 +5435,7 @@ function admTab(btn, tab) {
   } else {
     if (admPlayerListInterval) { clearInterval(admPlayerListInterval); admPlayerListInterval=null; }
   }
+  if (tab==='sandbox') renderMonumentAdminList();
 }
 
 function admPushLog(msg) {
@@ -5631,6 +5688,40 @@ function admToggleNpcPlace() {
     if (b) { b.textContent='✕ STOP PLACING'; b.style.background='var(--red)'; b.style.color='#fff'; }
     toast('CLICK MAP TO PLACE NPCs · CLICK BUTTON TO STOP');
   }
+}
+function admToggleMonumentPlace() {
+  AudioEngine.click();
+  const b=$('adm-mon-place-btn');
+  if (mode==='admin-place-monument') {
+    mode='idle'; cvs.style.cursor='';
+    if(b){ b.textContent='⬩ PLACE MONUMENT'; b.style.background=''; b.style.color=''; }
+    toast('MONUMENT PLACEMENT OFF');
+  } else {
+    mode='admin-place-monument'; cvs.style.cursor='crosshair';
+    if(b){ b.textContent='✕ CANCEL'; b.style.background='var(--red)'; b.style.color='#fff'; }
+    toast('CLICK MAP TO PLACE A MONUMENT');
+  }
+}
+function renderMonumentAdminList() {
+  const el=$('adm-mon-list'); if(!el) return;
+  if(!monuments.length){ el.innerHTML='<span style="color:var(--dim)">No monuments yet.</span>'; return; }
+  el.innerHTML=monuments.map(m=>{
+    const who=m.holder ? '<span style="color:'+safeColor(m.color,'var(--ink)')+'">'+esc(m.holder)+'</span>'
+                       : '<span style="color:var(--dim)">unclaimed</span>';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:2px;">'
+      +'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⬩ '+esc(m.name)+' · '+who+'</span>'
+      +'<span style="flex:none;white-space:nowrap;">'
+      +'<button class="btn-sm" style="padding:2px 4px;" onclick="admRenameMonument('+m.id+')">✏</button>'
+      +'<button class="btn-sm" style="padding:2px 4px;" onclick="admRemoveMonument('+m.id+')">✕</button></span></div>';
+  }).join('');
+}
+function admRenameMonument(id){
+  const cur=(monuments.find(m=>m.id===id)||{}).name||'';
+  const nm=(prompt('Rename monument:',cur)||'').trim();
+  if(nm){ AudioEngine.click(); send({t:'admin-rename-monument',id,name:nm}); }
+}
+function admRemoveMonument(id){
+  if(confirm('Remove this monument?')){ AudioEngine.click(); send({t:'admin-remove-monument',id}); }
 }
 function admTogglePlaceAnt() {
   AudioEngine.click();
