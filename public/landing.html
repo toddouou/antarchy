@@ -823,7 +823,7 @@ function buildShots(){
   const shots=[];
   for(const q of roster){ const m=metroForQueen(q), sieg=besiegers(q);
     if(sieg>=3) shots.push({key:'s'+q.id,w:W_SIEGE+sieg*6,x:q.x,y:q.y,zoom:1.5,queen:q,battle:true,label:'· under siege',mode:'⚔ UNDER SIEGE'});
-    if(m) shots.push({key:'q'+q.id,w:W_METRO+q.level*QLEVEL_BONUS,x:q.x,y:q.y,zoom:0.8,queen:q,label:'· '+m.name});
+    if(m) shots.push({key:'q'+q.id,w:W_METRO+q.level*QLEVEL_BONUS,x:q.x,y:q.y,zoom:0.8,queen:q,label:'· '+(m.name||'in a hotspot')});
     else  shots.push({key:'q'+q.id,w:W_WORLD+q.level*(QLEVEL_BONUS/2),x:q.x,y:q.y,zoom:0.8,queen:q,label:'· holding the line'});
   }
   for(const mo of monuments){ const held=mo.holderId!=null;

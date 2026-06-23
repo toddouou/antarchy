@@ -175,7 +175,10 @@ pub fn handle_message(
         let me = build_player_info(world, id, true, None);
         let _ = tx.send(json!({"t":"logged-in","spectator":true,"me":serde_json::from_str::<Value>(&me).unwrap_or(Value::Null)}).to_string());
         // Metro centres so the landing-page spectator camera can prioritise queens inside metros.
-        let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_json()}).to_string());
+        // ANONYMIZED for guests (no city names) — geo-concealment: paired with a queen's public coords,
+        // a named city centre would let a guest reverse-project the Mercator projection. See
+        // `regions::metros_anon_json` + the guest-skipping leaderboard/region-holders broadcasts.
+        let _ = tx.send(json!({"t":"regions","metros":crate::regions::metros_anon_json()}).to_string());
         let _ = tx.send(build_queen_roster(world));
         // Monuments (king-of-the-hill landmarks) so the spectator camera can frame them immediately
         // instead of waiting for the ~10 s holder-broadcast cycle. Tiny — only if any exist.

@@ -1027,7 +1027,10 @@ pub fn tick_world(world: &mut World) {
         // (bounded — ≤10 members per alliance, few alliances).
         crate::handlers::recompute_alliance_auras(world);
         let holders = crate::network::build_region_holders(world);
-        world.broadcast_ctl(
+        // Non-guests only: region-holders carry real metro NAMES which (index-correlated with the
+        // anonymized guest metro list, or coord-correlated via the leaderboard) would re-open the
+        // geo reverse-projection a guest is concealed from. The landing spectator ignores this channel.
+        world.broadcast_ctl_nonguests(
             std::sync::Arc::from(crate::network::ctl_frame(crate::network::CTL_REGION_HOLDERS, &holders)),
             &holders,
         );

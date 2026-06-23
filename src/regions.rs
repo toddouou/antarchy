@@ -210,6 +210,17 @@ pub fn metros_json() -> Vec<Value> {
         .collect()
 }
 
+/// **Geo-concealment variant for GUESTS** — metro hotspot geometry (`x`/`y`/`r2`) with the real
+/// city **name stripped**. The landing spectator can still frame "a queen inside a hotspot", but a
+/// guest can no longer pair a known city (public lat/lon) with its exact game coords to solve the
+/// Mercator projection and reverse-project every queen. Authed players keep the named [`metros_json`]
+/// (they already receive the projection for the basemap, so withholding it from them buys nothing).
+pub fn metros_anon_json() -> Vec<Value> {
+    regions().metros.iter()
+        .map(|m| serde_json::json!({ "x": m.cx, "y": m.cy, "r2": m.r2 }))
+        .collect()
+}
+
 /// (name, centre tile x, centre tile y, squared radius in tiles) per metro — for the throttled
 /// king-of-the-hill holder scan in `simulation.rs`.
 pub fn metros_for_holder() -> Vec<(String, i32, i32, i64)> {
@@ -225,4 +236,28 @@ pub fn radius_km_to_r2(x: i32, y: i32, radius_km: f64) -> i64 {
     let cos = (lat * PI / 180.0).cos().abs().max(0.05);
     let r_tiles = radius_km * 1000.0 / (tm * cos);
     (r_tiles * r_tiles) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Geo-concealment invariant: the GUEST metro payload must carry hotspot geometry but **no real
+    /// city name** (a named centre + a queen's public coords = a Mercator reverse-projection anchor),
+    /// while the authed payload keeps names. Locks the fix so a future edit can't silently re-leak.
+    #[test]
+    fn guest_metros_are_anonymized_but_keep_geometry() {
+        init();
+        let named = metros_json();
+        let anon  = metros_anon_json();
+        assert_eq!(named.len(), anon.len(), "same metros, just name-stripped");
+        assert!(!anon.is_empty(), "there are metros to test");
+        for (n, a) in named.iter().zip(anon.iter()) {
+            // Named payload exposes a real city; the guest payload must not carry ANY name field.
+            assert!(n.get("name").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()));
+            assert!(a.get("name").is_none(), "guest metro must not carry a city name: {a}");
+            // Geometry (x/y/r2) is preserved so the spectator camera can still frame hotspots.
+            assert_eq!(a["x"], n["x"]); assert_eq!(a["y"], n["y"]); assert_eq!(a["r2"], n["r2"]);
+        }
+    }
 }

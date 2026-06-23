@@ -562,6 +562,22 @@ impl World {
         }
     }
 
+    /// Like [`broadcast_ctl`], but **skips guest connections**. Used for the channels that carry
+    /// real-world place names (leaderboard `region`, region-holders) — a guest must not receive them:
+    /// paired with a queen's public coords (which guests DO get, by id) those names would let a guest
+    /// reverse-project the Mercator projection (geo-concealment). The landing spectator renders neither
+    /// channel, so skipping guests costs nothing and trims their egress. (Authed `/play` clients still
+    /// get both.)
+    pub fn broadcast_ctl_nonguests(&self, frame: Arc<[u8]>, json_fallback: &str) {
+        for p in self.players.values() {
+            if p.guest { continue; }
+            if p.bin {
+                if let Some(ctl) = &p.ctl_tx { let _ = ctl.send(frame.clone()); continue; }
+            }
+            if let Some(tx) = &p.tx { let _ = tx.send(json_fallback.to_string()); }
+        }
+    }
+
     pub fn broadcast_near(&self, cx: i32, cy: i32, msg: &str) {
         for p in self.players.values() {
             if let (Some(tx), Some(v)) = (&p.tx, &p.view) {

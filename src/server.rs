@@ -682,7 +682,10 @@ pub fn viewport_loop(world: WorldState, pool: Arc<rayon::ThreadPool>) {
                     let force = tick.saturating_sub(last_lb_sent) >= tr * 5;
                     if sig != last_lb_sig || force {
                         let lb = build_leaderboard(&w);
-                        w.broadcast_ctl(Arc::from(ctl_frame(CTL_LEADERBOARD, &lb)), &lb);
+                        // Non-guests only: the leaderboard's per-queen `region` (a real city/country
+                        // name) paired with a queen's public coords would let a guest reverse-project
+                        // the geo projection. The landing spectator doesn't render the leaderboard.
+                        w.broadcast_ctl_nonguests(Arc::from(ctl_frame(CTL_LEADERBOARD, &lb)), &lb);
                         last_lb_sig  = sig;
                         last_lb_sent = tick;
                     }
