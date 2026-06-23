@@ -227,15 +227,15 @@ pub fn handle_message(
         let y0 = msg["y0"].as_i64().unwrap_or(0) as i32;
         let x1 = msg["x1"].as_i64().unwrap_or(0) as i32;
         let y1 = msg["y1"].as_i64().unwrap_or(0) as i32;
-        // AoI hard cap (OWASP A01, anti map-hack): clamp the client-reported span server-side BEFORE
-        // storing it, so no client zoom widens the live-entity window past max_view_span. The fog
-        // transform and queen filter both key off this stored rect; snapshot_view re-clamps defensively.
-        // EXCEPTION: an admin in god-view (fog preview OFF) stores the RAW span so they can see the
-        // whole planet — snapshot_view applies the same bypass, and the LOD pyramid caps the served
-        // grid regardless. Non-admins / admins previewing player-view are always clamped (unchanged).
+        // Store the rect clamped to the (generous) TERRITORY span so a zoomed-out player can frame a
+        // whole empire — the served grid is still bounded to MAX_DIM cells by the LOD pyramid, so this
+        // is egress-free. The live-entity (ant/queen) AoI is clamped SEPARATELY to the much tighter
+        // max_view_span inside snapshot_view (the real anti map-hack boundary), so a wide stored rect
+        // cannot leak live entities. EXCEPTION: an admin in god-view (fog preview OFF) stores the RAW
+        // span so they can see the whole planet; the LOD pyramid caps the served grid regardless.
         let god_view = is_admin && !world.admin_fog_preview.contains(&pid);
         let (x0, y0, x1, y1) = if god_view { (x0, y0, x1, y1) }
-                               else { crate::config::clamp_view_span(x0, y0, x1, y1) };
+                               else { crate::config::clamp_tile_view_span(x0, y0, x1, y1) };
         if let Some(p) = world.players.get_mut(&pid) {
             p.view = Some(PlayerView { x0, y0, x1, y1 });
         }

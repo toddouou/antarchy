@@ -681,6 +681,20 @@ pub fn max_view_span() -> i32 {
         .and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(4000).max(64))
 }
 
+/// Hard cap on the **territory (tile/fog) grid span** in world tiles — decoupled from the live-entity
+/// cap above. A player zoomed out to frame a huge empire needs the *territory* to cover the whole
+/// domain, but the served grid is bounded to `MAX_DIM` cells/axis by the LOD pyramid regardless of
+/// span (the LOD `step` simply grows), and ants are skipped + queens still clamped to
+/// [`max_view_span`] — so widening this is egress-free. It exists only so the stored view rect can
+/// carry a domain-sized span; ownership is public map data (same as the free R2 super-tiles), so
+/// there's no AoI leak. `HIVE_MAX_TILE_VIEW_SPAN`, default 262144 (covers any realistic empire),
+/// min `max_view_span`. Read once.
+pub fn max_tile_view_span() -> i32 {
+    static V: OnceLock<i32> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("HIVE_MAX_TILE_VIEW_SPAN").ok()
+        .and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(262_144).max(max_view_span()))
+}
+
 /// Hard cap on the number of live queens serialized into a single viewport frame (defense-in-depth
 /// for AoI: even a crafted view can't enumerate every queen). Nearest-to-centre are kept; the
 /// viewer's own / revealed queens are always kept. `HIVE_MAX_QUEENS_PER_FRAME`, default 256, min 1.
@@ -690,12 +704,11 @@ pub fn max_queens_per_frame() -> usize {
         .and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(256).max(1))
 }
 
-/// Center-preserving clamp of a requested view rectangle so neither axis span exceeds
-/// [`max_view_span`]. Also normalizes (`x0<=x1`, `y0<=y1`). The single source of truth used by both
-/// `view-set` (on store) and `snapshot_view` (defensively, on read). Computed in `i64` so an
-/// adversarial rect (e.g. spanning the whole `i32` range) can't overflow on the subtraction.
-pub fn clamp_view_span(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32, i32, i32) {
-    let max = max_view_span() as i64;
+/// Center-preserving clamp of a requested view rectangle so neither axis span exceeds `max`. Also
+/// normalizes (`x0<=x1`, `y0<=y1`). Shared core of [`clamp_view_span`] (entity AoI) and
+/// [`clamp_tile_view_span`] (territory grid). Computed in `i64` so an adversarial rect (e.g.
+/// spanning the whole `i32` range) can't overflow on the subtraction.
+fn clamp_span_to(x0: i32, y0: i32, x1: i32, y1: i32, max: i64) -> (i32, i32, i32, i32) {
     let (mut x0, mut x1) = (x0 as i64, x1 as i64);
     let (mut y0, mut y1) = (y0 as i64, y1 as i64);
     if x0 > x1 { std::mem::swap(&mut x0, &mut x1); }
@@ -705,6 +718,21 @@ pub fn clamp_view_span(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32, i32, i3
     let h = y1 - y0;
     if h > max { let cy = y0 + h / 2; y0 = cy - max / 2; y1 = y0 + max; }
     (x0 as i32, y0 as i32, x1 as i32, y1 as i32)
+}
+
+/// Center-preserving clamp of a requested view rectangle so neither axis span exceeds
+/// [`max_view_span`]. The single source of truth for the **live-entity** (ant/queen) window, used
+/// defensively in `snapshot_view` — this is the AoI security boundary.
+pub fn clamp_view_span(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32, i32, i32) {
+    clamp_span_to(x0, y0, x1, y1, max_view_span() as i64)
+}
+
+/// Center-preserving clamp of a requested view rectangle so neither axis span exceeds
+/// [`max_tile_view_span`]. Used to bound the **territory grid** span (on `view-set` store and in
+/// `snapshot_view`) — wide enough to frame a whole empire, but still finite so the stored rect and
+/// LOD `step` stay sane.
+pub fn clamp_tile_view_span(x0: i32, y0: i32, x1: i32, y1: i32) -> (i32, i32, i32, i32) {
+    clamp_span_to(x0, y0, x1, y1, max_tile_view_span() as i64)
 }
 
 // ---- WebSocket hardening (OWASP A02/A10) -------------------------------------------------------

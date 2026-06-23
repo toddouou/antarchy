@@ -592,19 +592,19 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     let ww = world.world_w as i32;
     let wh = world.world_h as i32;
 
-    // AoI hard cap (OWASP A01, defense-in-depth): re-clamp the stored span so even a view that
-    // bypassed `view-set` can't widen the live-entity window past max_view_span. `view-set` already
-    // clamps on store; this guarantees the invariant at the serialization boundary too.
-    // EXCEPTION: an admin in god-view (fog preview OFF) bypasses the clamp so they can frame the WHOLE
-    // planet — the LOD pyramid below still caps the served grid at ≤ MAX_DIM cells/axis (ants skipped,
-    // queens capped), so the cost stays bounded. A non-admin (and an admin previewing player-view) is
-    // always clamped — the security boundary is unchanged for them.
+    // TERRITORY grid span (OWASP A01, defense-in-depth): re-clamp the stored rect to the generous
+    // tile span. This only bounds how much *territory* the served grid covers; the LOD pyramid below
+    // still caps it at ≤ MAX_DIM cells/axis, so a domain-sized span merely grows the LOD `step`
+    // (egress-free — ownership is public map data). The tight live-entity (ant/queen) AoI is a
+    // SEPARATE clamp computed below (`ex*` via `clamp_view_span`), so a wide territory view can never
+    // leak live entities past `max_view_span` — that remains the security boundary.
+    // EXCEPTION: an admin in god-view (fog preview OFF) bypasses both clamps to frame the WHOLE planet.
     let is_admin = world.auth.is_admin_id(player_id);
     let god_view = is_admin && !world.admin_fog_preview.contains(&player_id);
     let (vx0, vy0, vx1, vy1) = if god_view {
         (v.x0, v.y0, v.x1, v.y1)
     } else {
-        crate::config::clamp_view_span(v.x0, v.y0, v.x1, v.y1)
+        crate::config::clamp_tile_view_span(v.x0, v.y0, v.x1, v.y1)
     };
 
     let x0 = vx0.max(0);
@@ -625,6 +625,18 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     let h  = (((fh + step - 1) / step) as usize).clamp(1, MAX_DIM as usize);
     let x1 = x0 + (w as i32) * step;
     let y1 = y0 + (h as i32) * step;
+
+    // Live-entity (ant/queen) AoI window: ALWAYS clamped to the tight `max_view_span` (the anti
+    // map-hack boundary), independent of how wide the territory grid above spans. Intersected with
+    // world bounds. At a non-LOD (zoomed-in) view this equals the territory rect, so close-up play is
+    // unchanged; only a far zoom-out keeps entities bounded while territory fills the screen. An admin
+    // in god-view sees every entity in the served grid.
+    let (ex0, ey0, ex1, ey1) = if god_view {
+        (x0, y0, x1, y1)
+    } else {
+        let (cx0, cy0, cx1, cy1) = crate::config::clamp_view_span(v.x0, v.y0, v.x1, v.y1);
+        (cx0.max(0), cy0.max(0), cx1.min(ww), cy1.min(wh))
+    };
 
     // Level-scaled fog radii, in served-grid cells (÷ step at LOD), from the viewer's own queen
     // level (default L1 while placing). `pad` (off-screen ownership ring the distance transform
@@ -649,7 +661,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
         Vec::new()
     } else {
         let mut a: Vec<(u32, i32, i32, i8, i8, u32, u8)> = world.ants.iter()
-            .filter(|a| a.x >= x0 && a.x < x1 && a.y >= y0 && a.y < y1)
+            .filter(|a| a.x >= ex0 && a.x < ex1 && a.y >= ey0 && a.y < ey1)
             .map(|a| (a.id, a.x, a.y, a.dx, a.dy, a.owner, a.kind))
             .collect();
         // EGRESS GUARD: guests get a much tighter ant cap than players (territory is free via R2).
@@ -677,7 +689,10 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
         }
         let mut queens: Vec<QueenLite> = world.queens.iter()
             .filter(|(_, q)| !q.dead)
-            .filter(|(_, q)| !((q.x + q.size as i32) < x0 || q.x > x1 || (q.y + q.size as i32) < y0 || q.y > y1))
+            // Filter to the tight ENTITY rect (not the wide territory grid), so a far zoom-out can't
+            // enumerate distant queens; always keep the viewer's OWN queen so its marker stays visible.
+            .filter(|(&qid, q)| qid == player_id
+                || !((q.x + q.size as i32) < ex0 || q.x > ex1 || (q.y + q.size as i32) < ey0 || q.y > ey1))
             .map(|(&qid, q)| {
                 let qp = world.players.get(&qid);
                 QueenLite {
@@ -693,7 +708,7 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
             .collect();
         // AoI entity cap (defense-in-depth): keep the viewer's own/revealed queens, then the
         // nearest-to-centre, up to max_queens_per_frame — a crafted wide view can't enumerate all.
-        cap_queens_to(&mut queens, x0 + (x1 - x0) / 2, y0 + (y1 - y0) / 2,
+        cap_queens_to(&mut queens, ex0 + (ex1 - ex0) / 2, ey0 + (ey1 - ey0) / 2,
                       crate::config::max_queens_per_frame());
         (pad, pw, ph, owners, queens)
     } else {
@@ -1043,35 +1058,60 @@ mod tests {
 
     use std::io::Read;
 
-    /// An admin in god-view bypasses the AoI span clamp (so they can frame the whole planet, bounded by
-    /// the LOD pyramid), while a non-admin — and an admin previewing player-view — stays clamped to
-    /// `max_view_span`. Guards the security boundary: only admins-in-god-view get the wide window.
+    fn mk_test_queen(x: i32, y: i32) -> crate::world::Queen {
+        crate::world::Queen { x, y, size: 2, hp: 100, max_hp: 100, level: 1, xp: 0.0, kills: 0,
+            bubble_r: 0.0, last_attacker: None, dead: false, tiles_ever_held: 0, cached_tiles: 0,
+            npc: false, shield: 0, shield_expiry: None, region: String::new() }
+    }
+
+    /// The TERRITORY grid span is decoupled from the live-entity AoI: a non-admin zoomed all the way
+    /// out gets a domain-spanning *territory* grid (bounded by `max_tile_view_span`, not `max_view_span`),
+    /// but the live **queen** window stays clamped to `max_view_span` — a far queen must NOT leak. An
+    /// admin in god-view sees everything; an admin previewing player-view is clamped like a player.
     #[test]
-    fn admin_god_view_bypasses_span_clamp_only_for_admins() {
+    fn territory_grid_is_wide_but_entity_window_stays_clamped() {
         crate::regions::init();
         let mut w = crate::world::World::new();
         let admin_id = w.auth.users.values().find(|u| u.is_admin).map(|u| u.id).expect("admin account");
         let whole = || crate::world::PlayerView { x0: 0, y0: 0, x1: w.world_w as i32, y1: w.world_h as i32 };
         let span = |rv: &RawView| rv.w as i64 * rv.lod_step as i64;
         let max = crate::config::max_view_span() as i64;
+        let tile_max = crate::config::max_tile_view_span() as i64;
 
-        // Admin, god-view (not previewing): the planet-scale span is served.
+        // A queen NEAR the whole-world view centre (inside the entity window) and one FAR from it
+        // (outside `max_view_span` but still inside the wide territory grid). Neither is owned by the
+        // viewers below, so the own-queen passthrough doesn't apply.
+        const NEAR: u32 = 7001;
+        const FAR: u32 = 7002;
+        let cx = w.world_w as i32 / 2;
+        let cy = w.world_h as i32 / 2;
+        w.queens.insert(NEAR, mk_test_queen(cx, cy));
+        w.queens.insert(FAR, mk_test_queen(cx - 100_000, cy - 50_000));
+        let has = |rv: &RawView, qid: u32| rv.queens.iter().any(|q| q.qid == qid);
+
+        // Admin, god-view (not previewing): planet-scale territory span AND every queen visible.
         w.players.insert(admin_id, crate::world::Player {
             id: admin_id, username: "ADMIN".into(), view: Some(whole()), ..Default::default() });
-        let admin_span = span(&snapshot_view(&w, admin_id, true).expect("admin view"));
-        assert!(admin_span > 100_000, "admin god-view sees a planet-scale span, got {admin_span}");
+        let adm = snapshot_view(&w, admin_id, true).expect("admin view");
+        assert!(span(&adm) > 100_000, "admin god-view sees a planet-scale span, got {}", span(&adm));
+        assert!(has(&adm, FAR) && has(&adm, NEAR), "admin god-view sees every queen");
 
-        // Non-admin with the SAME whole-world request is clamped (security boundary intact).
+        // Non-admin with the SAME whole-world request: territory grid is WIDE (decoupled — proves the
+        // fix), but bounded by `max_tile_view_span`; the live-entity window is still clamped, so the
+        // far queen does NOT leak while the near queen is served.
         let pid = 4242u32;
         w.players.insert(pid, crate::world::Player {
             id: pid, username: "BOB".into(), view: Some(whole()), ..Default::default() });
         let bob = snapshot_view(&w, pid, true).expect("bob view");
-        assert!(span(&bob) <= max + bob.lod_step as i64, "non-admin clamped to ~{max}, got {}", span(&bob));
+        assert!(span(&bob) > max, "territory grid is decoupled from the entity cap, got {}", span(&bob));
+        assert!(span(&bob) <= tile_max + bob.lod_step as i64, "territory still bounded by max_tile_view_span, got {}", span(&bob));
+        assert!(has(&bob, NEAR), "near queen (inside the entity window) is served");
+        assert!(!has(&bob, FAR), "far queen must NOT leak past max_view_span — security boundary intact");
 
-        // Admin previewing PLAYER-view (in admin_fog_preview) is clamped like a player too.
+        // Admin previewing PLAYER-view (in admin_fog_preview) is clamped like a player: far queen hidden.
         w.admin_fog_preview.insert(admin_id);
         let prev = snapshot_view(&w, admin_id, true).expect("admin preview");
-        assert!(span(&prev) <= max + prev.lod_step as i64, "admin player-preview clamped, got {}", span(&prev));
+        assert!(!has(&prev, FAR), "admin player-preview is clamped like a player — far queen hidden");
     }
 
     fn inflate(data: &[u8]) -> Vec<u8> {

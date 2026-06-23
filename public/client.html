@@ -1764,6 +1764,13 @@ let prevAntPos=new Map(), lastVwAt=0, antFrameDt=0; // antFrameDt: smoothed ms b
 const territoryCanvas=document.createElement('canvas');
 const territoryCtx=territoryCanvas.getContext('2d',{alpha:true});
 let territoryImg=null;             // full-cache ImageData backing (TILE_CACHE_W×H), edited in place
+// PERSISTENT fog-reveal texture: a camera-anchored mask (white, alpha = erase amount = (100-fog)/100)
+// built from the persistent fogCache alongside the territory texture. drawFog destination-outs the
+// visible sub-rect of THIS at 1:1 zoom, so anything ever revealed stays un-shrouded the instant it's
+// back on screen — independent of the live server frame (no ~200 ms mist flash on pan-back).
+const fogRevealCanvas=document.createElement('canvas');
+const fogRevealCtx=fogRevealCanvas.getContext('2d',{alpha:true});
+let fogRevealImg=null;             // full-cache ImageData backing (parallel to territoryImg)
 // ===== Tile-effect overlay (viewport-resolution, territory-masked) ================================
 // Cosmetic tile effects render as ONE screen-space procedural pass per *visible* effect, each clipped
 // to that effect's owners' territory. Cost is O(visible pixels) — independent of painted area or owner
@@ -2037,26 +2044,61 @@ function getNearColored(v) {
   return nc;
 }
 
-// Allocate the world-anchored TERRITORY texture (once at login, sized to the tile cache). It holds
-// pure owner colours; the per-frame fog (drawFog) shrouds it. Empty until frames merge.
+// Allocate the world-anchored TERRITORY + FOG-REVEAL textures (once at login, sized to the tile
+// cache). Territory holds pure owner colours; fog-reveal holds the erase mask. Empty until frames merge.
 function allocCacheTextures(){
   territoryCanvas.width=TILE_CACHE_W; territoryCanvas.height=TILE_CACHE_H;
   territoryImg=territoryCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
+  fogRevealCanvas.width=TILE_CACHE_W; fogRevealCanvas.height=TILE_CACHE_H;
+  fogRevealImg=fogRevealCtx.createImageData(TILE_CACHE_W, TILE_CACHE_H);
   cacheRenderMode=-1;
 }
-// Wipe the territory texture (on cache re-anchor / world wipe). Re-fills as frames arrive.
+// Wipe both textures (on world wipe / login). Re-fills as frames arrive.
 function clearCacheTextures(){
   if (!territoryImg) return;
   territoryImg.data.fill(0);
   territoryCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H);
+  if (fogRevealImg){ fogRevealImg.data.fill(0); fogRevealCtx.clearRect(0,0,TILE_CACHE_W,TILE_CACHE_H); }
   fxDataGen++;          // territory changed → tile-fx masks must rebuild
   trailCells.clear();   // cache anchor changed → fresh-cell indices no longer map; drop them
 }
-// Rasterize a cache-LOCAL pixel region [lx,ly,lw,lh] of tileCache into the persistent TERRITORY
-// texture, uploading ONLY that dirty sub-rect. Pure owner colours — the fog (drawFog) shrouds them at
-// draw time. A cell is transparent when: unclaimed, fully fogged (fogCache≥100, a cheap
-// belt-and-suspenders cull so a fast pan can't flash distant land), or we're browsing the planet
-// (queen-select shows the whole-world map with NO territory). Called per data merge + on mode change.
+// Re-anchor the tile cache to a new origin WITHOUT wiping: scroll the overlapping region (2D memmove
+// via copyWithin) so already-seen land survives a pan, and clear only the newly-exposed margin
+// (tileCache→0 unclaimed, fogCache→100 fogged). Then rebuild both textures from the shifted cache.
+// This is the core "instant pan-back" fix — replaces the old fill(0)/fill(100)+clearCacheTextures wipe.
+function shiftCache(newOriX, newOriY){
+  const W=TILE_CACHE_W, H=TILE_CACHE_H;
+  const dx=cacheOriX-newOriX, dy=cacheOriY-newOriY;   // new-local = old-local + (dx,dy)
+  cacheOriX=newOriX; cacheOriY=newOriY;
+  const colStart=Math.max(0,dx), colEnd=Math.min(W,W+dx), colW=colEnd-colStart;  // overlap cols (new-local)
+  const rowStart=Math.max(0,dy), rowEnd=Math.min(H,H+dy);                         // overlap rows (new-local)
+  if (colW<=0 || rowEnd<=rowStart){
+    tileCache.fill(0); fogCache.fill(100);   // jumped clear of the old window → nothing to preserve
+  } else {
+    const down=dy>0;   // content moving down → copy bottom-up so source rows aren't clobbered first
+    for (let k=0;k<rowEnd-rowStart;k++){
+      const ny=down?(rowEnd-1-k):(rowStart+k);
+      const dst=ny*W+colStart, src=(ny-dy)*W+(colStart-dx);
+      tileCache.copyWithin(dst, src, src+colW);
+      fogCache.copyWithin(dst, src, src+colW);
+    }
+    if (rowStart>0){ tileCache.fill(0,0,rowStart*W); fogCache.fill(100,0,rowStart*W); }
+    if (rowEnd<H){ tileCache.fill(0,rowEnd*W,H*W); fogCache.fill(100,rowEnd*W,H*W); }
+    for (let ny=rowStart;ny<rowEnd;ny++){
+      const b=ny*W;
+      if (colStart>0){ tileCache.fill(0,b,b+colStart); fogCache.fill(100,b,b+colStart); }
+      if (colEnd<W){ tileCache.fill(0,b+colEnd,b+W); fogCache.fill(100,b+colEnd,b+W); }
+    }
+  }
+  rasterizeCache(0,0,W,H);   // rebuild territory + fog-reveal at the new anchor (re-anchor is rare)
+  fxDataGen++; trailCells.clear();
+}
+// Rasterize a cache-LOCAL pixel region [lx,ly,lw,lh] of tileCache into the persistent TERRITORY +
+// FOG-REVEAL textures, uploading ONLY that dirty sub-rect. Territory = pure owner colours (shrouded by
+// drawFog at draw time); fog-reveal = white with alpha = erase amount = (100-fog)/100, written for
+// EVERY cell so revealed-but-unowned land (the reveal ring) un-shrouds too. A territory cell is
+// transparent when: unclaimed, fully fogged (fogCache≥100), or browsing the planet (queen-select shows
+// the whole-world map with NO territory). Called per data merge + on mode change + on re-anchor.
 function rasterizeCache(lx, ly, lw, lh){
   if (!territoryImg) return;
   lx|=0; ly|=0; lw|=0; lh|=0;
@@ -2067,12 +2109,18 @@ function rasterizeCache(lx, ly, lw, lh){
   const browsable = worldBrowsable();
   const showMap = mapVisible;
   const td=territoryImg.data;
+  const fd=fogRevealImg ? fogRevealImg.data : null;
   for (let ry=0; ry<lh; ry++){
     const rowC=(ly+ry)*TILE_CACHE_W + lx;
     for (let rx=0; rx<lw; rx++){
       const ci=rowC+rx, o=ci*4;
+      const f=fogCache[ci];
+      if (fd){   // persistent fog-reveal mask (white; alpha = how much shroud to erase here)
+        fd[o]=255; fd[o+1]=255; fd[o+2]=255;
+        fd[o+3]= f>=100 ? 0 : (f<=0 ? 255 : (((100-f)/100)*255)|0);
+      }
       const t=tileCache[ci];
-      if (browsable || t===0 || fogCache[ci]>=100){ td[o+3]=0; continue; }
+      if (browsable || t===0 || f>=100){ td[o+3]=0; continue; }
       const rgb=toRGB(palette[t]||'#9b3027');   // each player's own colour (no shared alliance colour)
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
       // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
@@ -2080,6 +2128,7 @@ function rasterizeCache(lx, ly, lw, lh){
     }
   }
   territoryCtx.putImageData(territoryImg, 0,0, lx, ly, lw, lh);
+  if (fd) fogRevealCtx.putImageData(fogRevealImg, 0,0, lx, ly, lw, lh);
   fxDataGen++;   // territory pixels changed → tile-fx masks rebuild on next frame
 }
 
@@ -2479,10 +2528,10 @@ function applyViewFrame(f){
   if (tileCache && (f.lod||1) === 1) {
     const {x0:_vx,y0:_vy,w:_vw,h:_vh,tiles:_vt,fog:_vf}=f;
     if (_vx < cacheOriX || _vx+_vw > cacheOriX+TILE_CACHE_W || _vy < cacheOriY || _vy+_vh > cacheOriY+TILE_CACHE_H) {
-      cacheOriX = Math.max(0, _vx - ((TILE_CACHE_W-_vw)>>1));
-      cacheOriY = Math.max(0, _vy - ((TILE_CACHE_H-_vh)>>1));
-      tileCache.fill(0); fogCache.fill(100);
-      clearCacheTextures();   // textures share the world anchor → discard stale pixels on re-anchor
+      // SHIFT-PRESERVE re-anchor: keep the overlapping (already-seen) region instead of wiping, so
+      // panning back to home base is an instant blit — no blank reload waiting on the server.
+      shiftCache(Math.max(0, _vx - ((TILE_CACHE_W-_vw)>>1)),
+                 Math.max(0, _vy - ((TILE_CACHE_H-_vh)>>1)));
     }
     for (let r=0;r<_vh;r++) {
       const dy=(_vy+r)-cacheOriY; if (dy<0||dy>=TILE_CACHE_H) continue;
@@ -3657,23 +3706,16 @@ function clampView() {
   const leashed = !worldBrowsable() && !(me?.isAdmin && !admFogOn);
   const leash = leashed ? territoryAABB(loadVoidR) : null;   // PAN box (full reveal, split-empire safe)
   if (leashed) {
-    // ZOOM-OUT CAP: frame your WHOLE territory (full ownerBounds + clear ring), so at max zoom-out the
-    // entire domain fills the screen — no trails stranded off-screen, and no zooming out PAST your
-    // revealed area into a tiny domain-square floating in the fog/void. Capped at ZOOM_OUT_CAP_MULT× the
-    // queen's main connected island so a post-relocation split empire can't force a near-planetary
-    // auto-fit: a relocated base lands many island-spans away, so it stays reachable by panning (the PAN
-    // box above keeps the full AABB), while locally-fragmented trails sit inside the cap and frame fully.
-    // Floor at 2·clearR for a brand-new queen. (We intentionally do NOT relax this floor to a fixed
-    // cell-px overview — doing so let a small territory zoom out into the void as a small square.)
-    // Frame on the VISIBLE region (loadOsmR — the basemap reveal ring the renderer actually draws),
-    // not the inner clear ring, so "fully zoomed out" fills the screen with exactly what you can see —
-    // no zooming out past your reveal into a small domain-square floating in the fog.
-    const ZOOM_OUT_CAP_MULT = 2.5;    // max zoom-out span = this × the main island (relocations land beyond)
+    // ZOOM-OUT CAP: frame your WHOLE territory at max zoom-out, so the entire domain fills the screen
+    // (with a little margin) — no trails stranded off-screen, no artificial box of fog around a tiny
+    // domain-square. The span is the full ownerBounds AABB inflated by the VISIBLE reveal ring
+    // (loadOsmR — what the renderer actually draws), so "fully zoomed out" shows exactly what you own.
+    // The server now serves a domain-spanning LOD territory grid (bounded by MAX_DIM cells), so this is
+    // egress-free; the PAN box above still covers the full AABB, so a split empire stays reachable AND
+    // framable. Floored at 2·loadOsmR for a brand-new queen, +10% breathing room.
     const fb = territoryAABB(loadOsmR);                 // full territory (+ visible reveal ring)
-    const zb = territoryAABB(loadOsmR, zoomBounds);     // main connected island (+ visible reveal ring)
-    const islandSpan = Math.max(zb.x1 - zb.x0, zb.y1 - zb.y0, 2 * loadOsmR);
-    const fullSpan   = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadOsmR);
-    const maxSpan    = Math.min(fullSpan, islandSpan * ZOOM_OUT_CAP_MULT);
+    const fullSpan = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadOsmR);
+    const maxSpan  = fullSpan * 1.1;                    // whole domain + margin
     minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
   }
   view.zoom = clamp(view.zoom, minZoom, 16);
@@ -4288,8 +4330,13 @@ function drawFog(v, cp, W, H) {
   const jAx=Math.sin(now*0.00050)*J,      jAy=Math.cos(now*0.00041)*J;
   const jBx=Math.cos(now*0.00043+1.7)*J,  jBy=Math.sin(now*0.00055+0.6)*J;
 
-  // Reveal mask (rebuild only when the frame changes): alpha = erase amount = (100-fog)/100.
-  if (gw && gh && fog) {
+  // 1:1 zoom erases from the PERSISTENT camera-anchored fog-reveal texture (instant for anything ever
+  // seen → no mist flash on pan-back). LOD (zoomed-out) frames have no fine cache, so they fall back to
+  // the current frame's served mask, which (post tile/entity decoupling) now spans the whole domain.
+  const useCache = step===1 && fogRevealImg && tileCache;
+
+  // Per-frame served mask (LOD / fallback only): rebuild when the frame changes. alpha=(100-fog)/100.
+  if (!useCache && gw && gh && fog) {
     if (fogCanvas.width!==gw || fogCanvas.height!==gh) { fogCanvas.width=gw; fogCanvas.height=gh; fogImg=null; fogBuiltVw=null; }
     if (v!==fogBuiltVw) {
       if (!fogImg) fogImg=fogCtx.createImageData(gw, gh);
@@ -4314,16 +4361,25 @@ function drawFog(v, cp, W, H) {
   const ppwS=cp*FOG_SCREEN_SCALE;                                               // half-res px per world tile
   fillMistWorld(fctx, sw, sh, mistPattern, ppwS, jAx, jAy, 0.55);               // layer A (world-anchored)
   fillMistWorld(fctx, sw, sh, mistPattern, ppwS, jBx, jBy, 0.35);               // layer B (different dance)
-  // Erase the reveal (served-grid rect, scaled to half-res). Outside it the shroud stays fully opaque.
-  if (gw && gh && fog) {
+  // Erase the reveal (scaled to half-res). Outside the revealed area the shroud stays fully opaque.
+  fctx.globalCompositeOperation='destination-out';
+  if (useCache) {
+    // Persistent path: erase the visible sub-rect of the camera-anchored fog-reveal texture (same
+    // geometry as the territory blit), independent of the latest server frame → instant pan-back.
+    const wx0=view.x-W/(2*cp), wy0=view.y-H/(2*cp), wx1=view.x+W/(2*cp), wy1=view.y+H/(2*cp);
+    const ix0=Math.max(wx0,cacheOriX),              iy0=Math.max(wy0,cacheOriY);
+    const ix1=Math.min(wx1,cacheOriX+TILE_CACHE_W), iy1=Math.min(wy1,cacheOriY+TILE_CACHE_H);
+    if (ix1>ix0 && iy1>iy0) {
+      const sx=ix0-cacheOriX, sy=iy0-cacheOriY, sw2=ix1-ix0, sh2=iy1-iy0;
+      const dx=(W/2+(ix0-view.x)*cp)*FOG_SCREEN_SCALE, dy=(H/2+(iy0-view.y)*cp)*FOG_SCREEN_SCALE;
+      fctx.drawImage(fogRevealCanvas, sx, sy, sw2, sh2, dx, dy, sw2*cp*FOG_SCREEN_SCALE, sh2*cp*FOG_SCREEN_SCALE);
+    }
+  } else if (gw && gh && fog) {
     const dsx=(W/2+(v.x0-view.x)*cp)*FOG_SCREEN_SCALE, dsy=(H/2+(v.y0-view.y)*cp)*FOG_SCREEN_SCALE;
     const ddw=gw*step*cp*FOG_SCREEN_SCALE, ddh=gh*step*cp*FOG_SCREEN_SCALE;
-    if (ddw>0 && ddh>0) {
-      fctx.globalCompositeOperation='destination-out';
-      fctx.drawImage(fogCanvas, dsx, dsy, ddw, ddh);
-      fctx.globalCompositeOperation='source-over';
-    }
+    if (ddw>0 && ddh>0) fctx.drawImage(fogCanvas, dsx, dsy, ddw, ddh);
   }
+  fctx.globalCompositeOperation='source-over';
   ctx.imageSmoothingEnabled=true;
   ctx.drawImage(fogScreen, 0, 0, W, H);                                          // blit shroud up over the map
   ctx.imageSmoothingEnabled=false;
