@@ -182,7 +182,7 @@ impl Default for Config {
             hp_base:            50,
             hp_max:          2_428,
             convert_pct:       0.65,
-            daily_ants:        3,
+            daily_ants:        5,
             save_file: "world.snapshot".to_string(),
             capitol_lat: 0.0,
             capitol_lon: 0.0,

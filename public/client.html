@@ -9,20 +9,24 @@
 <link rel="icon" href="/favicon.png" type="image/png">
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* BRAND BIBLE palette — paper surfaces, ink text, nectar-orange primary signature. Token names are
+     kept stable so every component re-skins for free; --orange is the new brand-primary accent. */
   :root {
-    --bg: #f5f3ec; --bg2: #ffffff; --ink: #0d0d0d;
-    --dim: #6e6e6e; --line: #c8c4b8; --grid: #ece8da;
-    --red: #ff2e3f; --yel: #ffb800; --grn: #00b86b; --blu: #0066ff;
+    --bg: #fbf9f2; --bg2: #fdfbf5; --ink: #161309;
+    --dim: #8d8978; --line: #d8d2c0; --grid: #ece7d8;
+    --red: #e0335c; --yel: #e6b400; --grn: #4faa2e; --blu: #2f6fd6;
+    --orange: #ee6c1f; --orange-d: #d65d14;   /* brand primary + pressed/hover */
     /* dark "chrome bar" surface (stays dark in BOTH themes) + scrims / scanline overlay */
-    --inkbar: #0d0d0d; --modal-scrim: rgba(245,243,236,.92); --scan: rgba(0,0,0,.025);
-    --on-yel: #0d0d0d;   /* text on a yellow fill — yellow is light in both themes → always dark */
+    --inkbar: #161309; --modal-scrim: rgba(251,249,242,.93); --scan: rgba(22,19,9,.022);
+    --on-yel: #161309;   /* text on a yellow/gold fill — gold is light in both themes → always dark */
   }
-  /* DARK THEME — derived from the finalized light values; default for new players (toggle in Settings). */
+  /* DARK THEME — brand accents on dark paper-ink surfaces; default for new players (toggle in Settings). */
   html[data-theme="dark"] {
-    --bg: #14171b; --bg2: #1b1f25; --ink: #e8e6e0;
-    --dim: #9aa0aa; --line: #2c313a; --grid: #20242b;
-    --red: #ff3b4a; --yel: #ffb800; --grn: #14c47e; --blu: #4f93ff;
-    --inkbar: #23272e; --modal-scrim: rgba(8,9,11,.86); --scan: rgba(255,255,255,.028);
+    --bg: #16140f; --bg2: #1f1c15; --ink: #f1ede1;
+    --dim: #a7a294; --line: #3a342a; --grid: #25211a;
+    --red: #ff4d72; --yel: #e6b400; --grn: #5fc23c; --blu: #4a8fe6;
+    --orange: #ff8a3d; --orange-d: #ee6c1f;
+    --inkbar: #241d12; --modal-scrim: rgba(13,11,7,.88); --scan: rgba(255,255,255,.026);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html,body { height:100%; background:var(--bg); color:var(--ink);
@@ -35,19 +39,19 @@
   /* Layout — admin panel is dynamic */
   body { display:grid;
     grid-template-columns: 270px 1fr 0px;
-    grid-template-rows: 52px 1fr 32px;
-    grid-template-areas: "h h h" "s c a" "f f f";
+    grid-template-rows: 52px 1fr;
+    grid-template-areas: "h h h" "s c a";
     transition: grid-template-columns .25s; }
   body.admin-on { grid-template-columns: 270px 1fr 360px; }
 
   header { grid-area:h; border-bottom:2px solid var(--ink); display:flex; align-items:center;
     padding:0 16px; gap:16px; background:var(--bg2); }
-  .logo { font-family:'Press Start 2P',monospace; font-size:14px; display:flex; align-items:center; gap:8px; }
-  .logo::before { content:"▲"; color:var(--red); font-size:18px; }
-  .logo em { color:var(--red); font-style:normal; }
-  .region { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
-    padding:4px 8px; border:1px solid var(--line); }
-  .region b { color:var(--red); font-weight:normal; }
+  .logo { font-family:'Press Start 2P',monospace; font-size:14px; display:flex; align-items:center; gap:8px;
+    letter-spacing:.02em; text-transform:lowercase; }
+  .logo::before { content:"▲"; color:var(--orange); font-size:18px; }   /* the mark — orange, never recoloured */
+  .logo em { color:var(--orange); font-style:normal; }
+  /* header divider between the currency counters and the button group */
+  .hdr-div { width:2px; align-self:stretch; margin:11px 2px; background:var(--line); flex:0 0 auto; }
   .admin-badge { font-family:'Press Start 2P',monospace; font-size:8px; padding:4px 8px;
     background:var(--inkbar); color:var(--yel); border:1px solid var(--ink); display:none; }
   body.admin-on .admin-badge { display:inline-block; }
@@ -60,32 +64,33 @@
   .hstat .v { font-family:'Press Start 2P',monospace; font-size:11px; margin-top:4px; }
   .hstat.sh .l { color:var(--blu); opacity:.7; }      /* server-health bundle */
   .hstat.sh .v { color:var(--blu); }
-  .hdr-logout { margin-left:14px; font-family:'Press Start 2P',monospace; font-size:8px;
-    background:var(--bg); color:var(--ink); border:2px solid var(--ink); padding:7px 10px;
-    cursor:pointer; transition:background .12s, color .12s; }
+  .hdr-logout { margin-left:12px; font-family:'Press Start 2P',monospace; font-size:7px;
+    background:var(--bg2); color:var(--ink); border:1.5px solid var(--ink); border-radius:7px;
+    padding:8px 11px; cursor:pointer; transition:background .12s, color .12s, box-shadow .08s, transform .08s; }
   .hdr-logout:hover { background:var(--red); color:#fff; transform:translate(-1px,-1px);
     box-shadow:2px 2px 0 0 var(--ink); }
 
-  /* HEADER ACTION BUTTONS — boxy nav (shop / discovery / settings) */
-  .hdr-actions { display:flex; gap:7px; margin-left:14px; }
-  .hbtn { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
-    min-width:50px; padding:5px 8px; background:var(--bg); border:2px solid var(--ink); cursor:pointer;
-    transition:background .12s, transform .08s, box-shadow .08s; }
-  .hbtn .ic { font-size:14px; line-height:1; }
+  /* HEADER ACTION BUTTONS — brand icon-over-label cells, uniform 52px, hairline ink outline */
+  .hdr-actions { display:flex; gap:6px; }
+  .hbtn { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+    width:52px; height:50px; padding:0; background:var(--bg2); border:1.5px solid var(--ink);
+    border-radius:7px; color:var(--ink); cursor:pointer;
+    transition:background .12s, transform .08s, box-shadow .08s, border-color .12s; }
+  .hbtn .ic { width:16px; height:16px; line-height:0; display:block; }   /* inline SVG glyph */
   .hbtn .lb { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); letter-spacing:.03em; }
-  .hbtn:hover { background:var(--yel); transform:translate(-1px,-1px); box-shadow:2px 2px 0 0 var(--ink); }
-  .hbtn:hover .lb { color:var(--ink); }
-  .hbtn.on { background:var(--ink); }
-  .hbtn.on .lb { color:var(--yel); }
+  .hbtn:hover { transform:translate(-1px,-1px); box-shadow:2px 2px 0 0 var(--ink); border-color:var(--orange); }
+  .hbtn:hover .ic, .hbtn:hover .lb { color:var(--orange); }
+  .hbtn.on { border-color:var(--orange); background:var(--bg2); }
+  .hbtn.on .ic, .hbtn.on .lb { color:var(--orange); }
 
   /* HEADER BALANCES — the two new currency readouts (D3): nectar (orange drop) + gems (green gem). */
-  .hbal { display:flex; align-items:center; gap:12px; margin-left:14px; }
+  .hbal { display:flex; align-items:center; gap:12px; }
   .hbal-chip { display:flex; align-items:center; gap:6px; font-family:'Press Start 2P',monospace; font-size:8px; }
   .hbal-ic { width:12px; height:12px; display:inline-block; flex:0 0 auto; }
-  .hbal-ic.nectar { background:#ff8a00; border-radius:50% 50% 50% 0; transform:rotate(45deg); }
-  .hbal-ic.gems   { background:var(--grn); transform:rotate(45deg); }
+  .hbal-ic.nectar { background:var(--orange); border-radius:50% 50% 50% 0; transform:rotate(45deg); }   /* soft currency · teardrop */
+  .hbal-ic.gems   { background:var(--grn); transform:rotate(45deg); }                                    /* hard currency · diamond */
   .hbal-v { color:var(--ink); }
-  .shop-pr.nectar { color:#ff8a00; }
+  .shop-pr.nectar { color:var(--orange); }
   .shop-pr.gem    { color:var(--grn); }
 
   /* KILLFEED (CS1.6-style, top-right, newest on top, fades) — boxy panel style to match UI */
@@ -104,16 +109,19 @@
   @keyframes kfOut { to{opacity:0;transform:translateX(26px);} }
 
   /* WORKERS panel */
-  .wk-types { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:8px; }
-  .wk-type { font-family:'Press Start 2P',monospace; font-size:7px; padding:7px 4px;
-    background:var(--bg2); border:2px solid var(--ink); color:var(--ink); cursor:pointer;
-    transition:background .1s; }
-  .wk-type:hover { background:var(--yel); }
-  .wk-type.active { background:var(--ink); color:var(--yel); }
-  .wk-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px; margin-bottom:6px; }
-  .wk-cell { background:var(--bg); border:1px solid var(--line); padding:5px 3px; text-align:center; }
+  .wk-types { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-bottom:8px; }
+  .wk-types.solo { grid-template-columns:1fr; }   /* collapse to one full-width control until brutes unlock */
+  .wk-type { font-family:'Press Start 2P',monospace; font-size:7px; padding:8px 4px;
+    background:var(--bg2); border:1.5px solid var(--ink); border-radius:6px; color:var(--ink); cursor:pointer;
+    transition:background .1s, color .1s; }
+  .wk-type:hover { background:var(--grid); }
+  .wk-type.active { background:var(--orange); color:#fff; border-color:var(--ink); }
+  .wk-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-bottom:6px; }
+  .wk-grid.two { grid-template-columns:1fr 1fr; }
+  .wk-cell { background:var(--bg); border:1.5px solid var(--line); border-radius:6px; padding:6px 3px; text-align:center; }
   .wk-l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
-  .wk-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:4px; color:var(--red); }
+  .wk-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:5px; color:var(--ink); }
+  #ants-avail { color:var(--orange); }   /* READY workers — the actionable resource, nectar-orange */
   .wk-v.sm { font-size:8px; color:var(--blu); }
   .wk-hint { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:6px; line-height:1.5; }
   .wk-toggle { width:100%; margin-top:8px; font-family:'Press Start 2P',monospace; font-size:7px;
@@ -187,10 +195,22 @@
   .ptitle::before { content:"▶ "; }
   .pbody { padding:8px; }
   .profile { display:flex; gap:10px; align-items:center; }
-  .pfp { width:42px; height:42px; border:2px solid var(--ink); display:grid; place-items:center;
-    font-family:'VT323',monospace; font-size:26px; background:var(--bg); }
-  .pname { font-family:'Press Start 2P',monospace; font-size:10px; }
-  .pmeta { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:3px; }
+  .pfp { width:40px; height:40px; flex:0 0 auto; border:1.5px solid var(--ink); border-radius:6px;
+    display:grid; place-items:center; font-family:'VT323',monospace; font-size:24px;
+    background:var(--bg); color:var(--orange); }
+  .pinfo { min-width:0; }
+  .pname { font-family:'Press Start 2P',monospace; font-size:10px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pmeta { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:4px; }
+  .pmeta #s-prestige { color:var(--yel); }
+  /* divider between the queen identity/bars and the worker controls */
+  .prof-div { height:2px; background:var(--line); margin:11px 0 9px; }
+  /* HP caption row (label + numeric readout), brand small chrome */
+  .bar-cap { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
+    margin-top:10px; margin-bottom:3px; display:flex; justify-content:space-between; align-items:baseline; }
+  .bar-cap .bar-meta { font-size:7px; color:var(--ink); }
+  /* the CLAIM | RANKS button pair under DEPLOY */
+  .prof-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
 
   .hp-bar { height:10px; background:var(--bg); border:1px solid var(--ink); position:relative;
     margin-top:4px;
@@ -204,7 +224,7 @@
   .xp-label .xv { color:var(--grn); }
   .xp-bar { height:10px; background:var(--bg); border:1px solid var(--ink); position:relative;
     background-image:repeating-linear-gradient(90deg,transparent 0,transparent 12px,var(--ink) 12px,var(--ink) 13px); }
-  .xp-fill { height:100%; background:linear-gradient(90deg,#00b86b 0,#7fff8a 100%);
+  .xp-fill { height:100%; background:linear-gradient(90deg,var(--grn) 0,#8fd96a 100%);
     transition:width .4s; }
 
   .stat-grid { display:grid; grid-template-columns:1fr 1fr; border-top:2px solid var(--ink); }
@@ -221,29 +241,35 @@
     padding:6px 8px 4px; letter-spacing:.05em; border-top:2px solid var(--ink); }
   .stat-grid.nbt { border-top:none; }
 
-  /* SCORE PANEL */
-  .score-panel { border:2px solid var(--ink); background:var(--ink); color:var(--bg2);
-    padding:10px; margin-bottom:12px; }
+  /* SCORE PANEL — dark chrome surface, orange eyebrow, the grand-score number does the selling */
+  .score-panel { border:2px solid var(--ink); background:var(--inkbar); color:#fbf9f2;
+    border-radius:8px; padding:11px 12px; margin-bottom:12px; }
   .score-panel .slbl { font-family:'Press Start 2P',monospace; font-size:7px;
-    color:var(--yel); margin-bottom:6px; }
-  .score-big { font-family:'Press Start 2P',monospace; font-size:20px;
-    color:var(--yel); line-height:1; }
-  .score-sub { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; }
-  .score-sub div { font-family:'Press Start 2P',monospace; font-size:8px;
-    color:rgba(255,255,255,.6); border-top:1px solid rgba(255,255,255,.15); padding-top:4px; }
-  .score-sub div b { color:#fff; font-weight:normal; font-size:10px; display:block; margin-top:2px; }
+    color:var(--orange); letter-spacing:.05em; margin-bottom:7px; }
+  .score-big { font-family:'Press Start 2P',monospace; font-size:21px; color:#fbf9f2;
+    line-height:1; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:clip; }
+  .score-sub { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:9px; }
+  .score-sub div { font-family:'Press Start 2P',monospace; font-size:7px; letter-spacing:.04em;
+    color:rgba(251,249,242,.55); border-top:1px solid rgba(251,249,242,.16); padding-top:5px; }
+  .score-sub div[title] { cursor:help; }
+  .score-sub div b { color:#fbf9f2; font-weight:normal; font-size:10px; display:block; margin-top:3px; }
 
   /* BUTTONS */
-  .btn { background:var(--red); color:#fff; border:2px solid var(--ink); padding:8px 10px;
+  /* BUTTONS (brand) — primary = nectar-orange, hairline ink outline, rounded, offset shadow */
+  .btn { background:var(--orange); color:#fff; border:1.5px solid var(--ink); border-radius:7px; padding:9px 10px;
     font-family:'Press Start 2P',monospace; font-size:8px; cursor:pointer; width:100%;
-    box-shadow:3px 3px 0 0 var(--ink); transition:transform .08s; letter-spacing:.05em; }
-  .btn:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:4px 4px 0 0 var(--ink); }
-  .btn:active:not(:disabled) { transform:translate(2px,2px); box-shadow:1px 1px 0 0 var(--ink); }
-  .btn:disabled { background:var(--bg); color:var(--dim); cursor:not-allowed; box-shadow:3px 3px 0 0 var(--line); }
+    box-shadow:2px 2px 0 0 var(--ink); transition:transform .08s, box-shadow .08s, background .12s; letter-spacing:.05em; }
+  .btn:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:3px 3px 0 0 var(--ink); background:var(--orange-d); }
+  .btn:active:not(:disabled) { transform:translate(1px,1px); box-shadow:1px 1px 0 0 var(--ink); }
+  .btn:disabled { background:var(--grid); color:var(--dim); cursor:default; border-color:var(--line); box-shadow:2px 2px 0 0 var(--line); }
   .btn.active { background:var(--ink); color:var(--yel); animation:pulseGlow 1s steps(2) infinite; }
-  @keyframes pulseGlow { 0%,100%{box-shadow:3px 3px 0 0 var(--red);} 50%{box-shadow:3px 3px 0 0 var(--yel);} }
+  @keyframes pulseGlow { 0%,100%{box-shadow:2px 2px 0 0 var(--orange);} 50%{box-shadow:2px 2px 0 0 var(--yel);} }
   .btn.ghost { background:var(--bg2); color:var(--ink); }
-  .btn.ghost:hover:not(:disabled) { background:var(--yel); }
+  .btn.ghost:hover:not(:disabled) { background:var(--grid); }
+  /* DAILY CLAIM — shines while a portion is unclaimed (gold fill + pulsing nectar-orange halo) */
+  .btn.claim-ready { background:var(--yel); color:var(--on-yel); border-color:var(--ink); animation:claimShine 1.3s ease-in-out infinite; }
+  .btn.claim-ready:hover { background:var(--yel); }
+  @keyframes claimShine { 0%,100%{ box-shadow:2px 2px 0 0 var(--ink); } 50%{ box-shadow:2px 2px 0 0 var(--ink), 0 0 11px 1px var(--orange); } }
   .lb-table { display:flex; flex-direction:column; }
   .lb-row { display:grid; grid-template-columns:26px 1fr auto; align-items:center; gap:6px;
     padding:5px 2px; border-bottom:1px solid var(--line);
@@ -556,14 +582,13 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .diag { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); line-height:1.8; }
   .diag span { color:var(--red); }
 
-  footer { grid-area:f; border-top:2px solid var(--ink); background:var(--bg2);
-    display:flex; align-items:center; padding:0 12px; gap:16px;
-    font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); }
-  footer .dot { animation:blink .5s steps(2) infinite; }
+  /* connection status — relocated from the (removed) footer into the header, far right */
+  .hdr-conn { display:flex; align-items:center; gap:5px; margin-left:10px;
+    font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); white-space:nowrap; }
+  .hdr-conn .dot { font-size:9px; line-height:1; animation:blink .5s steps(2) infinite; }
   @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
-  footer .dot.ok { color:var(--grn); }
-  footer .dot.bad { color:var(--red); }
-  footer .right { margin-left:auto; }
+  .hdr-conn .dot.ok { color:var(--grn); }
+  .hdr-conn .dot.bad { color:var(--red); }
   /* admin toggle switch */
   .admin-tog { display:none; align-items:center; gap:7px; cursor:pointer;
     font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
@@ -582,7 +607,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     position:fixed; inset:0; z-index:200; pointer-events:none;
     display:none;
     grid-template-columns:270px 1fr;
-    grid-template-rows:52px 1fr 32px;
+    grid-template-rows:52px 1fr;
   }
   #spawn-screen.vis { display:grid; animation:ss-in .22s ease-out; }
   @keyframes ss-in { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:translateY(0)} }
@@ -702,7 +727,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   #boot-splash { position:fixed; inset:0; z-index:1100; display:grid; place-items:center;
     background:var(--bg); color:var(--ink); text-align:center; }
   #boot-splash .boot-logo { font-family:'Press Start 2P',monospace; font-size:18px; }
-  #boot-splash .boot-logo::before { content:"▲ "; color:var(--red); }
+  #boot-splash .boot-logo::before { content:"▲ "; color:var(--orange); }
   #boot-splash .boot-msg { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
     margin-top:16px; letter-spacing:.15em; animation:bootpulse 1.2s ease-in-out infinite; }
   @keyframes bootpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
@@ -826,12 +851,12 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
 <header>
   <div class="logo">antarchy<em>.fun</em></div>
-  <div class="region" id="hdr-region">REGION · <b id="hdr-region-name">—</b></div>
-  <span class="admin-badge" id="admin-badge">◆ ADMIN</span>
-  <div class="hbal">
-    <div class="hbal-chip" id="hbal-nectar" title="Nectar — spend on powerups in the shop"><span class="hbal-ic nectar"></span><span class="hbal-v" id="hdr-nectar">0</span></div>
-    <div class="hbal-chip" id="hbal-gems" title="Gems — the cosmetics currency"><span class="hbal-ic gems"></span><span class="hbal-v" id="hdr-gems">0</span></div>
-  </div>
+  <span class="admin-badge" id="admin-badge">▲ ADMIN</span>
+  <label class="admin-tog" id="admin-tog">
+    <input type="checkbox" id="admin-chk">
+    <span class="tog-track"><span class="tog-thumb"></span></span>
+    ADMIN PANEL
+  </label>
   <div class="hdr-spacer"></div>
   <div class="hstats">
     <div class="hstat"><span class="l">ONLINE</span><span class="v" id="hdr-online">0</span></div>
@@ -841,14 +866,20 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="hstat sh"><span class="l">TPS</span><span class="v" id="hdr-tps">0</span></div>
     <div class="hstat sh"><span class="l">UPTIME</span><span class="v" id="hdr-uptime">--</span></div>
   </div>
-  <div class="hdr-actions">
-    <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><span class="ic">🛒</span><span class="lb">SHOP</span></button>
-    <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><span class="ic">🧭</span><span class="lb">DISCOVER</span></button>
-    <button class="hbtn" id="hbtn-alliance" title="Alliance" onclick="openAllianceWindow()"><span class="ic">🛡</span><span class="lb">ALLIANCE</span></button>
-    <button class="hbtn" id="hbtn-events" title="Events log" onclick="openEventsWindow()"><span class="ic">📜</span><span class="lb">EVENTS</span></button>
-    <button class="hbtn" id="hbtn-help" title="Help" onclick="openHelpWindow()"><span class="ic">❓</span><span class="lb">HELP</span></button>
-    <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><span class="ic">⚙</span><span class="lb">SETTINGS</span></button>
+  <div class="hbal">
+    <div class="hbal-chip" id="hbal-nectar" title="Nectar — spend on powerups in the shop"><span class="hbal-ic nectar"></span><span class="hbal-v" id="hdr-nectar">0</span></div>
+    <div class="hbal-chip" id="hbal-gems" title="Gems — the cosmetics currency"><span class="hbal-ic gems"></span><span class="hbal-v" id="hdr-gems">0</span></div>
   </div>
+  <div class="hdr-div"></div>
+  <div class="hdr-actions">
+    <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 5h10l-1 8.5H4L3 5z"/><path d="M6 5.5V4a2 2 0 0 1 4 0v1.5"/></svg><span class="lb">SHOP</span></button>
+    <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 4.2l1.7 3.8L8 11.8 6.3 8z" fill="currentColor" stroke="none"/></svg><span class="lb">DISC</span></button>
+    <button class="hbtn" id="hbtn-alliance" title="Alliance" onclick="openAllianceWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 2l5 2v3.5c0 3.8-5 6-5 6S3 11.3 3 7.5V4l5-2z"/></svg><span class="lb">ALLY</span></button>
+    <button class="hbtn" id="hbtn-events" title="Events log" onclick="openEventsWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h7"/></svg><span class="lb">LOG</span></button>
+    <button class="hbtn" id="hbtn-help" title="Help" onclick="openHelpWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5.6 6a2.4 2.4 0 1 1 3.2 2.3c-.7.4-.8.9-.8 1.7"/><circle cx="8" cy="12.3" r=".55" fill="currentColor" stroke="none"/></svg><span class="lb">HELP</span></button>
+    <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5L11 5M5 11l-1.5 1.5"/></svg><span class="lb">SET</span></button>
+  </div>
+  <div class="hdr-conn" title="Server connection status"><span class="dot ok" id="dot">●</span><span id="cstat">CONNECTING…</span></div>
   <button class="hdr-logout" id="btn-logout" title="Log out">⎋ LOGOUT</button>
   <button class="hdr-menu" id="hdr-menu" onclick="openSidebar()" aria-label="Open menu">☰</button>
 </header>
@@ -856,11 +887,11 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 <aside class="sidebar">
   <button class="drawer-close" id="drawer-close" onclick="closeSidebar()" aria-label="Close menu">✕</button>
   <div class="score-panel">
-    <div class="slbl">◆ GRAND SCORE</div>
+    <div class="slbl">▲ GRAND SCORE</div>
     <div class="score-big" id="score-big">0</div>
     <div class="score-sub">
-      <div>TILES<b id="sc-tiles">0</b></div>
-      <div>TIME<b id="sc-time">0:00</b></div>
+      <div title="Tiles your territory currently covers (abbreviated K / M / B).">TILES<b id="sc-tiles">0</b></div>
+      <div title="How long your current queen has survived — minutes:seconds (MM:SS).">TIME<b id="sc-time">0:00</b></div>
       <div>KILLS<b id="sc-kills">0</b></div>
     </div>
   </div>
@@ -869,54 +900,35 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="ptitle">QUEEN</div>
     <div class="pbody">
       <div class="profile">
-        <div class="pfp" id="pfp">◆</div>
-        <div>
+        <div class="pfp" id="pfp">▲</div>
+        <div class="pinfo">
           <div class="pname" id="pname">—</div>
-          <div class="pmeta">LEVEL <span id="lvl">1</span></div>
+          <div class="pmeta">LV <span id="lvl">1</span> · <span id="s-prestige">P0</span></div>
         </div>
       </div>
-      <div style="font-family:'Press Start 2P',monospace;font-size:6px;color:var(--dim);margin-top:10px;">HP</div>
+      <div class="bar-cap">HP <span class="bar-meta"><span id="hp-cur">100</span>/<span id="hp-max">100</span><span id="hp-shield" style="color:var(--blu)"></span></span></div>
       <div class="hp-bar"><div class="hp-fill" id="hp-fill" style="width:100%"></div><div class="shield-fill" id="shield-fill" style="width:0%"></div></div>
-      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);margin-top:3px;"><span id="hp-cur">100</span>/<span id="hp-max">100</span><span id="hp-shield" style="color:var(--blu)"></span></div>
       <div class="xp-wrap">
         <div class="xp-label"><span>XP</span><span class="xv" id="xp-val">0/0</span></div>
         <div class="xp-bar"><div class="xp-fill" id="xp-fill" style="width:0%"></div></div>
       </div>
-    </div>
-    <div class="psub">STATS</div>
-    <div class="stat-grid nbt">
-      <div class="stat-cell"><div class="l">LIFESPAN</div><div class="v g" id="s-life">0:00</div></div>
-      <div class="stat-cell"><div class="l">TILES</div><div class="v" id="s-tiles">0</div></div>
-      <div class="stat-cell"><div class="l">ARMY</div><div class="v b" id="s-army">0</div></div>
-      <div class="stat-cell"><div class="l">KILLS</div><div class="v r" id="s-kills">0</div></div>
-      <div class="stat-cell"><div class="l">PRESTIGE</div><div class="v" id="s-prestige" style="color:var(--yel)">P0</div></div>
-      <div class="stat-cell"><div class="l">NECTAR</div><div class="v" id="s-credits" style="color:#ff8a00">0</div></div>
-    </div>
-  </div>
 
-  <div class="panel">
-    <div class="ptitle">WORKERS</div>
-    <div class="pbody">
-      <div class="wk-types">
+      <div class="prof-div"></div>
+
+      <div class="wk-types" id="wk-types">
         <button class="wk-type active" id="wk-type-normal" onclick="setWorkerType('normal')">▴ WORKER</button>
         <button class="wk-type" id="wk-type-brute" style="display:none" onclick="setWorkerType('brute')">◼ BRUTE</button>
       </div>
-      <div class="wk-grid">
+      <div class="wk-grid two">
         <div class="wk-cell"><div class="wk-l">READY</div><div class="wk-v" id="ants-avail">0</div></div>
         <div class="wk-cell"><div class="wk-l">ARMY</div><div class="wk-v" id="wk-army">0</div></div>
-        <div class="wk-cell"><div class="wk-l">DAILY</div><div class="wk-v sm" id="refill-timer">--:--:--</div></div>
       </div>
-      <button class="btn" id="btn-ant" disabled>+ DEPLOY WORKER</button>
-      <div id="drag-hint" class="wk-hint" style="display:none;">◆ Click &amp; drag to aim · click again to stop</div>
-      <button class="wk-toggle" id="wk-list-toggle" onclick="toggleAntList()"><span id="wk-list-caret">▸</span> ACTIVE WORKERS · <span id="wk-list-count">0</span></button>
-      <div id="wk-list" class="wk-list" style="display:none;"></div>
-    </div>
-  </div>
-
-  <div class="panel">
-    <div class="ptitle">LEADERBOARD</div>
-    <div id="lb-body" style="padding:0 8px;">
-      <div style="font-family:'Press Start 2P',monospace;font-size:7px;color:var(--dim);padding:10px 0;text-align:center;">AWAITING DATA...</div>
+      <button class="btn" id="btn-ant" disabled>DEPLOY</button>
+      <div id="drag-hint" class="wk-hint" style="display:none;">▲ Click &amp; drag to aim · click again to stop</div>
+      <div class="prof-actions">
+        <button class="btn" id="btn-claim" onclick="claimDaily()" disabled title="Claim your daily workers (resets 00:00 UTC)">--</button>
+        <button class="btn ghost" id="btn-lb" onclick="openLeaderboardWindow()" title="Open the full world rankings">RANKS</button>
+      </div>
     </div>
   </div>
 
@@ -1313,18 +1325,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   </div>
 </aside>
 
-<footer>
-  <span class="dot ok" id="dot">●</span>
-  <span id="cstat">CONNECTING…</span>
-  <span>WS://LOCALHOST:8080</span>
-  <span style="flex:1"></span>
-  <label class="admin-tog" id="admin-tog">
-    <input type="checkbox" id="admin-chk">
-    <span class="tog-track"><span class="tog-thumb"></span></span>
-    ADMIN PANEL
-  </label>
-  <span>beta v1 (0.1)</span>
-</footer>
+<!-- footer removed (brand) — connection status + admin toggle relocated into the header -->
 
 <!-- MOBILE: backdrop behind the side-panel drawer (tap to close). Hidden on desktop. -->
 <div id="drawer-scrim" onclick="closeSidebar()"></div>
@@ -1928,11 +1929,13 @@ let inVoid=false, tabHidden=false, _viewSuspended=false; // view-suspend reconci
 let nearColoredCache=null, nearColoredVw=null;
 // Leaderboard
 let lbPrevTiles={};
-// Big-number formatting: 1234567 -> "1.23 M". <1000 stays a plain integer. 2 decimals give the
-// headline coin-counter look (150.23 K, 1.25 B) and stop million-order numbers ticking illegibly.
-function fmtBig(n){ n=+n||0; if(n<1e3)return String(n|0);
-  const u=n>=1e9?['B',1e9]:n>=1e6?['M',1e6]:['K',1e3];
-  return (n/u[1]).toFixed(2)+' '+u[0]; }
+// Big-number formatting (brand): 3 significant figures + K/M/B suffix, no space → 1.23M, 4.50B,
+// 120B. <1000 stays a plain integer. 3 sig-figs keeps the headline ≤5 chars so a grand score in the
+// hundreds-of-billions never overflows the score panel, while small values keep the coin-counter look.
+function fmtBig(n){ n=+n||0; const neg=n<0?'-':''; n=Math.abs(n); if(n<1e3)return neg+(n|0);
+  const u=n>=1e9?['B',1e9]:n>=1e6?['M',1e6]:['K',1e3]; const v=n/u[1];
+  const s=v>=100?v.toFixed(0):v>=10?v.toFixed(1):v.toFixed(2);
+  return neg+s+u[0]; }
 const fmtLbTiles=fmtBig;   // leaderboard tiles/score share the abbreviation (no glow there)
 // Glow tier 0..4 (0 plain .. 4 super-mario rainbow), keyed to how close a value is to a billion.
 function bigTier(n){ return n>=1e9?4 : n>=1e8?3 : n>=1e7?2 : n>=1e5?1 : 0; }
@@ -3529,6 +3532,12 @@ function fmtDur(secs, maxUnits=3) {
     return `<span class="t${Math.min(j,2)}">${val}</span><span class="tx">${u}</span>`;
   }).join(' ');
 }
+// HUD clock — minutes:seconds (MM:SS), minutes uncapped (a queen can live past an hour → 125:43).
+function fmtMMSS(secs){ secs=Math.max(0,secs|0); const m=(secs/60)|0, s=secs%60;
+  return m+':'+String(s).padStart(2,'0'); }
+// Daily-claim countdown — hours+minutes only, no seconds ("5H 23M", or "23M" under an hour).
+function fmtHM(secs){ secs=Math.max(0,secs|0); const h=(secs/3600)|0, m=((secs%3600)/60)|0;
+  return h>0 ? h+'H '+String(m).padStart(2,'0')+'M' : (m>0?m+'M':'<1M'); }
 // Server-wide stats push (~1 Hz) → header bar + admin status cards.
 function applyServerStats(s) {
   $('hdr-online').textContent=s.online;
@@ -3576,16 +3585,10 @@ function updateHUD() {
   const tiles=st.tiles||0, secs=st.secs||0, kills=st.kills||0, score=st.score||0;
   // Header now shows SERVER stats (applyServerStats); personal score lives in the sidebar.
   setBig($('score-big'), score, true);
-  if ($('hdr-region-name')) $('hdr-region-name').textContent=me.region||'—';
   setBig($('sc-tiles'), tiles, true);
-  $('sc-time').innerHTML=fmtDur(secs);
+  $('sc-time').textContent=fmtMMSS(secs);
   $('sc-kills').textContent=kills;
-  $('s-life').innerHTML=fmtDur(secs);
-  setBig($('s-tiles'), tiles, true);
-  $('s-army').textContent=me.army||0;
-  $('s-kills').textContent=kills;
-  $('s-prestige').textContent='P'+(me.prestige||0);
-  $('s-credits').textContent=(me.nectar||0).toLocaleString();
+  if ($('s-prestige')) $('s-prestige').textContent='P'+(me.prestige||0);   // prestige badge in the profile eyebrow
   // Header currency chips (D3): nectar = me.nectar balance; gems = cosmetics currency.
   if ($('hdr-nectar')) $('hdr-nectar').textContent=(me.nectar||0).toLocaleString();
   if ($('hdr-gems'))   $('hdr-gems').textContent=(me.gems||0).toLocaleString();
@@ -3622,15 +3625,17 @@ function updateHUD() {
   if ($('wk-army')) $('wk-army').textContent=army.toLocaleString();
   if ($('wk-list-count')) $('wk-list-count').textContent=army;
   updateDeployBtn();
-  // Daily claim cell: while the current 00:00-UTC window is unclaimed it IS the claim button;
-  // otherwise a countdown to the next reset. Server-driven (`claimReady`/`nextResetMs` in `me`) —
-  // the claim-daily handler re-validates the window, so this is presentation only.
-  const dailyCell=$('refill-timer');
-  if (me.claimReady) {
-    if (!document.getElementById('btn-claim'))
-      dailyCell.innerHTML='<button class="btn-sm btn-claim" id="btn-claim" onclick="claimDaily()">CLAIM</button>';
-  } else {
-    dailyCell.innerHTML=fmtDur((me.nextResetMs||0)/1000);
+  // Daily claim button: SHINES (pulses) while the current 00:00-UTC window is unclaimed; otherwise it
+  // shows a seconds-less countdown to the next reset and is disabled. Server-driven (claimReady/
+  // nextResetMs in `me`) — the claim-daily handler re-validates the window, so this is presentation only.
+  const claimBtn=$('btn-claim');
+  if (claimBtn){
+    if (me.claimReady){
+      claimBtn.disabled=false; claimBtn.classList.add('claim-ready'); claimBtn.textContent='CLAIM';
+    } else {
+      claimBtn.disabled=true; claimBtn.classList.remove('claim-ready');
+      claimBtn.textContent=fmtHM((me.nextResetMs||0)/1000);
+    }
   }
   // ---- Progressive unlock visibility (desktop header + mobile nav + sidebar; one gate config) ----
   const shopOn=isUnlocked('shop');
@@ -3638,8 +3643,11 @@ function updateHUD() {
   if ($('mnav-shop')) $('mnav-shop').style.display = shopOn?'':'none';
   const wkBrute=$('wk-type-brute');
   if (wkBrute){
-    wkBrute.style.display = isUnlocked('brute')?'':'none';
-    if (!isUnlocked('brute') && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
+    const bruteOn=isUnlocked('brute');
+    wkBrute.style.display = bruteOn?'':'none';
+    // Collapse the toggle to a single full-width control until brutes unlock (no half-width orphan).
+    if ($('wk-types')) $('wk-types').classList.toggle('solo', !bruteOn);
+    if (!bruteOn && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
   }
 }
 
@@ -5251,7 +5259,7 @@ function enterPlaceMode() {
   $('prompt').style.display='block'; $('prompt').textContent='CLICK & DRAG TO PLACE · CLICK BUTTON AGAIN TO STOP';
   $('drag-hint').style.display='block';
   $('btn-ant').classList.add('active');
-  $('btn-ant').textContent='■ STOP PLACING';
+  $('btn-ant').textContent='■ STOP';
   syncMnavDeploy(true);
 }
 function exitPlaceMode() {
@@ -5260,7 +5268,7 @@ function exitPlaceMode() {
     stopForbiddenPoll();
     $('prompt').style.display='none'; $('drag-hint').style.display='none';
     $('btn-ant').classList.remove('active');
-    $('btn-ant').textContent='+ DEPLOY WORKER';
+    $('btn-ant').textContent='DEPLOY';
     $('dir-overlay').style.display='none';
     syncMnavDeploy(false);
   }
@@ -5376,10 +5384,10 @@ function updateDeployBtn() {
   const q=me?.queen, haveQ=!!(q&&!q.dead);
   if (workerType==='brute') {
     const cr=me?.nectar||0;
-    b.textContent='+ DEPLOY BRUTE · 20 NECTAR';
+    b.textContent='DEPLOY · 20';
     b.disabled=!haveQ||(!me?.unlimitedNectar && cr<20);
   } else {
-    b.textContent='+ DEPLOY WORKER';
+    b.textContent='DEPLOY';
     b.disabled=!haveQ||(!me?.unlimitedAnts && (me?.antsAvail||0)<=0);
   }
   const md=document.getElementById('mnav-deploy'); if(md) md.disabled=b.disabled;  // MOBILE mirror
@@ -5761,7 +5769,7 @@ function admToggleNpcPlace() {
   } else {
     mode='admin-place-npc'; cvs.style.cursor='crosshair';
     const b=$('adm-npc-place-btn');
-    if (b) { b.textContent='✕ STOP PLACING'; b.style.background='var(--red)'; b.style.color='#fff'; }
+    if (b) { b.textContent='✕ STOP'; b.style.background='var(--red)'; b.style.color='#fff'; }
     toast('CLICK MAP TO PLACE NPCs · CLICK BUTTON TO STOP');
   }
 }
@@ -5809,7 +5817,7 @@ function admTogglePlaceAnt() {
   } else {
     if (admTargetId==null) { toast('SELECT A TARGET FIRST'); return; }
     admAntTargetId=admTargetId; mode='admin-place-ant'; cvs.style.cursor='crosshair';
-    if (b) { b.textContent='✕ STOP PLACING'; b.style.background='var(--red)'; b.style.color='#fff'; }
+    if (b) { b.textContent='✕ STOP'; b.style.background='var(--red)'; b.style.color='#fff'; }
     toast('CLICK MAP TO PLACE ANTS · CLICK BUTTON TO STOP');
   }
 }
