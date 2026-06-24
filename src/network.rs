@@ -480,6 +480,8 @@ pub fn build_player_info(
         // Basemap only for authed players (guests render territory from R2 on a blank background).
         if !p.guest {
             if let Some(bm) = crate::config::basemap_url() { info["basemapUrl"] = json!(bm); }
+            // Optional MapLibre vector basemap (4-tier labels). When set the client prefers it over raster.
+            if let Some(vs) = crate::config::vector_style_url() { info["vectorStyleUrl"] = json!(vs); }
         }
         // Phase-6 lever B: super-tile span in game cells (S×256). The client keys snapshot tiles by
         // `floor(gx / snapTileCells)`, which must equal the server's `(sx,sy)` super-tile index.

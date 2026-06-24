@@ -1949,6 +1949,10 @@ const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
 // Parallel-B: optional licensed base-map URL template (server-provided via `logged-in`). When set it
 // replaces the raw OSM source. Supports {s} (subdomain), {z}/{x}/{y}. Empty → raw OSM fallback.
 let BASEMAP_URL='';
+// ---- Optional MapLibre GL vector basemap (config-gated via me.vectorStyleUrl). When active it
+// replaces the raster basemap and restricts labels to country/city/town/neighbourhood (zero icons).
+// Default OFF: VECTOR_STYLE_URL stays '' → the raster path runs unchanged (rollback-safe). ----
+let VECTOR_STYLE_URL='', mlMap=null, mlReady=false, mlLoading=false, mlW=0, mlH=0, mlWaterLayers=[];
 function osmTileUrl(z,x,y){
   if (BASEMAP_URL) return BASEMAP_URL.replace('{s}',osmSubs[(_osmSubIdx++)%3]).replace('{z}',z).replace('{x}',x).replace('{y}',y);
   return `https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
@@ -2612,6 +2616,9 @@ function handle(msg) {
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
       // ∥B base-map + Phase-6 R2 snapshot config (static block; empty → features stay dormant).
       if (me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
+      // Optional MapLibre vector basemap (4-tier labels). Lazy-loads the lib on first use; raster
+      // stays the default when unset, so this is fully off-by-default + rollback-safe.
+      if (me.vectorStyleUrl && !VECTOR_STYLE_URL) { VECTOR_STYLE_URL=me.vectorStyleUrl; initVectorBasemap(); }
       if (me.snapshotBase!=null) { SNAP_BASE=me.snapshotBase; SNAP_ON=true; }
       if (me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells; // lever B: super-tile span (S*256)
       if (me.epoch!=null && me.epoch!==SNAP_EPOCH) { SNAP_EPOCH=me.epoch; snapCache.clear(); }
@@ -4019,6 +4026,79 @@ function osmTileCorner(ox, oy, n, geo, cosLat) {
   };
 }
 
+// ===== Optional MapLibre GL vector basemap (gated on me.vectorStyleUrl) =====
+// Lazy-load MapLibre from CDN, build a vector basemap, restrict labels to the 4 allowed place
+// tiers, then each frame sync its camera to the game camera and BLIT its canvas as the basemap
+// layer (keeps the existing opaque-canvas fog/territory pipeline intact). Any failure leaves
+// mlReady=false → the raster path runs, so this can never break the live map.
+const ML_VER='4.7.1';
+function initVectorBasemap(){
+  if (mlLoading || mlMap || !VECTOR_STYLE_URL) return; mlLoading=true;
+  const css=document.createElement('link'); css.rel='stylesheet';
+  css.href=`https://unpkg.com/maplibre-gl@${ML_VER}/dist/maplibre-gl.css`; document.head.appendChild(css);
+  const s=document.createElement('script'); s.src=`https://unpkg.com/maplibre-gl@${ML_VER}/dist/maplibre-gl.js`;
+  s.onload=()=>{ try{ buildVectorMap(); }catch(e){ console.warn('[vector] build failed',e); mlLoading=false; } };
+  s.onerror=()=>{ console.warn('[vector] maplibre load failed — staying on raster'); mlLoading=false; };
+  document.head.appendChild(s);
+}
+function buildVectorMap(){
+  if (!window.maplibregl){ mlLoading=false; return; }
+  let host=document.getElementById('mlbase');
+  if(!host){ host=document.createElement('div'); host.id='mlbase';
+    host.style.cssText='position:absolute;inset:0;z-index:-1;pointer-events:none;';   // rendered behind; we blit its canvas
+    (document.querySelector('.canvas-area')||document.body).appendChild(host); }
+  mlMap=new maplibregl.Map({container:host, style:VECTOR_STYLE_URL, interactive:false,
+    attributionControl:false, preserveDrawingBuffer:true, fadeDuration:0, refreshExpiredTiles:false,
+    center:[0,0], zoom:2});
+  mlMap.on('error',()=>{});   // swallow tile/style errors — raster fallback stays usable
+  mlMap.on('load',()=>{
+    try{
+      const layers=mlMap.getStyle().layers||[];
+      // water fill layers (for the spawn water-legality query) — capture before trimming
+      mlWaterLayers=layers.filter(l=>l.type==='fill' && l['source-layer']==='water').map(l=>l.id);
+      // strip EVERY symbol layer (POI icons, road shields, water/state/village labels, …)
+      for(const l of layers){ if(l.type==='symbol' && mlMap.getLayer(l.id)) mlMap.removeLayer(l.id); }
+      // re-add ONLY the four allowed place-label tiers — text-only, zero icons
+      const add=(id,cls,size,color,upper)=>mlMap.addLayer({id,type:'symbol',source:'openmaptiles','source-layer':'place',
+        filter:['==',['get','class'],cls],
+        layout:{'text-field':['coalesce',['get','name:latin'],['get','name']],'text-font':['Noto Sans Regular'],
+          'text-size':size,'text-max-width':8,'text-padding':2,'text-transform':upper?'uppercase':'none'},
+        paint:{'text-color':color,'text-halo-color':'#fbf9f2','text-halo-width':1.4,'text-halo-blur':0.4}});
+      add('lbl-country','country',13,'#161309',true);
+      add('lbl-city','city',13,'#161309',false);
+      add('lbl-town','town',11,'#5b574c',false);
+      add('lbl-neigh','neighbourhood',9,'#8d8978',false);
+    }catch(e){ console.warn('[vector] style trim failed',e); }
+    mlReady=true;
+    const a=document.getElementById('osm-attrib'); if(a){ a.textContent='© OpenMapTiles · © OpenStreetMap contributors'; }
+  });
+}
+// Sync the MapLibre camera to the game camera + blit its canvas. Returns true if it drew (caller
+// then skips the raster path). cp = screen px per tile. cos(center-lat) so the basemap pixel scale
+// matches the game scale at the screen centre (true-mercator vs the game grid diverges only toward
+// the viewport edges at high latitude / extreme zoom-out — acceptable for a basemap).
+function blitVectorBasemap(cp, W, H){
+  if (!mlReady || !mlMap || !WORLD.geo) return false;
+  try{
+    if (W!==mlW || H!==mlH){ const h=mlMap.getContainer(); h.style.width=W+'px'; h.style.height=H+'px'; mlMap.resize(); mlW=W; mlH=H; }
+    const c=gameToLatLon(view.x, view.y); if(!c) return false;
+    const cosLat=Math.cos(c.lat*Math.PI/180)||1;
+    let z=Math.log2(cp*40075016.686*cosLat/(WORLD.geo.tileMeters*512));   // MapLibre 512px-tile zoom
+    z=Math.max(0,Math.min(22,z));
+    mlMap.jumpTo({center:[c.lon,c.lat],zoom:z,bearing:0,pitch:0});
+    if (mlMap.redraw) mlMap.redraw();                 // force a synchronous paint of the new camera
+    ctx.drawImage(mlMap.getCanvas(),0,0,W,H);         // blit as the basemap layer
+    return true;
+  }catch(e){ return false; }
+}
+// Spawn water-legality via the vector basemap (replaces the raster pixel-sample when vector is on).
+// Returns true/false, or null if it can't answer (caller then keeps its existing result).
+function vectorPointIsWater(px,py){
+  if (!mlReady || !mlMap || !mlWaterLayers.length) return null;
+  try{ const f=mlMap.queryRenderedFeatures([px,py],{layers:mlWaterLayers}); return !!(f && f.length); }
+  catch(e){ return null; }
+}
+
 // Drawn purely from the live camera (view.x/view.y/cp) — independent of the server
 // viewport `vw`. This keeps the base map tracking pan/zoom in real time, even when
 // zoomed out far enough that the server tile overlay (and thus `vw`) is suppressed.
@@ -4178,6 +4258,14 @@ function sampleTileWater(tx, ty) {
   _waterCheckTile = key;
   if (waterCache.has(key)) { hoverIsWater = waterCache.get(key); return; }
   if (!WORLD.geo) { hoverIsWater = false; return; }
+  // Vector basemap active → query its water layer at the tile's screen point (the raster osmCache is
+  // empty when vector is on, so the pixel-sample path below would always fail-open to "land").
+  if (mlReady) {
+    const cp=CELL*view.zoom;
+    const sx=cvs.width/2 + (tx+0.5 - view.x)*cp, sy=cvs.height/2 + (ty+0.5 - view.y)*cp;
+    const w=vectorPointIsWater(sx,sy);
+    if (w!==null) { waterCache.set(key,w); hoverIsWater=w; return; }
+  }
   const geo = WORLD.geo;
   const cosLat = Math.cos(geo.capitolLat * Math.PI / 180) || 1;
   const osmZ = Math.max(1, Math.min(18, Math.round(
@@ -4416,7 +4504,8 @@ function render() {
   const browsable = worldBrowsable();
   if (mapVisible) {
     ctx.fillStyle = browsable ? '#c8d8e8' : VOID_GREY_CSS; ctx.fillRect(0,0,W,H);
-    drawOsmTiles(cp, W, H);
+    // Prefer the MapLibre vector basemap when active (4-tier labels); else the raster path.
+    if (!blitVectorBasemap(cp, W, H)) drawOsmTiles(cp, W, H);
   } else {
     ctx.fillStyle = browsable ? '#ffffff' : VOID_GREY_CSS; ctx.fillRect(0,0,W,H);
   }

@@ -469,6 +469,14 @@ pub fn basemap_url() -> Option<String> {
     V.get_or_init(|| std::env::var("HIVE_BASEMAP_URL").ok().filter(|s| !s.trim().is_empty())).clone()
 }
 
+/// Optional MapLibre GL **vector** basemap style URL. When set, authed clients load a vector basemap
+/// (and restrict labels to country/city/town/neighbourhood, zero icons) instead of the raster path.
+/// Empty → client keeps the raster basemap. Read once. (e.g. `https://tiles.openfreemap.org/styles/liberty`.)
+pub fn vector_style_url() -> Option<String> {
+    static V: OnceLock<Option<String>> = OnceLock::new();
+    V.get_or_init(|| std::env::var("HIVE_VECTOR_STYLE_URL").ok().filter(|s| !s.trim().is_empty())).clone()
+}
+
 /// Default half-extent (in tiles) of the camera "home region" a player may pan within, centred on
 /// their queen. `HIVE_HOME_RADIUS`, default 7500 (≈ ±200 km at tile_meters≈26.72 → ~400 km box),
 /// clamped to [512, world]. The client clamps `view.x/y` to this box (Part 1) so the basemap tile
