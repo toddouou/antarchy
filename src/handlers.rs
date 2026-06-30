@@ -351,10 +351,16 @@ pub fn handle_message(
             if let Some(u) = world.auth.users.get_mut(&uname) { u.last_claim_day = 0; }
             world.auth.save();
         }
+        // Seed the milestone high-water to the territory the player ALREADY holds. A queen placed
+        // (first time or post-death respawn) onto existing ground must NOT retroactively collect
+        // every `TILE_MILESTONES` entry in a single tick — that cascade rocketed a returning player
+        // dozens of levels instantly. Milestones now only pay for ground gained AFTER this queen is
+        // fielded; a brand-new player holds 0 tiles, so they still get the full early on-ramp.
+        let held = world.tiles.counts.get(&pid).copied().unwrap_or(0).max(0) as u64;
         world.queens.insert(pid, Queen {
             x, y, size, hp: max_hp, max_hp, level: 1, xp: 0.0, kills: 0,
             bubble_r, last_attacker: None, dead: false,
-            tiles_ever_held: 0, cached_tiles: 0, npc: false,
+            tiles_ever_held: held, cached_tiles: 0, npc: false,
             shield: 0, shield_expiry: None,
             region: crate::regions::region_for(x, y),
         });

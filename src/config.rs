@@ -80,17 +80,21 @@ pub fn valid_hex_color(c: &str) -> bool {
 
 /// Lifetime tile-count milestones as **(threshold_tiles, xp_awarded)** pairs, ascending. Each is
 /// awarded **once per queen** — the first tick its peak tile count (`tiles_ever_held`) reaches the
-/// threshold. Hand-tuned to ramp the opening ~10 levels fast (engagement), then scale with the
-/// territory you actually hold. The award is multiplied by the global `xp_tile_award` scalar (1.0 =
-/// these base values). See `tick_world` Phase 4. (Mindless per-tile painting earns nothing here —
-/// only crossing a threshold pays out; the slow trickle is the passive grant below.)
+/// threshold. The opening entries (≤10k tiles ≈ the first ~8 levels) are a fast engagement on-ramp;
+/// beyond that they are deliberately SMALL, flat achievement bonuses, NOT a level firehose — so even
+/// a sudden large tile gain can't dump dozens of levels at once (that, plus seeding `tiles_ever_held`
+/// to territory already held at placement, killed the "instant L30 on respawn" cascade). The slow
+/// passive trickle (below), keyed to current holdings, is the real mid/late-game progression and is
+/// inherently rate-limited (per-tick), so it can never skyrocket. The award is multiplied by the
+/// global `xp_tile_award` scalar (1.0 = these base values). See `tick_world` Phase 4. (Mindless
+/// per-tile painting earns nothing here — only crossing a threshold pays out.)
 pub const TILE_MILESTONES: &[(u64, f64)] = &[
     (10, 10.0), (50, 25.0), (100, 50.0), (250, 100.0), (500, 150.0),
     (1_000, 250.0), (1_500, 350.0), (2_500, 500.0), (5_000, 800.0), (10_000, 1_500.0),
-    (25_000, 3_000.0), (50_000, 6_000.0), (100_000, 12_000.0), (250_000, 30_000.0), (500_000, 60_000.0),
-    (1_000_000, 120_000.0), (2_500_000, 300_000.0), (5_000_000, 600_000.0), (10_000_000, 1_200_000.0),
-    (25_000_000, 3_000_000.0), (50_000_000, 6_000_000.0), (100_000_000, 12_000_000.0),
-    (250_000_000, 30_000_000.0), (500_000_000, 60_000_000.0), (1_000_000_000, 120_000_000.0),
+    (25_000, 1_000.0), (50_000, 1_500.0), (100_000, 2_000.0), (250_000, 3_000.0), (500_000, 4_000.0),
+    (1_000_000, 5_000.0), (2_500_000, 7_500.0), (5_000_000, 10_000.0), (10_000_000, 15_000.0),
+    (25_000_000, 20_000.0), (50_000_000, 25_000.0), (100_000_000, 30_000.0),
+    (250_000_000, 40_000.0), (500_000_000, 50_000.0), (1_000_000_000, 60_000.0),
 ];
 
 /// Passive territory XP (legacy constant, retired from the tick): was "+1 XP for every 100 NET

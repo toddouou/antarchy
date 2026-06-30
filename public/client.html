@@ -14,15 +14,9 @@
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- Flat-flag sprite (served by infra; span.flag.flag-<iso> renders a 24×18 country flag) -->
 <link rel="stylesheet" href="/flags.css">
-<!-- AdSense H5 Games Ads (rewarded ad gate for daily claim + HUD rectangle) -->
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8322666756328568" crossorigin="anonymous"></script>
-<script>
-  window.adsbygoogle=window.adsbygoogle||[];
-  // adBreak() is the H5 Games Ads API surface; always wraps in try/catch so a blocked ad SDK
-  // never surfaces an exception to callers.
-  const adBreak=o=>{try{adsbygoogle.push(o);}catch(e){}};
-  try{adsbygoogle.push({preloadAdBreaks:'on'});}catch(e){}
-</script>
+<!-- AdSense intentionally NOT loaded. The daily claim is no longer ad-gated — it is granted
+     directly once the server confirms eligibility. To wire a rewarded-ad network later, re-add the
+     adsbygoogle.js script + an adBreak() helper here and restore the gate in `daily-claim-token`. -->
 <style>
   /* ════════════════════════════════════════════════════════════════════════════
      antarchy DESIGN TOKENS — inlined copy of brand/tokens.css (the single source of
@@ -1114,14 +1108,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="pbody"><div id="lb-body"></div></div>
   </div>
 
-  <!-- HUD display ad — rectangle slot; owner must create the ad unit in AdSense and fill the slot id below -->
-  <div class="panel" id="hud-ad-panel">
-    <ins class="adsbygoogle" style="display:block"
-         data-ad-client="ca-pub-8322666756328568"
-         data-ad-slot="FILL_HUD_SLOT_ID"
-         data-ad-format="rectangle"
-         data-full-width-responsive="false"></ins>
-  </div>
+  <!-- HUD display-ad slot removed (AdSense not wired). Re-add an <ins class="adsbygoogle"> here when ready. -->
   <!-- Mobile-only: header ALLY/EVENTS/HELP buttons are hidden ≤768px, so surface them in the drawer overflow. -->
   <button class="btn ghost mobile-only" onclick="openAllianceWindow()" style="margin-bottom:5px;">🛡 ALLIANCE</button>
   <button class="btn ghost mobile-only" onclick="openEventsWindow()" style="margin-bottom:5px;">📜 EVENTS LOG</button>
@@ -2894,46 +2881,21 @@ function handle(msg) {
       placeRangeR = msg.r || 30;   // queen-placement clearance radius (red range ring)
       break;
     case 'daily-claim-token': {
-      // Server says we are eligible this window. Hold the nonce, then open the rewarded-ad gate.
-      // If the ad framework is absent/blocked the catch path shows a toast and never sends claim-daily.
+      // Daily claim is NOT ad-gated. The server already confirmed eligibility and issued a
+      // single-use nonce, so claim immediately. (The AdSense rewarded-ad gate was removed.)
       pendingNonce = msg.nonce;
-      claimInFlight = true;   // updateHUD keeps the button disabled until this resolves (no mid-ad re-click)
-      // Watchdog: if the ad SDK never engages (blocked, ad-blocker, H5 ads not enabled, or a dev server)
-      // NONE of the callbacks below fire — so without this the user gets no feedback at all. `beforeReward`
-      // cancels it the instant a real ad engages, so a long-playing ad is never cut short.
-      let adWatchdog = null;
-      const _claimReset = () => {
-        if (adWatchdog) { clearTimeout(adWatchdog); adWatchdog = null; }
-        claimInFlight = false; pendingNonce = null;
-        const b=document.getElementById('btn-claim');   if(b)  b.disabled=false;
-        const mb=document.getElementById('m-btn-claim'); if(mb) mb.disabled=false;
-      };
-      try {
-        adWatchdog = setTimeout(() => { adWatchdog = null; toast('Ad unavailable — no ants granted'); _claimReset(); }, 10000);
-        adBreak({
-          type: 'reward',
-          name: 'daily-ants',
-          beforeReward: (showAdFn) => {
-            if (adWatchdog) { clearTimeout(adWatchdog); adWatchdog = null; }   // ad engaged — let it play out
-            try { showAdFn(); } catch(e) { toast('Ad unavailable — no ants granted'); _claimReset(); }
-          },
-          adViewed: () => {
-            if (adWatchdog) { clearTimeout(adWatchdog); adWatchdog = null; }
-            // Reward granted: send the claim with the server-signed nonce. Stay in-flight (button
-            // disabled) until the daily-claimed confirmation arrives.
-            if (pendingNonce) { send({t:'claim-daily', nonce: pendingNonce}); }
-            pendingNonce = null;
-          },
-          adDismissed: () => { toast('Ad skipped — no ants granted'); _claimReset(); },
-          adBreakDone: (info) => {
-            // If the break resolved without a view (no fill, filtered, etc.) re-enable.
-            if (info && info.breakStatus !== 'viewed') { _claimReset(); }
-          }
-        });
-      } catch(e) {
-        toast('Ad unavailable — no ants granted');
-        _claimReset();
-      }
+      claimInFlight = true;   // updateHUD keeps the button disabled until daily-claimed confirms
+      send({t:'claim-daily', nonce: pendingNonce});
+      pendingNonce = null;
+      // Safety net: if the grant confirmation never arrives (e.g. a server-side eligibility error
+      // toast instead of daily-claimed), re-enable the button so it can't get stuck disabled.
+      setTimeout(() => {
+        if (claimInFlight) {
+          claimInFlight = false;
+          const b=document.getElementById('btn-claim');   if(b)  b.disabled=false;
+          const mb=document.getElementById('m-btn-claim'); if(mb) mb.disabled=false;
+        }
+      }, 4000);
       break;
     }
     case 'daily-claimed':
@@ -4078,10 +4040,9 @@ function updateHUD() {
   }
 }
 
-// Claim the day's worker portion — gated behind a rewarded ad.
-// Flow: this fn → daily-claim-begin → server replies daily-claim-token (nonce) → adBreak reward
-// → adViewed sends claim-daily with nonce → server replies daily-claimed.
-// If no ad fills, or the player skips, no claim is sent (no ad → no ants, by design).
+// Claim the day's worker portion (no ad gate).
+// Flow: this fn → daily-claim-begin → server replies daily-claim-token (nonce) →
+// we immediately send claim-daily with the nonce → server replies daily-claimed.
 function claimDaily(){
   AudioEngine.click();
   const b=document.getElementById('btn-claim');   if (b)  b.disabled=true;
@@ -6470,9 +6431,7 @@ document.addEventListener('keydown', e => {
 /* Apply saved user settings (sfx / music / scanlines / master volume) before audio starts */
 applySettings();
 
-// Push the HUD rectangle ad unit (sidebar, below RANKINGS). Wrapped in try/catch so a blocked
-// ad SDK never throws into the boot path.
-try { (adsbygoogle=window.adsbygoogle||[]).push({}); } catch(e) {}
+// (HUD rectangle ad unit removed — AdSense is not loaded; nothing to push at boot.)
 
 connect();
 requestAnimationFrame(loop);
