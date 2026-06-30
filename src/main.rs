@@ -114,6 +114,25 @@ async fn main() {
     // accounts and the world are loaded. Drops any membership pointing at an account that no longer
     // exists (e.g. a wipe-orphaned id), so the hot-path index can't reference a ghost.
     w.rebuild_player_alliance();
+
+    // Pin the player-id allocator past EVERY id that already exists, mirroring the monument pin above.
+    // Account ids live in users.json; `next_player_id` lives in the world snapshot — two separate
+    // files. If the snapshot resets while users.json survives (the bincode/zstd format break wipes the
+    // world but keeps accounts; likewise a crash between an account save and the next ~60 s autosave),
+    // `next_player_id` can fall BEHIND existing account ids. Then the next allocation — an organic bot
+    // OR a new signup — reuses a live account's id, and `players/queens.insert(id, …)` overwrites that
+    // human (their queen disappears) while their session resolves onto the collided record (they "log
+    // into a bot"). Reconcile here so no freshly minted id can ever collide with a known one.
+    {
+        let max_account = w.auth.users.values().map(|u| u.id).max().unwrap_or(0);
+        let max_player  = w.players.keys().copied().max().unwrap_or(0);
+        let floor = max_account.max(max_player).saturating_add(1);
+        if w.next_player_id < floor {
+            println!("[persist] next_player_id {} behind existing ids — pinned to {floor} (prevents bot/account id collision)", w.next_player_id);
+            w.next_player_id = floor;
+        }
+    }
+
     let world: WorldState = Arc::new(RwLock::new(w));
 
     // Scope the config read-guard so it is provably dropped before the `.await` below
