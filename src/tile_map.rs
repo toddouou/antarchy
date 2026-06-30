@@ -585,6 +585,96 @@ impl TileMap {
             }
         }
     }
+
+    /// Early-exit scan: `true` on the first PAINTED cell inside the circle (`cx`,`cy`,`r2`) whose
+    /// owner id satisfies `pred`. Same bbox→chunk iteration as `tally_owners_in_circle` (absent
+    /// chunks free, `Uniform` chunks tested once via a nearest-point circle intersection), but stops
+    /// at the first hit. Used by `World::range_has_foreign_tile` for queen-placement legality.
+    pub fn any_tile_in_circle_where<F: Fn(u32) -> bool>(&self, cx: i32, cy: i32, r2: i64, pred: F) -> bool {
+        let r = (r2 as f64).sqrt().ceil() as i64;
+        let x0 = (cx as i64 - r).max(0);
+        let y0 = (cy as i64 - r).max(0);
+        let x1 = (cx as i64 + r).max(0);
+        let y1 = (cy as i64 + r).max(0);
+        let (cx0, cy0) = ((x0 >> CHUNK_SHIFT) as u32, (y0 >> CHUNK_SHIFT) as u32);
+        let (cx1, cy1) = ((x1 >> CHUNK_SHIFT) as u32, (y1 >> CHUNK_SHIFT) as u32);
+        for cyk in cy0..=cy1 {
+            for cxk in cx0..=cx1 {
+                let key = ((cyk as u64) << 32) | cxk as u64;
+                let Some(chunk) = self.chunks.get(&key) else { continue; };
+                let base_x = (cxk << CHUNK_SHIFT) as i64;
+                let base_y = (cyk << CHUNK_SHIFT) as i64;
+                match chunk {
+                    Chunk::Uniform(ui) => {
+                        if *ui == 0 { continue; }
+                        if !pred(self.palette[*ui as usize]) { continue; }
+                        // Whole chunk is this owner → it counts iff the chunk intersects the circle.
+                        let nx = (cx as i64).clamp(base_x, base_x + CHUNK_SIZE as i64 - 1);
+                        let ny = (cy as i64).clamp(base_y, base_y + CHUNK_SIZE as i64 - 1);
+                        let dx = nx - cx as i64; let dy = ny - cy as i64;
+                        if dx * dx + dy * dy <= r2 { return true; }
+                    }
+                    Chunk::Dense { cells, .. } => {
+                        let mut ly = 0usize;
+                        while ly < CHUNK_SIZE {
+                            let dy = (base_y + ly as i64) - cy as i64;
+                            let mut lx = 0usize;
+                            while lx < CHUNK_SIZE {
+                                let i = cells[ly * CHUNK_SIZE + lx];
+                                if i != 0 {
+                                    let dx = (base_x + lx as i64) - cx as i64;
+                                    if dx * dx + dy * dy <= r2 && pred(self.palette[i as usize]) {
+                                        return true;
+                                    }
+                                }
+                                lx += 1;
+                            }
+                            ly += 1;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Chunk-aware "any cell foreign to `pid` inside the half-open block `[x0,x1)×[y0,y1)`". Foreign =
+    /// owner != 0, != `pid`, and not in `allies`. Used by the LOD path of the placement occupancy mask
+    /// ("any-foreign-in-block" downsample, so a sparse/checkerboard region can't alias to half-empty).
+    pub fn any_foreign_in_block(&self, x0: i32, y0: i32, x1: i32, y1: i32, pid: u32, allies: &[u32]) -> bool {
+        let x0 = x0.max(0); let y0 = y0.max(0);
+        if x1 <= x0 || y1 <= y0 { return false; }
+        let foreign = |o: u32| o != 0 && o != pid && !allies.contains(&o);
+        let (cx0, cy0) = ((x0 >> CHUNK_SHIFT) as u32, (y0 >> CHUNK_SHIFT) as u32);
+        let (cx1, cy1) = (((x1 - 1) >> CHUNK_SHIFT) as u32, ((y1 - 1) >> CHUNK_SHIFT) as u32);
+        for cyk in cy0..=cy1 {
+            for cxk in cx0..=cx1 {
+                let key = ((cyk as u64) << 32) | cxk as u64;
+                let Some(chunk) = self.chunks.get(&key) else { continue; };
+                match chunk {
+                    Chunk::Uniform(ui) => {
+                        if *ui != 0 && foreign(self.palette[*ui as usize]) { return true; }
+                    }
+                    Chunk::Dense { cells, .. } => {
+                        let base_x = (cxk << CHUNK_SHIFT) as i32;
+                        let base_y = (cyk << CHUNK_SHIFT) as i32;
+                        let lx0 = (x0 - base_x).max(0) as usize;
+                        let ly0 = (y0 - base_y).max(0) as usize;
+                        let lx1 = (x1 - base_x).min(CHUNK_SIZE as i32) as usize;
+                        let ly1 = (y1 - base_y).min(CHUNK_SIZE as i32) as usize;
+                        for ly in ly0..ly1 {
+                            let rowbase = ly * CHUNK_SIZE;
+                            for lx in lx0..lx1 {
+                                let i = cells[rowbase + lx];
+                                if i != 0 && foreign(self.palette[i as usize]) { return true; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
 }
 
 // TileMap is Sync (all fields Sync) — needed so &TileMap can be shared into rayon closures
@@ -763,5 +853,37 @@ mod tests {
         assert_eq!(tm.get(4, 4), 100);
         assert_eq!(count(&tm, 200), 1);
         assert_eq!(count(&tm, 100), 1);
+    }
+
+    #[test]
+    fn any_foreign_in_block_skips_self_ally_and_empty() {
+        let mut tm = TileMap::default();
+        // A foreign (owner 9) and an own (owner 7) and an ally (owner 8) tile in one block.
+        tm.set(50, 50, 9);
+        tm.set(60, 60, 7);
+        tm.set(70, 70, 8);
+        let allies = [8u32];
+        assert!(tm.any_foreign_in_block(40, 40, 80, 80, 7, &allies), "foreign 9 detected");
+        // Block with only own + ally tiles → not foreign.
+        assert!(!tm.any_foreign_in_block(55, 55, 80, 80, 7, &allies), "own+ally only is clear");
+        // Empty (absent-chunk) block → false.
+        assert!(!tm.any_foreign_in_block(9000, 9000, 9100, 9100, 7, &allies), "empty block clear");
+        // A Uniform foreign chunk overlapping the block → detected.
+        let mut tm2 = TileMap::default();
+        for y in 0..CHUNK_SIZE as u32 { for x in 0..CHUNK_SIZE as u32 { tm2.set(x, y, 9); } }
+        assert!(tm2.any_foreign_in_block(10, 10, 20, 20, 7, &[]), "uniform foreign chunk detected");
+    }
+
+    #[test]
+    fn any_tile_in_circle_where_early_exits_on_match() {
+        let mut tm = TileMap::default();
+        tm.set(1020, 1000, 9);                       // distance 20 from (1000,1000)
+        let r2 = 30 * 30;
+        assert!(tm.any_tile_in_circle_where(1000, 1000, r2, |o| o == 9), "in-circle match found");
+        assert!(!tm.any_tile_in_circle_where(1000, 1000, r2, |o| o == 5), "no owner-5 tile");
+        // Outside the radius is not found.
+        let mut tm2 = TileMap::default();
+        tm2.set(1040, 1000, 9);                      // distance 40 > 30
+        assert!(!tm2.any_tile_in_circle_where(1000, 1000, r2, |o| o == 9), "tile beyond r excluded");
     }
 }

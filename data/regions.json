@@ -1,5 +1,5 @@
 {
-  "_comment": "HIVE metro regions. Add entries and rebuild (this file is embedded via include_str!). radius_km = the metro area's approximate average radius; it is converted to tiles with the Mercator scale at that latitude. Everywhere outside every metro falls back to the country tag.",
+  "_comment": "Antarchy metro regions. Add entries and rebuild (this file is embedded via include_str!). radius_km = the metro area's approximate average radius; it is converted to tiles with the Mercator scale at that latitude. Everywhere outside every metro falls back to the country tag.",
   "metros": [
     { "name": "New York",    "lat": 40.71,  "lon": -74.01,  "radius_km": 45 },
     { "name": "Los Angeles", "lat": 34.05,  "lon": -118.24, "radius_km": 55 },

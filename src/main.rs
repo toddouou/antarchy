@@ -1,9 +1,11 @@
 mod alliance;
 mod api;
 mod auth;
+mod bots;
 mod config;
 mod cosmetics;
 mod email;
+mod events;
 mod fog;
 mod handlers;
 mod metrics;
@@ -89,6 +91,25 @@ async fn main() {
     w.monuments = monuments::load();
     w.next_monument_id = w.monuments.iter().map(|m| m.id).max().unwrap_or(0) + 1;
 
+    // Seed the 100 famous landmarks (data/landmarks.json), each projected to a MAP TILE via the game's
+    // own Mercator so its marker lands on the right real-world spot. Idempotent by name (a restart or an
+    // admin save that persisted seeds into monuments.json won't duplicate them); ids come from the
+    // monument allocator so they never collide with admin-placed monuments.
+    {
+        let mut seeded = 0usize;
+        for mut lm in monuments::seeded_landmarks() {
+            if w.monuments.iter().any(|m| m.name == lm.name) { continue; }
+            lm.id = w.next_monument_id;
+            w.next_monument_id += 1;
+            w.monuments.push(lm);
+            seeded += 1;
+        }
+        println!("[landmark] {seeded} landmarks seeded ({} total monuments)", w.monuments.len());
+    }
+
+    // Restore the persistent per-account event feed (events.json) — survives restarts like accounts.
+    w.events = events::EventStore::load();
+
     // Build the runtime player→alliance index from the persisted roster (users.json) now that both
     // accounts and the world are loaded. Drops any membership pointing at an account that no longer
     // exists (e.g. a wipe-orphaned id), so the hot-path index can't reference a ghost.
@@ -163,6 +184,7 @@ async fn main() {
                 Ok(())  => println!("[persist] snapshot saved"),
                 Err(e)  => eprintln!("[persist] shutdown save failed: {e}"),
             }
+            w.events.save();   // flush the per-account event feed alongside the world snapshot
         }
         // Flush admin-tuned config too, so a graceful restart (systemctl/SIGTERM) keeps the latest
         // slider values even if they changed within the last autosave window.

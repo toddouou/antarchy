@@ -70,6 +70,11 @@ pub struct UserRecord {
     /// `World.player_alliance` index is rebuilt from the roster, but this is the durable source.
     #[serde(default)]
     pub alliance_id:   Option<u32>,
+    /// Number of distinct seasons (world wipes) in which this account had a live queen at the moment
+    /// of the wipe.  Driven by `had_queen_this_season` in `wipe_world`; never decrements.  Additive
+    /// `serde(default)` = 0 so existing users.json loads cleanly without a migration step.
+    #[serde(default)]
+    pub seasons_played: u32,
 }
 
 impl UserRecord {

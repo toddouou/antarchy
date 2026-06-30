@@ -180,15 +180,18 @@ pub struct Player {
     /// they transparently keep the legacy text/JSON protocol (no broken control frames).
     pub bin:             bool,
     pub conn_gen:        u64,
-    pub prestige:        u32,
+    /// Fallen-queen death count for this account (incremented by `kill_queen`). Renamed from
+    /// `prestige` (the old name) — bincode snapshot field name is unchanged (kept `prestige` in
+    /// PlayerSnapshot for layout stability). Drives the in-game death counter / death screen.
+    pub deaths:          u32,
     pub nectar:          u64,
     /// Queued shop defenders: each entry is an expiry timestamp (ms). When an enemy
     /// worker nears this player's queen, one is consumed to spawn a free distraction ant.
     pub defenders:       Vec<u64>,
-    // ---- Discovery (account-level; survive queen death because Player outlives the Queen) ----
+    // ---- Passport (account-level; survive queen death because Player outlives the Queen) ----
     /// Distinct countries / continents this account's queens & ants have set foot in.
-    pub visited_countries:   FxHashSet<String>,
-    pub visited_continents:  FxHashSet<String>,
+    pub passport_countries:   FxHashSet<String>,
+    pub passport_continents:  FxHashSet<String>,
     /// Lifetime accumulators folded in from each fallen queen (for the USER-vs-QUEEN compare).
     pub lifetime_kills:      u32,
     pub lifetime_peak_tiles: u64,
@@ -205,6 +208,10 @@ pub struct Player {
     pub kills_of:            FxHashMap<String, u32>,
     /// Snapshot taken at disconnect; diffed on reconnect for the welcome-back summary.
     pub away:                Option<AwaySnapshot>,
+    /// Set to `true` on the first `place-queen` of a season and used by `wipe_world` to credit
+    /// `UserRecord.seasons_played`. RUNTIME-ONLY — never added to `PlayerSnapshot` or persist.rs,
+    /// so a restart doesn't change season accounting (a wipe can only happen while the server runs).
+    pub had_queen_this_season: bool,
     /// Runtime cache of the equipped `tile_fx` cosmetic id (e.g. `Some("glow")`), loaded from the
     /// account record on connect and refreshed on equip. Read by `get_fx_palette` each tile cycle so
     /// the per-owner tile effect reaches every viewer. NOT persisted — the authoritative source is
@@ -227,7 +234,7 @@ pub struct AwaySnapshot {
     pub kills:             u32,
     pub level:             u16,
     pub army:              u32,
-    pub visited_countries: usize,
+    pub passport_countries: usize,
     pub queen_alive:       bool,
 }
 
@@ -291,6 +298,22 @@ pub struct ResetToken {
     pub created_ms: u64,
 }
 
+/// An issued daily-claim nonce: the server's half of the two-step ad-gate handshake.
+/// Created by `daily-claim-begin`, consumed by `claim-daily`.  RUNTIME-ONLY — never persisted,
+/// so a restart just forces a fresh `daily-claim-begin` (5-minute window is short anyway).
+///
+/// `verified = true` is the PLUGGABLE SSV HOOK: a future `POST /api/ad-ssv` endpoint would
+/// flip this flag after the ad network confirms the rewarded-ad was watched.  For now it is
+/// set to `true` immediately so the two-step flow works end-to-end without a live ad network.
+#[derive(Debug, Clone)]
+pub struct PendingDailyClaim {
+    pub pid:        u32,
+    pub expires_ms: u64,
+    /// Server-side-verified: `true` = the "ad was watched" precondition is satisfied.
+    /// Currently always set true at issuance (pluggable hook placeholder; see above).
+    pub verified:   bool,
+}
+
 // ---- World ----------------------------------------------------------------
 
 /// King-of-the-hill result for one metro: who holds the most painted tiles inside its radius.
@@ -333,6 +356,11 @@ pub struct World {
     /// Phase-7: connections whose tab is hidden/backgrounded (client sent `view-pause`). The
     /// viewport loop skips frame delivery for these → ~0 egress for hidden tabs. Runtime-only.
     pub paused_views:    FxHashSet<u32>,
+    /// Connections currently in queen-PLACEMENT mode (client sent `place-mode {on}`). Members get an
+    /// anonymized, foreign-only, von-Neumann-dilated occupancy MASK from `snapshot_view` (no real owner
+    /// ids, ants, queens, or fog) so a placing player sees where they can't drop a queen without being
+    /// able to reverse-engineer who owns what or where queens sit. Runtime-only, never persisted.
+    pub placing_views:   FxHashSet<u32>,
     /// Admins who toggled the fog-of-war PREVIEW on (server-authoritative; gated on `is_admin` in
     /// handlers). Members get the REAL fog field instead of the admin all-zero god-view, so the
     /// operator can see exactly what players see. Runtime-only, never persisted; a non-admin id can
@@ -350,8 +378,11 @@ pub struct World {
     pub monument_holders: Vec<MonumentHolder>,
     /// Monotonic id allocator for monuments (never reused, so client markers stay stable).
     pub next_monument_id: u32,
-    /// Round-robin cursor into `ants` for throttled discovery (visited-region) sampling.
-    pub visit_sample_cursor: usize,
+    /// Round-robin cursor into `ants` for throttled passport (visited-region) sampling.
+    pub passport_sample_cursor: usize,
+    /// Per-account persistent event feed (the in-game EVENTS log). Keyed by username so it survives
+    /// queen death / logout; persisted to `events.json` on the autosave + shutdown cadence.
+    pub events: crate::events::EventStore,
     /// Ring buffer of recent tick-window durations (ms) for `/health` p50/p99 — the scaling
     /// metric that tells us whether a tick holds its budget at load. `tick_ms_pos` is the
     /// write cursor once the ring fills.
@@ -373,6 +404,9 @@ pub struct World {
     pub pending_regs:    FxHashMap<String, PendingReg>,
     /// Live password-reset tokens, keyed by random token. GC'd in the tick loop.
     pub reset_tokens:    FxHashMap<String, ResetToken>,
+    /// Pending daily-claim nonces issued by `daily-claim-begin`, keyed by nonce string.
+    /// Consumed + removed by `claim-daily` (RUNTIME-ONLY — not persisted; 5-min TTL).
+    pub pending_daily_claims: FxHashMap<String, PendingDailyClaim>,
     /// Rolling counter for allocating guest spectator ids in the reserved hi range (`GUEST_ID_BASE+`).
     pub next_guest_seq:  u32,
     /// Anti-replay (OWASP A01/A06): the last accepted client command `seq` per connected player id.
@@ -391,6 +425,14 @@ pub struct World {
     pub phalanx_stacks:  FxHashMap<u32, u8>,
     /// Mayday throttle: queen-owner id → last alert timestamp (ms). Runtime-only.
     pub mayday_last:     FxHashMap<u32, u64>,
+    /// Clash-conversion digest: (winner_id, loser_id) → (workers_converted, last_x, last_y).
+    /// Accumulated by Phase 5 each tick and flushed to the EVENTS log on a throttled cadence
+    /// (`flush_conversion_log`) so a running battle reads as one "converted N of X's workers" entry
+    /// instead of per-tile spam. Runtime-only (never persisted; cleared on flush + on wipe).
+    pub conversion_tally: FxHashMap<(u32, u32), (u32, i32, i32)>,
+    /// Organic bots seeded around lone players, queued for staggered arrival (see `crate::bots`).
+    /// RUNTIME-ONLY — never persisted; a not-yet-arrived bot simply won't arrive after a restart.
+    pub pending_bots:    Vec<crate::bots::PendingBot>,
 }
 
 /// Base of the reserved guest-spectator id range (disjoint from real player ids, which start at 100
@@ -429,25 +471,30 @@ impl World {
             ant_counts:      FxHashMap::default(),
             paused:          false,
             paused_views:    FxHashSet::default(),
+            placing_views:   FxHashSet::default(),
             admin_fog_preview: FxHashSet::default(),
             dirty_tick:      0,
             metro_holders:   Vec::new(),
             monuments:       Vec::new(),
             monument_holders: Vec::new(),
             next_monument_id: 1,
-            visit_sample_cursor: 0,
+            passport_sample_cursor: 0,
+            events: crate::events::EventStore::default(),
             tick_ms_ring:    Vec::with_capacity(TICK_RING_CAP),
             tick_ms_pos:     0,
             epoch:           current_ms() / 1000,
             snapshot_retire: Vec::new(),
-            pending_regs:    FxHashMap::default(),
-            reset_tokens:    FxHashMap::default(),
+            pending_regs:         FxHashMap::default(),
+            reset_tokens:         FxHashMap::default(),
+            pending_daily_claims: FxHashMap::default(),
             next_guest_seq:  0,
             last_seq:        FxHashMap::default(),
             login_attempts:  FxHashMap::default(),
             player_alliance: FxHashMap::default(),
             phalanx_stacks:  FxHashMap::default(),
             mayday_last:     FxHashMap::default(),
+            conversion_tally: FxHashMap::default(),
+            pending_bots:    Vec::new(),
         }
     }
 
@@ -520,6 +567,22 @@ impl World {
                 let _ = tx.send(msg);
             }
         }
+    }
+
+    /// Record a structured gameplay event (bold `head` + dashed `sub`) for a player's persistent,
+    /// account-level EVENTS feed, AND push it live to them if connected. Account-only: guests and
+    /// NPCs have no durable record, so their events are dropped (the durable store is keyed by
+    /// username). Admin/system one-liners keep using the ephemeral `{"t":"event","msg":…}` form.
+    pub fn log_event(&mut self, player_id: u32, head: String, sub: String) {
+        let username = match self.players.get(&player_id) {
+            Some(p) if !p.npc && !p.guest => p.username.clone(),
+            _ => return,
+        };
+        let ts = crate::config::current_ms();
+        self.events.push(&username, ts, &head, &sub);
+        self.send_to(player_id, serde_json::json!({
+            "t": "event", "ts": ts, "head": head, "sub": sub,
+        }).to_string());
     }
 
     pub fn broadcast(&self, msg: &str) {
@@ -693,6 +756,16 @@ impl World {
             ((ddx * ddx + ddy * ddy) as f64).sqrt() < q.bubble_r + my_r
         })
     }
+
+    /// True if any FOREIGN tile (owner != 0, != `pid`, not allied) lies within radius `r` of
+    /// (`cx`,`cy`). The queen-placement legality rule: a new/relocated queen's initial range must be
+    /// clear of other players' territory (own & allied tiles never block). Early-exits on the first
+    /// foreign tile via `TileMap::any_tile_in_circle_where` (1–4 chunks for r≈30; ocean/empty free).
+    pub fn range_has_foreign_tile(&self, cx: i32, cy: i32, r: f64, pid: u32) -> bool {
+        if r <= 0.0 { return false; }
+        let r2 = (r * r).ceil() as i64;
+        self.tiles.any_tile_in_circle_where(cx, cy, r2, |o| o != pid && !self.same_alliance(pid, o))
+    }
 }
 
 #[cfg(test)]
@@ -736,6 +809,27 @@ mod tests {
         assert!(w.too_close_to_queen(1010, 1000, 0),  "inside the bubble");
         assert!(!w.too_close_to_queen(1100, 1000, 0), "outside the bubble");
         assert!(!w.too_close_to_queen(1010, 1000, 1), "excluded queen ignored");
+    }
+
+    #[test]
+    fn range_has_foreign_tile_excludes_self_and_respects_radius() {
+        let mut w = World::new();
+        // Virgin range → no foreign tiles.
+        assert!(!w.range_has_foreign_tile(1000, 1000, 30.0, 7), "empty map is clear");
+        // An enemy tile just inside r blocks; just outside does not.
+        w.tiles.set(1000 + 20, 1000, 9);
+        assert!(w.range_has_foreign_tile(1000, 1000, 30.0, 7), "enemy tile inside r blocks");
+        let mut w2 = World::new();
+        w2.tiles.set(1000 + 40, 1000, 9);
+        assert!(!w2.range_has_foreign_tile(1000, 1000, 30.0, 7), "enemy tile outside r is fine");
+        // Own tiles never block.
+        let mut w3 = World::new();
+        w3.tiles.set(1000 + 5, 1000, 7);
+        assert!(!w3.range_has_foreign_tile(1000, 1000, 30.0, 7), "own territory never blocks");
+        // r2 boundary exactness: a foreign tile at exactly distance 30 is inside (<= r2).
+        let mut w4 = World::new();
+        w4.tiles.set(1030, 1000, 9);
+        assert!(w4.range_has_foreign_tile(1000, 1000, 30.0, 7), "tile at exactly r counts");
     }
 
     #[test]

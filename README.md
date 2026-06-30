@@ -1,6 +1,6 @@
-# HIVE-SIM
+# Antarchy
 
-The live engine for **HIVE** — a real-time, planet-scale multiplayer Langton's-ant territory war.
+The live engine for **Antarchy** — a real-time, planet-scale multiplayer Langton's-ant territory war.
 Players place a queen on a world map and deploy Langton's-ant workers that paint territory under the
 classic turn-and-flip rule, fighting for tiles across a world the size of Earth. Rust server + an
 embedded single-file canvas client. This is the engine that replaced the original Node.js prototype.

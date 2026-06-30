@@ -4,17 +4,20 @@ use rayon::prelude::*;
 use serde_json::json;
 
 use crate::config::{
-    cfg, level_for_xp, total_xp_for_level, current_ms, ENEMY_HUES,
+    cfg, level_for_xp, total_xp_for_level, current_ms,
     BRUTE_DMG_MULT, DEFENDER_RANGE, TILE_MILESTONES,
     GATE_SHOP, GATE_WORKER, GATE_SHIELD, GATE_BRUTE, GATE_RELOCATE,
 };
-use crate::world::{Ant, MetroHolder, MonumentHolder, Player, Queen, QueenHit, World, XpGrant};
+use crate::world::{Ant, MetroHolder, MonumentHolder, QueenHit, World, XpGrant};
 
-// ---- Discovery + metro-holder throttles ----
+// ---- Passport + metro-holder throttles ----
 const HOLDER_INTERVAL:    u64   = 500;  // ~10 s @ 50 Hz — king-of-the-hill recompute cadence
 const HOLDER_STRIDE:      u32   = 4;    // sample every 4th cell in each axis (scaling care)
-const DISCOVERY_INTERVAL: u64   = 50;   // ~1 s — visited-region sampling cadence
-const DISCOVERY_SAMPLE_N: usize = 64;   // ants sampled per pass (round-robin, army-size-independent)
+const PASSPORT_INTERVAL: u64   = 50;   // ~1 s — visited-region sampling cadence
+const PASSPORT_SAMPLE_N: usize = 64;   // ants sampled per pass (round-robin, army-size-independent)
+// ---- Clash-conversion EVENTS-log digest ----
+const CLASH_LOG_INTERVAL: u64  = 500;  // ~10 s @ 50 Hz — flush the rolling conversion digest to the log
+const CLASH_LOG_MIN:      u32  = 5;    // drop matchups below this many converted workers as noise
 const COMPACT_INTERVAL:   u64   = 500;  // ~33 s @ 15 Hz / ~10 s @ 50 Hz — Dense→Uniform tile-RAM
                                         // compaction sweep. Lowered from 1500 (was ~100 s @ 15 Hz):
                                         // the sim thread is far under budget, so reclaiming solidified
@@ -90,17 +93,14 @@ pub fn flush_xp(world: &mut World) {
             let ants_gained = (new_lvl - old_lvl) as i32 * c.levelup_ant_grant;
             if let Some(p) = world.players.get_mut(&g.player_id) { p.ants_avail += ants_gained; }
             world.queen_map_dirty = true;
-            let tx = world.players.get(&g.player_id).and_then(|p| p.tx.clone());
-            if let Some(tx) = tx {
-                let _ = tx.send(json!({
-                    "t":"event","msg":format!("▲ LEVEL UP → LV{new_lvl} · +{ants_gained} ANTS")
-                }).to_string());
-                let _ = tx.send(json!({"t":"level-up","level":new_lvl}).to_string());
-                // First crossing into the level cap → one-time congratulations popup (client modal).
-                // Fires exactly once: at cap the `at_cap` skip above prevents any further level-up.
-                if old_lvl < c.xp_level_cap && new_lvl >= c.xp_level_cap {
-                    let _ = tx.send(json!({"t":"max-level","level":new_lvl}).to_string());
-                }
+            // Persistent + live structured EVENTS entry (send_to/log_event no-op when offline).
+            world.log_event(g.player_id, format!("Level up — now level {new_lvl}"),
+                            format!("+{ants_gained} workers granted"));
+            world.send_to(g.player_id, json!({"t":"level-up","level":new_lvl}).to_string());
+            // First crossing into the level cap → one-time congratulations popup (client modal).
+            // Fires exactly once: at cap the `at_cap` skip above prevents any further level-up.
+            if old_lvl < c.xp_level_cap && new_lvl >= c.xp_level_cap {
+                world.send_to(g.player_id, json!({"t":"max-level","level":new_lvl}).to_string());
             }
             // Progressive unlocks + one-time starter nectar. Shared with the admin level/xp tools so
             // gates + popups behave identically however a player reaches a tier.
@@ -178,7 +178,7 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     let daily = cfg().daily_ants;
     let now = current_ms();
     if let Some(p) = world.players.get_mut(&loser_id) {
-        p.prestige += 1;
+        p.deaths += 1;
         // Fold the fallen queen's life into account-level lifetime stats (USER-vs-QUEEN compare).
         p.lifetime_kills += victim_kills;
         p.lifetime_peak_tiles = p.lifetime_peak_tiles.max(peak_tiles);
@@ -189,14 +189,17 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     }
 
     // Capture the fallen queen's life stats for the player's death-screen summary.
-    let (secs_alive, new_prestige, nectar) = match world.players.get(&loser_id) {
+    // `new_deaths` = post-increment death count; `seasons_played` = wipe-proof account counter.
+    let (secs_alive, new_deaths, nectar) = match world.players.get(&loser_id) {
         Some(p) => (
             p.queen_placed_at.map(|t| now.saturating_sub(t) / 1000).unwrap_or(0),
-            p.prestige,
+            p.deaths,
             p.nectar,
         ),
         None => (0, 0, 0),
     };
+    let loser_uname = world.players.get(&loser_id).map(|p| p.username.clone()).unwrap_or_default();
+    let seasons_played = world.auth.users.get(&loser_uname).map(|u| u.seasons_played).unwrap_or(0);
 
     let near_msg = json!({"t":"queen-killed","x":qx,"y":qy}).to_string();
     world.broadcast_near(qx, qy, &near_msg);
@@ -227,7 +230,7 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
     }).to_string());
 
     if let Some(kid) = killer_id {
-        // Rivalries (account-level, keyed by username) → Discovery "TOP RIVALRIES": the loser
+        // Rivalries (account-level, keyed by username) → Passport "TOP RIVALRIES": the loser
         // records a death by `kid`; the killer records a kill of the loser. Self-kills excluded.
         if kid != loser_id {
             if let Some(ku) = world.players.get(&kid).map(|p| p.username.clone()) {
@@ -246,7 +249,8 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         let kill_xp = cfg().xp_kill;
         award_xp(world, kid, kill_xp, "kill", qx, qy);
         flush_xp(world);
-        world.send_to(kid, json!({"t":"event","msg":format!("KILL! +{} XP", kill_xp as i64)}).to_string());
+        world.log_event(kid, format!("You slew {loser_name}"),
+                        format!("+{} XP · +1 nectar", kill_xp as i64));
         // Alliance progression: a member's kill feeds the alliance's combined-contribution XP (no
         // self-kill credit). Tier-ups re-apply member buffs + notify the roster inside the helper.
         if kid != loser_id {
@@ -254,18 +258,30 @@ pub fn kill_queen(world: &mut World, loser_id: u32, killer_id: Option<u32>, reas
         }
     }
 
+    // Persistent "your queen has fallen" entry for the victim's own EVENTS log — who hit you + where
+    // (skipped for NPC/guest losers inside log_event). This is the "whether you got hit" record.
+    match &killer_name {
+        Some(k) => world.log_event(loser_id, "Your queen has fallen".to_string(),
+                       format!("Slain by {k} near {victim_region}")),
+        None    => world.log_event(loser_id, "Your queen has fallen".to_string(),
+                       format!("Cause: {reason}")),
+    }
+
     world.ants.retain(|a| a.owner != loser_id);
     world.send_to(loser_id, json!({
         "t":"queen-dead",
-        "peakTiles": peak_tiles,
-        "kills":     victim_kills,
-        "level":     victim_level,
-        "secsAlive": secs_alive,
-        "region":    victim_region,
-        "prestige":  new_prestige,
-        "nectar":    nectar,
-        "killer":    killer_name,
-        "cause":     reason,
+        "peakTiles":    peak_tiles,
+        "kills":        victim_kills,
+        "level":        victim_level,
+        "secsAlive":    secs_alive,
+        "region":       victim_region,
+        // `deaths` = running fallen-queen count (renamed from old `prestige`).
+        // `prestige` = seasons in which this account had a live queen at wipe time.
+        "deaths":       new_deaths,
+        "prestige":     seasons_played,
+        "nectar":       nectar,
+        "killer":       killer_name,
+        "cause":        reason,
     }).to_string());
 
     // NPCs have no account and cannot respawn — purge them entirely so a defeated NPC never
@@ -295,11 +311,34 @@ fn purge_dead_npc(world: &mut World, id: u32) {
 // ---- Wipe world -----------------------------------------------------------
 
 pub fn wipe_world(world: &mut World) {
+    // Before clearing: credit `seasons_played` for every non-NPC player who had a queen this
+    // season. `had_queen_this_season` is runtime-only (never persisted), so it is already false
+    // when `season_secs = 0` and auto-wipe is disabled — this block is a no-op in that case.
+    {
+        let credited: Vec<(u32, String)> = world.players.iter()
+            .filter(|(_, p)| !p.npc && p.had_queen_this_season)
+            .map(|(&id, p)| (id, p.username.clone()))
+            .collect();
+        let mut any = false;
+        for (_, uname) in &credited {
+            if let Some(u) = world.auth.users.get_mut(uname) {
+                u.seasons_played += 1;
+                any = true;
+            }
+        }
+        // Reset the runtime flag; auth will be saved after the world loop below.
+        for (id, _) in &credited {
+            if let Some(p) = world.players.get_mut(id) { p.had_queen_this_season = false; }
+        }
+        if any { world.auth.save(); }
+    }
+
     world.tiles.clear();
     world.ants.clear();
     world.queens.clear();
     world.queen_map.clear();
     world.queen_map_dirty = false;
+    world.conversion_tally.clear();
     world.tick = 0;
     world.rotate_epoch_retiring_old(); // Phase-6: new season → new R2 generation + reclaim the old one
     let c = cfg();
@@ -361,6 +400,9 @@ pub fn wipe_world_and_users(world: &mut World) {
     // 3. Reset accounts to admin-only (also clears the ban list).
     world.auth.reset_to_admin_only();
 
+    // 3b. A wipe deletes every non-admin account, so their event histories must go too.
+    world.events.clear_all();
+
     // 4. Persist the empty world immediately so the on-disk snapshot reflects the wipe.
     let path = cfg().save_file.clone();
     if let Err(e) = crate::persist::save(world, &path) {
@@ -371,62 +413,22 @@ pub fn wipe_world_and_users(world: &mut World) {
 // ---- Spawn NPC ------------------------------------------------------------
 
 pub fn spawn_npc(world: &mut World, near_player_id: u32, spawn_x: Option<i32>, spawn_y: Option<i32>) {
-    let id = world.next_player_id;
-    world.next_player_id += 1;
-
-    let mut rng = rand::thread_rng();
-    let hue_idx = rng.gen_range(0..ENEMY_HUES.len());
-    let hue = ENEMY_HUES[hue_idx].to_string();
-
-    let c = cfg();
+    // Resolve the spawn coordinate: explicit (admin click) or jittered ±30 around the requesting
+    // queen. The actual insertion (queen + player + body + 4 ants) is shared with the organic-bot
+    // path via `crate::bots::spawn_npc_core`; the admin path keeps the legacy `NPC_{id}` name and the
+    // global "NPC SPAWNED" announcement (`announce = true`).
     let (cx, cy) = if let (Some(sx), Some(sy)) = (spawn_x, spawn_y) {
         (sx, sy)
     } else {
+        let mut rng = rand::thread_rng();
+        let c = cfg();
         let pq = world.queens.get(&near_player_id);
         let bx = pq.map(|q| q.x).unwrap_or(c.spawn_x as i32);
         let by = pq.map(|q| q.y).unwrap_or(c.spawn_y as i32);
+        drop(c);
         (bx + rng.gen_range(-30..30), by + rng.gen_range(-30..30))
     };
-    let lifespan = c.lifespan;
-    let bubble_r = c.bubble_r;
-    let npc_hp   = crate::config::max_hp_for_level(1, &c);   // level-1 queen HP
-    let ww = world.world_w as i32;
-    let wh = world.world_h as i32;
-    drop(c);
-
-    let npc_size: u8 = 2;
-    world.queens.insert(id, Queen {
-        x: cx, y: cy, size: npc_size,
-        hp: npc_hp, max_hp: npc_hp, level: 1, xp: 0.0, kills: 0,
-        bubble_r, last_attacker: None, dead: false,
-        tiles_ever_held: 0, cached_tiles: 0, npc: true,
-        shield: 0, shield_expiry: None,
-        region: crate::regions::region_for(cx, cy),
-    });
-    world.players.insert(id, Player {
-        id, username: format!("NPC_{id}"), color: hue,
-        hue_idx: hue_idx as i32,
-        npc: true,
-        ..Default::default()
-    });
-    world.queen_map_dirty = true;
-
-    world.paint_queen_body(cx, cy, npc_size, id);
-
-    let spread = [
-        (0i32, -(npc_size as i32 + 1), 0i8, -1i8),
-        (npc_size as i32 + 1, 0, 1, 0),
-        (0, npc_size as i32 + 1, 0, 1),
-        (-(npc_size as i32 + 1), 0, -1, 0),
-    ];
-    for (k, (ox, oy, adx, ady)) in spread.iter().enumerate() {
-        let ax = (cx + ox).clamp(0, ww - 1);
-        let ay = (cy + oy).clamp(0, wh - 1);
-        world.ants.push(Ant::new(rng.gen(), id, ax, ay, *adx, *ady, lifespan));
-        world.ants.last_mut().unwrap().age = k as u32;
-    }
-
-    world.broadcast(&json!({"t":"event","msg":format!("[ADMIN] NPC SPAWNED (id {id})")}).to_string());
+    crate::bots::spawn_npc_core(world, cx, cy, 1, None, true);
 }
 
 // ---- Main tick ------------------------------------------------------------
@@ -685,14 +687,26 @@ pub fn tick_world(world: &mut World) {
         for j in gstart..gi {
             let idx = world.scratch_pairs[j].1 as usize;
             // Copy out ant data to release immutable borrow before mutable borrow below
-            let (ax, ay, anx, any, andx, andy, akind) = {
+            let (ax, ay, anx, any, andx, andy, akind, owner) = {
                 let a = &world.ants[idx];
-                (a.x, a.y, a._nx, a._ny, a._ndx, a._ndy, a.kind)
+                (a.x, a.y, a._nx, a._ny, a._ndx, a._ndy, a.kind, a.owner)
             };
             if anx == ax && any == ay { continue; }
+            // A friendly clash (another co-located ant we own or are allied with) can deadlock:
+            // both ants get the same deterministic CW nudge, re-collide, and ping-pong forever.
+            let friendly = (gstart..gi).any(|m| {
+                if m == j { return false; }
+                let o2 = world.ants[world.scratch_pairs[m].1 as usize].owner;
+                o2 == owner || world.same_alliance(owner, o2)
+            });
             // Keep brutes on their 2×2 lattice: the collision nudge moves 2 as well, not 1.
             let step = if akind == 1 { 2 } else { 1 };
-            let (cdx, cdy) = turn_cw(andx, andy);
+            // 1-in-10 on a friendly clash, turn the *other* way (CCW) to break the 2-cycle.
+            let (cdx, cdy) = if friendly && rand::random::<u8>().is_multiple_of(10) {
+                turn_ccw(andx, andy)
+            } else {
+                turn_cw(andx, andy)
+            };
             let mut cx = ax + cdx as i32 * step;
             let mut cy = ay + cdy as i32 * step;
             if cx < 0 || cx >= ww || cy < 0 || cy >= wh { cx = ax; cy = ay; }
@@ -735,7 +749,11 @@ pub fn tick_world(world: &mut World) {
                     world.tiles.set(ant.x as u32, ant.y as u32, ant.owner);
                     ant.highway_ticks += 1;
                     if ant.highway_ticks >= 3 {
-                        world.xp_queue.push(XpGrant { player_id: ant.owner, amount: highway_xp, reason: "highway", x: ant.x, y: ant.y });
+                        // Per-tile "highway" XP is OFF by default (mindless wandering earns nothing) —
+                        // only queue a grant if an admin has re-enabled it via `xp_highway_tick`.
+                        if highway_xp > 0.0 {
+                            world.xp_queue.push(XpGrant { player_id: ant.owner, amount: highway_xp, reason: "highway", x: ant.x, y: ant.y });
+                        }
                         ant.highway_ticks = 0;
                     }
                 } else if cur == ant.owner || allied_in(pa3, ant.owner, cur) {
@@ -759,36 +777,56 @@ pub fn tick_world(world: &mut World) {
     // =========================================================================
     // Phase 4: Tile milestones (one-time per queen) + cached-tile update
     // =========================================================================
-    // A milestone fires the first tick a queen's peak tile count (`tiles_ever_held`) reaches a
-    // rounded threshold (10k, 25k, 50k, 100k, …). Each grants `xp_tile_award × index` XP — no
-    // toast: the queued XP surfaces only as the floating "+N XP" on the queen + ping
-    // (flush_xp → "xp-gain"). Because it keys off the high-water mark, each threshold pays out once.
-    let tile_award = c.xp_tile_award;
+    // Territory XP sources:
+    //   • MILESTONES — the first tick the high-water reaches a `TILE_MILESTONES` threshold, pay that
+    //     entry's XP (a chunky achievement grant, scaled by `xp_tile_award`).
+    //   • PASSIVE TRICKLE — every `passive_xp_every_ticks` ticks, grant `current_tiles ×
+    //     passive_xp_per_tile` per living queen (scaled by `xp_tile_award`).  Keyed off CURRENT
+    //     holdings so you must defend what you hold, not just expand and shrink back.
+    //
+    // The old "high-water +1/100" passive was removed: it rewarded only expansion episodes and
+    // then went silent, giving a misleadingly large early burst then nothing.
+    let mult = c.xp_tile_award;
+    let passive_every = c.passive_xp_every_ticks.max(1);
+    let passive_per_tile = c.passive_xp_per_tile;
+    let do_passive_tick = passive_per_tile > 0.0 && world.tick.is_multiple_of(passive_every);
     let queen_ids: Vec<u32> = world.queens.keys().copied().collect();
     for pid in queen_ids {
-        let tiles   = world.tiles.counts.get(&pid).copied().unwrap_or(0).max(0) as u64;
-        let is_npc  = world.players.get(&pid).map(|p| p.npc).unwrap_or(true);
+        let tiles  = world.tiles.counts.get(&pid).copied().unwrap_or(0).max(0) as u64;
+        let is_npc = world.players.get(&pid).map(|p| p.npc).unwrap_or(true);
 
-        // (xp, qx, qy) for each milestone newly crossed this tick — usually empty or one entry.
-        let grants: Vec<(f64, i32, i32)> = {
+        // (xp, reason, qx, qy) for each grant earned this tick.
+        let grants: Vec<(f64, &'static str, i32, i32)> = {
             let Some(q) = world.queens.get_mut(&pid) else { continue };
             if q.dead { continue; }
             q.cached_tiles = tiles;
-            if is_npc || tiles <= q.tiles_ever_held {
-                Vec::new()
-            } else {
-                let prev = q.tiles_ever_held;
-                q.tiles_ever_held = tiles;
+            if is_npc { Vec::new() } else {
                 let (qx, qy) = (q.x + q.size as i32 / 2, q.y + q.size as i32 / 2);
-                TILE_MILESTONES.iter().enumerate()
-                    .filter(|&(_, &t)| prev < t && t <= tiles)   // crossed this milestone this tick
-                    .map(|(i, _)| (tile_award * (i + 1) as f64, qx, qy))
-                    .collect()
+                let mut gs: Vec<(f64, &'static str, i32, i32)> = Vec::new();
+
+                // ---- Milestones (one-time, keyed off tiles_ever_held high-water) ----
+                if tiles > q.tiles_ever_held {
+                    let prev = q.tiles_ever_held;
+                    q.tiles_ever_held = tiles;
+                    for &(t, xp) in TILE_MILESTONES {
+                        if prev < t && t <= tiles { gs.push((xp * mult, "milestone", qx, qy)); }
+                    }
+                }
+
+                // ---- Passive trickle — every `passive_every` ticks, current holdings ----
+                if do_passive_tick && tiles > 0 {
+                    let xp = tiles as f64 * passive_per_tile * mult;
+                    if xp > 0.0 { gs.push((xp, "territory", qx, qy)); }
+                }
+
+                gs
             }
         };
 
-        for (gained, qx, qy) in grants {
-            world.xp_queue.push(XpGrant { player_id: pid, amount: gained, reason: "milestone", x: qx, y: qy });
+        for (gained, reason, qx, qy) in grants {
+            if gained > 0.0 {
+                world.xp_queue.push(XpGrant { player_id: pid, amount: gained, reason, x: qx, y: qy });
+            }
         }
     }
 
@@ -796,11 +834,17 @@ pub fn tick_world(world: &mut World) {
     // Phase 5: Clash resolution — reuse sorted pairs from Phase 2 rebuild
     // =========================================================================
     let convert_pct = c.convert_pct;
-    let xp_convert  = c.xp_convert;
+    // xp_convert is intentionally NOT read here — clash-conversion XP was retired; the field
+    // remains in Config only for admin-slider backward compatibility and config.json round-trips.
 
     let pairs = std::mem::take(&mut world.scratch_pairs);
     let n = pairs.len();
     let mut ci = 0;
+
+    // Clash-conversion digest for THIS tick, keyed by (winner, loser) → (count, last_x, last_y).
+    // Accumulated per converted ant, then emitted as ONE sized burst per matchup (not per tile) and
+    // merged into the rolling `conversion_tally` for the throttled EVENTS-log flush below.
+    let mut clash_fx: FxHashMap<(u32, u32), (u32, i32, i32)> = FxHashMap::default();
 
     while ci < n {
         let k = pairs[ci].0;
@@ -835,23 +879,33 @@ pub fn tick_world(world: &mut World) {
         let dom = counts.iter().max_by_key(|(_, &v)| v).map(|(&k, _)| k).unwrap_or(0);
         let dom_count = counts.get(&dom).copied().unwrap_or(0);
         if total > 0 && dom_count as f64 / total as f64 >= convert_pct {
-            let mut converted = false;
+            // Clash-conversion XP retired: the passive territory trickle (Phase 4) now rewards
+            // holdings, so a separate per-clash grant double-counted the benefit and made
+            // "camp-and-clash" more profitable than genuine expansion. The burst + EVENTS log are
+            // deferred to a per-matchup digest (below) so a wide battle isn't per-tile spam.
             for &(_, idx) in &pairs[cstart..ci] {
                 let idx = idx as usize;
                 let o = world.ants[idx].owner;
                 // Never convert an ally's ant (or one already owned by the dominant owner).
                 if o != dom && !world.same_alliance(o, dom) {
                     world.ants[idx].owner = dom;
-                    converted = true;
+                    let e = clash_fx.entry((dom, o)).or_insert((0, cell_x, cell_y));
+                    e.0 += 1; e.1 = cell_x; e.2 = cell_y;
                 }
-            }
-            if converted {
-                world.xp_queue.push(XpGrant { player_id: dom, amount: xp_convert, reason: "convert", x: cell_x, y: cell_y });
-                world.broadcast_near(cell_x, cell_y, &json!({"t":"clash","x":cell_x,"y":cell_y}).to_string());
             }
         }
     }
     world.scratch_pairs = pairs;
+
+    // Surface conversions: one sized burst per matchup to nearby viewers (the client tints it the
+    // winner's colour and scales the pop by `n`), and fold the counts into the rolling digest that
+    // `flush_conversion_log` writes to the EVENTS feed on a throttled cadence (Phase 11).
+    for (&(winner, loser), &(cnt, fx, fy)) in &clash_fx {
+        world.broadcast_near(fx, fy,
+            &json!({"t":"clash","x":fx,"y":fy,"by":winner,"n":cnt}).to_string());
+        let e = world.conversion_tally.entry((winner, loser)).or_insert((0, fx, fy));
+        e.0 += cnt; e.1 = fx; e.2 = fy;
+    }
 
     // =========================================================================
     // Phase 5b: Brute capture — an enemy worker caught under a brute's 2×2 footprint is sent back
@@ -993,8 +1047,8 @@ pub fn tick_world(world: &mut World) {
             let sx = sx.clamp(0, ww - 1);
             let sy = sy.clamp(0, wh - 1);
             world.ants.push(Ant::new(rand::random::<u32>(), def_pid, sx, sy, adx, ady, def_lifespan));
-            let ev = json!({"t":"event","msg":"DEFENDER ACTIVATED!"}).to_string();
-            world.send_to(def_pid, ev);
+            world.log_event(def_pid, "Defender activated".to_string(),
+                            "A free guard ant intercepted an enemy approaching your queen".to_string());
         }
     }
 
@@ -1015,11 +1069,15 @@ pub fn tick_world(world: &mut World) {
     }
 
     // =========================================================================
-    // Phase 11: Flush XP + throttled discovery / metro-holder upkeep
+    // Phase 11: Flush XP + throttled passport / metro-holder upkeep
     // =========================================================================
     flush_xp(world);
 
-    if world.tick.is_multiple_of(DISCOVERY_INTERVAL) { sample_visited(world); }
+    if world.tick.is_multiple_of(PASSPORT_INTERVAL) { sample_passport(world); }
+    // Throttled clash-conversion digest → EVENTS feed (instant burst/sound already fired in Phase 5).
+    if world.tick.is_multiple_of(CLASH_LOG_INTERVAL) && !world.conversion_tally.is_empty() {
+        flush_conversion_log(world);
+    }
     if world.tick.is_multiple_of(HOLDER_INTERVAL) {
         recompute_holders(world);
         recompute_monument_holders(world);
@@ -1108,14 +1166,14 @@ fn resolve_queen_collisions(world: &mut World) {
 
 // ---- Helpers ----------------------------------------------------------------
 
-/// Throttled discovery: sample up to `DISCOVERY_SAMPLE_N` live ants round-robin, map each to its
+/// Throttled passport: sample up to `PASSPORT_SAMPLE_N` live ants round-robin, map each to its
 /// country + continent, and union into the owning account's visited sets. Cost is independent of
-/// army size (fixed sample cap). NPC ants are skipped (no discovery view).
-fn sample_visited(world: &mut World) {
+/// army size (fixed sample cap). NPC ants are skipped (no passport view).
+fn sample_passport(world: &mut World) {
     let n = world.ants.len();
     if n == 0 { return; }
-    let take = DISCOVERY_SAMPLE_N.min(n);
-    let mut idx = world.visit_sample_cursor % n;
+    let take = PASSPORT_SAMPLE_N.min(n);
+    let mut idx = world.passport_sample_cursor % n;
     // Collect (owner, x, y) for real players first so we can drop the &ants borrow before mutating.
     let mut samples: Vec<(u32, i32, i32)> = Vec::with_capacity(take);
     for _ in 0..take {
@@ -1124,13 +1182,13 @@ fn sample_visited(world: &mut World) {
         if !is_npc { samples.push((a.owner, a.x, a.y)); }
         idx += 1; if idx >= n { idx = 0; }
     }
-    world.visit_sample_cursor = idx;
+    world.passport_sample_cursor = idx;
     for (owner, x, y) in samples {
         let (country, continent) = crate::regions::country_and_continent(x, y);
         if country == "Open Water" || country == "Unknown" { continue; }
         if let Some(p) = world.players.get_mut(&owner) {
-            p.visited_countries.insert(country);
-            if !continent.is_empty() { p.visited_continents.insert(continent); }
+            p.passport_countries.insert(country);
+            if !continent.is_empty() { p.passport_continents.insert(continent); }
         }
     }
 }
@@ -1153,6 +1211,29 @@ fn recompute_holders(world: &mut World) {
         holders.push(MetroHolder { name, owner, tiles });
     }
     world.metro_holders = holders;
+}
+
+/// Flush the rolling clash-conversion digest to the EVENTS log: one paired entry per matchup
+/// (the winner overran workers; the loser lost them), naming the region of the last clash. Throttled
+/// (`CLASH_LOG_INTERVAL`) so a sustained battle reads as a single running tally rather than per-tile
+/// spam; matchups below `CLASH_LOG_MIN` converted workers are dropped as noise. `log_event` itself
+/// silently drops NPC/guest sides (no durable account), so only real players get a record.
+fn flush_conversion_log(world: &mut World) {
+    let tally = std::mem::take(&mut world.conversion_tally);
+    for ((winner, loser), (count, x, y)) in tally {
+        if count < CLASH_LOG_MIN { continue; }
+        let region = crate::regions::region_for(x, y);
+        let winner_name = world.players.get(&winner).map(|p| p.username.clone())
+            .unwrap_or_else(|| "An enemy".to_string());
+        let loser_name = world.players.get(&loser).map(|p| p.username.clone())
+            .unwrap_or_else(|| "enemy".to_string());
+        world.log_event(winner,
+            format!("Overran {count} enemy workers"),
+            format!("Your swarm converted {count} of {loser_name}'s workers near {region}"));
+        world.log_event(loser,
+            format!("Lost {count} workers in a clash"),
+            format!("{winner_name} converted {count} of your workers near {region}"));
+    }
 }
 
 /// Throttled king-of-the-hill for admin-placed **monuments** — same strided scan as
@@ -1231,7 +1312,8 @@ pub fn accrue_metro_nectar(world: &mut World, now: u64) -> usize {
         if let Some(u) = world.auth.users.get_mut(&username) { u.last_accrual_day = today; }
         if amount == 0 { continue; }
         if let Some(p) = world.players.get_mut(&pid) { p.nectar = p.nectar.saturating_add(amount); }
-        world.send_to(pid, json!({"t":"event","msg":format!("+{amount} NECTAR FROM YOUR REGIONS")}).to_string());
+        world.log_event(pid, format!("+{amount} nectar from your regions"),
+                        "Daily income from the cities and monuments you hold".to_string());
         paid += 1;
     }
     paid
@@ -1257,7 +1339,7 @@ fn build_sorted_pairs(out: &mut Vec<(u64, u32)>, ants: &[crate::world::Ant], ww_
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{Ant, World};
+    use crate::world::{Ant, Player, World};
 
     #[test]
     fn metro_nectar_accrues_once_per_utc_day() {
@@ -1442,6 +1524,33 @@ mod tests {
         assert!((b.x == cx) ^ (b.y == cy), "brute hop stays axis-aligned");
     }
 
+    /// Regression for the "two friendly ants ping-pong forever" loop. Two same-owner ants that
+    /// land on one cell with the same heading used to receive the *identical* deterministic CW
+    /// collision nudge every tick, so they marched in permanent lockstep (always co-located). The
+    /// 1-in-10 CCW flip on a friendly collision must eventually split them. The flip is random by
+    /// design, so we loop with a generous tick budget — expected separation is ~5 ticks, and the
+    /// odds of staying locked for 200 ticks are ~10^-17.
+    #[test]
+    fn friendly_ant_collision_loop_breaks() {
+        crate::regions::init();
+        let lifespan = crate::config::cfg().lifespan;   // ~1.3M default ≫ the tick budget below
+        let mut w = World::new();
+        let owner = 7u32;
+        w.players.insert(owner, Player { id: owner, username: "ZED".into(), ..Default::default() });
+        let (cx, cy) = (w.world_w as i32 / 2, w.world_h as i32 / 2);
+        // Two same-owner ants stacked on one cell with identical heading → a friendly Phase-2
+        // collision every tick. Without the flip they stay co-located indefinitely.
+        w.ants.push(Ant::new(1, owner, cx, cy, 1, 0, lifespan));
+        w.ants.push(Ant::new(2, owner, cx, cy, 1, 0, lifespan));
+        let mut separated = false;
+        for _ in 0..200 {
+            tick_world(&mut w);
+            if w.ants.len() < 2 { break; }   // guard (they won't expire this fast)
+            if (w.ants[0].x, w.ants[0].y) != (w.ants[1].x, w.ants[1].y) { separated = true; break; }
+        }
+        assert!(separated, "friendly ants stuck co-located must separate via the 1-in-10 CCW flip");
+    }
+
     fn mk_queen(x: i32, y: i32, level: u16, hp: i32) -> crate::world::Queen {
         crate::world::Queen { x, y, size: 2, hp, max_hp: 100, level, xp: 0.0, kills: 0,
             bubble_r: 30.0, last_attacker: None, dead: false, tiles_ever_held: 0, cached_tiles: 0,
@@ -1452,29 +1561,59 @@ mod tests {
         crate::world::Player { id, ..Default::default() }
     }
 
-    /// A tile milestone fires once when peak tiles first reach a threshold, and never again.
-    /// With no ants, milestone XP is the only XP source, so the queen's xp isolates the award.
+    /// A tile milestone fires once when peak tiles first reach a threshold, and never again. With no
+    /// ants, territory XP (milestones + passive) is the only XP source, so the queen's xp isolates it.
     #[test]
     fn tile_milestone_awards_once_per_threshold() {
         crate::regions::init();
-        let award = crate::config::cfg().xp_tile_award;
+        let mult = crate::config::cfg().xp_tile_award;   // global territory-XP multiplier
         let mut w = World::new();
         let pid = 5u32;
         w.players.insert(pid, mk_player(pid));
         w.queens.insert(pid, mk_queen(2000, 2000, 1, 100));  // far from the painted block
         w.queen_map_dirty = true;
 
-        // Paint exactly 10,000 tiles → crosses the first milestone (index 0 → award × 1).
-        for y in 0..100u32 { for x in 0..100u32 { w.tiles.set(x, y, pid); } }
-        assert_eq!(w.tiles.counts.get(&pid).copied().unwrap_or(0), 10_000);
+        // Paint exactly 10 tiles → crosses ONLY the first milestone (10 tiles → 10 XP); no passive
+        // grant (10 < 100), so the whole award is that single milestone.
+        for x in 0..10u32 { w.tiles.set(x, 0, pid); }
+        assert_eq!(w.tiles.counts.get(&pid).copied().unwrap_or(0), 10);
 
         tick_world(&mut w);
         let xp = w.queens.get(&pid).unwrap().xp;
-        assert_eq!(xp, award, "first milestone (10k) grants xp_tile_award");
+        assert_eq!(xp, 10.0 * mult, "first milestone (10 tiles) grants its tabled XP × the multiplier");
 
-        // No new ground gained → the threshold must not pay out a second time.
+        // No new ground gained → no milestone or passive payout a second time.
         tick_world(&mut w);
-        assert_eq!(w.queens.get(&pid).unwrap().xp, xp, "milestone is one-time per queen");
+        assert_eq!(w.queens.get(&pid).unwrap().xp, xp, "territory XP is one-time per high-water mark");
+    }
+
+    /// Territory XP = one-time `TILE_MILESTONES` payouts (the early on-ramp) **plus** a passive
+    /// trickle keyed to CURRENT holdings that pulses every `passive_xp_every_ticks`. (The old "+1 per
+    /// 100 NET tiles" model was retired — see `config::TILE_MILESTONES` doc — so passive no longer
+    /// fires on the growth tick; it fires on the pulse cadence, sized by `passive_xp_per_tile`.)
+    #[test]
+    fn passive_territory_xp_trickles_by_current_holdings() {
+        crate::regions::init();
+        let c = crate::config::cfg().clone();
+        let mult = c.xp_tile_award;
+        let every = c.passive_xp_every_ticks.max(1);
+        let per_tile = c.passive_xp_per_tile;
+        let mut w = World::new();
+        let pid = 7u32;
+        w.players.insert(pid, mk_player(pid));
+        w.queens.insert(pid, mk_queen(2000, 2000, 1, 100));
+        w.queen_map_dirty = true;
+
+        // Paint exactly 100 tiles → milestones 10+50+100 = 85 XP (× mult), once on the first growth
+        // tick. Then run one full passive period: milestones never re-fire (no new high-water), and
+        // the passive trickle pays `tiles · passive_xp_per_tile · mult` on each pulse tick.
+        for x in 0..100u32 { w.tiles.set(x, 0, pid); }
+        for _ in 0..every { tick_world(&mut w); }
+        let pulses = (1..=every).filter(|&t| t.is_multiple_of(every)).count() as f64;
+        let expected = 85.0 * mult + pulses * 100.0 * per_tile * mult;
+        let xp = w.queens.get(&pid).unwrap().xp;
+        assert!((xp - expected).abs() < 1e-9,
+            "territory XP = milestones(10,50,100) + {pulses} passive pulse(s) on current holdings; got {xp}, want {expected}");
     }
 
     /// At the level cap a queen's XP is frozen: a huge grant lands it at exactly `total(cap)` (never

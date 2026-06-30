@@ -11,12 +11,23 @@ const MAX_DIM: i32 = 800;
 /// Leaderboard broadcast is capped to the top N by Grand Score (rest is future-proofing headroom).
 const LEADERBOARD_TOP_N: usize = 100;
 
+/// Sentinel owner id for the anonymized queen-PLACEMENT occupancy mask (`snapshot_view` collapses
+/// every foreign-and-dilated cell to this). Collision-free: real ids start at 100 and guest ids top
+/// out below `0xF000_0000 + GUEST_ID_SPAN`, so `u32::MAX` is reachable by no real owner. Mapped to a
+/// fixed red in `get_palette`; the client detects red cells by this id (see `rangeHasRed`).
+pub const MASK_OWNER: u32 = u32::MAX;
+/// The red used for the placement mask (matches the client's existing placement red).
+const MASK_COLOR: &str = "#ff2e3f";
+
 pub fn get_palette(world: &World) -> Value {
     let mut p = serde_json::Map::new();
     p.insert("0".to_string(), json!("#ffffff"));
     for (id, pl) in &world.players {
         p.insert(id.to_string(), json!(pl.color));
     }
+    // Placement-mask sentinel → red. Inert in normal frames (no real cell maps to MASK_OWNER); only
+    // referenced when a placing connection's masked tile frame carries this id.
+    p.insert(MASK_OWNER.to_string(), json!(MASK_COLOR));
     Value::Object(p)
 }
 
@@ -40,17 +51,24 @@ pub fn build_leaderboard(world: &World) -> String {
         .filter_map(|(&id, q)| {
             let p = world.players.get(&id)?;
             let score = calc_score(q.cached_tiles, p.queen_placed_at, q.kills);
+            let seasons = world.auth.users.get(&p.username).map(|u| u.seasons_played).unwrap_or(0);
             Some(json!({
                 "id":       id,
-                "name":     p.username,
+                "name":     crate::bots::display_name(p),
                 "color":    p.color,
                 "tiles":    q.cached_tiles,
                 "level":    q.level,
                 "kills":    q.kills,
-                "prestige": p.prestige,
+                // `deaths` = fallen-queen count (old `prestige` field renamed for clarity).
+                // `prestige` = seasons in which this account had a live queen at the wipe moment.
+                "deaths":   p.deaths,
+                "prestige": seasons,
                 "region":   q.region,
                 "score":    score as i64,
-                "npc":      p.npc,
+                // Bots are indistinguishable from humans on the board: never report the npc tell
+                // (the client renders a red "NPC" badge on `npc:true`). The temporary `*` suffix on
+                // the name — emitted by `display_name` while `BOT_MARKER` is set — is the only tell.
+                "npc":      false,
             }))
         })
         .collect();
@@ -148,20 +166,25 @@ pub fn build_queen_roster(world: &World) -> String {
         .filter(|(_, q)| !q.dead)
         .map(|(&id, q)| {
             let p = world.players.get(&id);
-            (q.level, json!({
-                "id":    id,
-                "name":  p.map(|p| p.username.clone()).unwrap_or_default(),
-                "color": p.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
-                "level": q.level,
-                "x": q.x, "y": q.y,
-                // Health/shield/prestige so the spectator canvas can draw real HP bars + scale the
-                // queen aura by health (guest-only, ≤200 queens @ ~0.75 Hz → negligible egress).
-                "hp":     q.hp,
-                "maxHp":  q.max_hp,
-                "shield": q.shield,
-                "size":   q.size,
-                "prestige": p.map(|p| p.prestige).unwrap_or(0),
-            }))
+            {
+                let uname = p.map(|p| p.username.clone()).unwrap_or_default();
+                let seasons = world.auth.users.get(&uname).map(|u| u.seasons_played).unwrap_or(0);
+                let dname = p.map(crate::bots::display_name).unwrap_or_default();
+                (q.level, json!({
+                    "id":    id,
+                    "name":  dname,
+                    "color": p.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
+                    "level": q.level,
+                    "x": q.x, "y": q.y,
+                    "hp":     q.hp,
+                    "maxHp":  q.max_hp,
+                    "shield": q.shield,
+                    "size":   q.size,
+                    // deaths = fallen-queen count; prestige = seasons-with-a-queen.
+                    "deaths":   p.map(|p| p.deaths).unwrap_or(0),
+                    "prestige": seasons,
+                }))
+            }
         })
         .collect();
     qs.sort_by_key(|q| std::cmp::Reverse(q.0));
@@ -194,7 +217,7 @@ pub fn build_server_stats(world: &World) -> String {
 pub fn build_region_holders(world: &World) -> String {
     let holders: Vec<Value> = world.metro_holders.iter().map(|h| {
         let (name, color) = match h.owner.and_then(|id| world.players.get(&id)) {
-            Some(p) => (Some(p.username.clone()), Some(p.color.clone())),
+            Some(p) => (Some(crate::bots::display_name(p)), Some(p.color.clone())),
             None    => (None, None),
         };
         json!({
@@ -217,7 +240,7 @@ pub fn build_monuments(world: &World) -> String {
         let owner  = holder.and_then(|h| h.owner);
         let tiles  = holder.map(|h| h.tiles).unwrap_or(0);
         let (name, color) = match owner.and_then(|id| world.players.get(&id)) {
-            Some(p) => (Some(p.username.clone()), Some(p.color.clone())),
+            Some(p) => (Some(crate::bots::display_name(p)), Some(p.color.clone())),
             None    => (None, None),
         };
         json!({
@@ -280,12 +303,20 @@ pub fn build_player_info(
         }
     };
 
-    let mut visited_countries: Vec<&String> = p.visited_countries.iter().collect();
-    visited_countries.sort();
-    let mut visited_continents: Vec<&String> = p.visited_continents.iter().collect();
-    visited_continents.sort();
+    // Build passport country objects: sorted by name, each enriched with ISO-3166 alpha-2
+    // code + continent for the client's flag-emoji / grouping features.  Unknown names fall
+    // back to `iso:""` / `continent:""` (client renders without a flag).
+    let mut country_names: Vec<&String> = p.passport_countries.iter().collect();
+    country_names.sort();
+    let passport_countries: Vec<Value> = country_names.iter().map(|name| {
+        let (iso, cont) = crate::regions::iso_and_continent_for_country(name)
+            .unwrap_or_else(|| (String::new(), String::new()));
+        json!({"name": name.as_str(), "iso": iso, "continent": cont})
+    }).collect();
+    let mut passport_continents: Vec<&String> = p.passport_continents.iter().collect();
+    passport_continents.sort();
 
-    // Top rivalries (Discovery): the 5 biggest counts in each direction + lifetime totals.
+    // Top rivalries (Passport): the 5 biggest counts in each direction + lifetime totals.
     let top_rivals = |m: &FxHashMap<String, u32>| -> (Vec<Value>, u64) {
         let total: u64 = m.values().map(|&v| v as u64).sum();
         let mut v: Vec<(&String, u32)> = m.iter().map(|(k, &c)| (k, c)).collect();
@@ -385,7 +416,9 @@ pub fn build_player_info(
         "nextResetMs": crate::config::next_utc_midnight_ms(now_ms).saturating_sub(now_ms),
         "claimReady": claim_ready,
         "queen": queen_val,
-        "prestige":  p.prestige,
+        // deaths = fallen-queen count (renamed from old `prestige`); prestige = seasons-with-a-queen.
+        "deaths":    p.deaths,
+        "prestige":  world.auth.users.get(&p.username).map(|u| u.seasons_played).unwrap_or(0),
         "nectar":    p.nectar,
         // Cosmetics currency — sourced from the account record (wipe-proof, like peak_level).
         "gems":      world.auth.users.get(&p.username).map(|u| u.gems).unwrap_or(0),
@@ -396,14 +429,14 @@ pub fn build_player_info(
         "allianceId": world.alliance_of(player_id),
         "region":    q.map(|q| q.region.clone()).unwrap_or_default(),
         "defenders": p.defenders.len(),
-        "visitedCountries":  visited_countries,
-        "visitedContinents": visited_continents,
+        "passportCountries":  passport_countries,
+        "passportContinents": passport_continents,
         "lifetimeKills":     p.lifetime_kills,
         "lifetimePeakTiles": p.lifetime_peak_tiles,
         "queensFielded":     p.queens_fielded,
         "unlimitedNectar":   p.unlimited_nectar,
         "unlimitedAnts":     p.unlimited_ants,
-        "topRivalries": {
+        "passportRivalries": {
             "killedBy":    killed_by_top,
             "youKilled":   kills_of_top,
             "totalDeaths": total_deaths,
@@ -473,6 +506,8 @@ pub fn build_player_info(
             "ARMY_CAP":          c.army_cap,
             "NECTAR_PER_100K_DAY": c.nectar_per_100k_day,
             "MONUMENT_NECTAR_PER_DAY": c.monument_nectar_per_day,
+            "PASSIVE_XP_EVERY_TICKS": c.passive_xp_every_ticks,
+            "PASSIVE_XP_PER_TILE":    c.passive_xp_per_tile,
         });
         // Phase-6 / ∥B static config: where the browser fetches R2 snapshot tiles + the base map.
         // Empty → both client features stay dormant (legacy WS-keyframe + raw OSM).
@@ -530,7 +565,12 @@ pub fn cosmetics_signature(world: &World) -> u64 {
 /// without touching the World.
 struct QueenLite {
     qid: u32, x: i32, y: i32, size: u8, hp: i32, max_hp: i32, level: u16,
-    color: String, username: String, prestige: u32, shield: i32,
+    color: String, username: String,
+    /// Fallen-queen death count (renamed from old `prestige`).
+    deaths: u32,
+    /// Seasons in which this account had a live queen at the wipe moment (new `prestige`).
+    seasons_played: u32,
+    shield: i32,
     bubble_r: f64,
     /// Always visible (own queen / admin) → no fog gate, and `bubbleR` is included.
     reveal: bool,
@@ -603,6 +643,9 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     // EXCEPTION: an admin in god-view (fog preview OFF) bypasses both clamps to frame the WHOLE planet.
     let is_admin = world.auth.is_admin_id(player_id);
     let god_view = is_admin && !world.admin_fog_preview.contains(&player_id);
+    // PLACEMENT mode: serve this connection an anonymized, foreign-only, dilated occupancy mask
+    // (no real owner ids, ants, queens, or fog). Admins in god-view keep their real view.
+    let placing = !god_view && world.placing_views.contains(&player_id);
     let (vx0, vy0, vx1, vy1) = if god_view {
         (v.x0, v.y0, v.x1, v.y1)
     } else {
@@ -620,8 +663,9 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     let step = ((fw.max(fh) as usize).div_ceil(MAX_DIM as usize).max(1)) as i32;
     let lod  = step > 1;
 
-    // Zoomed-out ants-only frames carry nothing (ants are sub-pixel) — skip them entirely.
-    if lod && !include_tiles { return None; }
+    // Zoomed-out ants-only frames carry nothing (ants are sub-pixel) — skip them entirely. While
+    // placing, ALSO skip ants-only frames so real ants never leak past the tile mask.
+    if (lod || placing) && !include_tiles { return None; }
 
     let w  = (((fw + step - 1) / step) as usize).clamp(1, MAX_DIM as usize);
     let h  = (((fh + step - 1) / step) as usize).clamp(1, MAX_DIM as usize);
@@ -646,8 +690,12 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     // Admins get an all-zero fog field (god view) → skip the padded slice entirely (pad 0, radii
     // unused) UNLESS they enabled the fog preview, in which case they're treated like a player.
     // `god_view` (computed above) is exactly that condition.
-    let skip_fog = god_view;
-    let (clear_grid, grad_grid, fog_pad) = if include_tiles && !skip_fog {
+    // While placing, fog is OFF (whole planet browsable) but the mask still needs a 1-ring pad so
+    // edge cells dilate correctly. Admin god-view also skips fog.
+    let skip_fog = god_view || placing;
+    let (clear_grid, grad_grid, fog_pad) = if include_tiles && placing {
+        (0.0, 0.0, 1usize)
+    } else if include_tiles && !skip_fog {
         let c = cfg();
         let lvl = world.queens.get(&player_id).map(|q| q.level).unwrap_or(1);
         let cr = crate::config::fog_clear_r(lvl, &c) / step as f32;
@@ -658,8 +706,9 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
         (0.0, 0.0, 0usize)
     };
 
-    // In-rect ants (fog filtering deferred to finish_view). None while zoomed out (LOD).
-    let ants: Vec<(u32, i32, i32, i8, i8, u32, u8)> = if lod {
+    // In-rect ants (fog filtering deferred to finish_view). None while zoomed out (LOD) or placing
+    // (placement frames suppress all entities).
+    let ants: Vec<(u32, i32, i32, i8, i8, u32, u8)> = if lod || placing {
         Vec::new()
     } else {
         let mut a: Vec<(u32, i32, i32, i8, i8, u32, u8)> = world.ants.iter()
@@ -674,7 +723,53 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
 
     // Tiles + fog ownership slice + queens only matter on tile frames. At LOD, each grid cell
     // samples the tile `step` apart (nearest-sample territory pyramid); fog runs on the grid.
-    let (pad, pw, ph, owners, queens) = if include_tiles {
+    // Shared-fog / shared-vision roster: co-members other than self (empty if unaffiliated). Hoisted
+    // above the tile block because the placement mask's LOD path needs it (`any_foreign_in_block`).
+    let allies: Vec<u32> = world.alliance_member_ids(player_id)
+        .into_iter().filter(|&id| id != player_id).collect();
+
+    let (pad, pw, ph, owners, queens) = if include_tiles && placing {
+        // Anonymized placement mask: foreign tiles → red sentinel (von-Neumann dilated by 1); own &
+        // allied tiles render in their real color (never block); entities suppressed (empty queens).
+        let pad = fog_pad;        // = 1 (one dilation ring)
+        let pw = w + 2 * pad;
+        let ph = h + 2 * pad;
+        let mut owners = vec![0u32; pw * ph];
+        let mut occ = vec![false; pw * ph];   // raw foreign occupancy, pre-dilation
+        for py in 0..ph {
+            let wy = y0 + (py as i32 - pad as i32) * step;
+            if wy < 0 || wy >= wh { continue; }
+            let row = py * pw;
+            for px in 0..pw {
+                let wx = x0 + (px as i32 - pad as i32) * step;
+                if wx < 0 || wx >= ww { continue; }
+                if step == 1 {
+                    let o = world.tiles.get(wx as u32, wy as u32);
+                    if o != 0 && o != player_id && !world.same_alliance(player_id, o) {
+                        occ[row + px] = true;
+                    } else {
+                        owners[row + px] = o;   // 0 / own / ally → real color, not red
+                    }
+                } else if world.tiles.any_foreign_in_block(wx, wy, wx + step, wy + step, player_id, &allies) {
+                    occ[row + px] = true;       // LOD: any-foreign-in-block (no checkerboard aliasing)
+                }
+            }
+        }
+        // 4-neighbor (von Neumann) dilation: a cell adjacent to foreign occupancy also reads red, so a
+        // checkerboard fills solid and a 1-wide ant trail is indistinguishable from a queen body.
+        for py in 0..ph {
+            for px in 0..pw {
+                let i = py * pw + px;
+                let red = occ[i]
+                    || (px > 0 && occ[i - 1])
+                    || (px + 1 < pw && occ[i + 1])
+                    || (py > 0 && occ[i - pw])
+                    || (py + 1 < ph && occ[i + pw]);
+                if red { owners[i] = MASK_OWNER; }
+            }
+        }
+        (pad, pw, ph, owners, Vec::new())
+    } else if include_tiles {
         let pad = fog_pad;
         let pw = w + 2 * pad;
         let ph = h + 2 * pad;
@@ -697,14 +792,22 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
                 || !((q.x + q.size as i32) < ex0 || q.x > ex1 || (q.y + q.size as i32) < ey0 || q.y > ey1))
             .map(|(&qid, q)| {
                 let qp = world.players.get(&qid);
-                QueenLite {
-                    qid, x: q.x, y: q.y, size: q.size, hp: q.hp, max_hp: q.max_hp, level: q.level,
-                    color:    qp.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
-                    username: qp.map(|p| p.username.clone()).unwrap_or_else(|| "???".into()),
-                    prestige: qp.map(|p| p.prestige).unwrap_or(0),
-                    shield: q.shield,
-                    bubble_r: q.bubble_r,
-                    reveal: qid == player_id || is_admin,
+                {
+                    let uname = qp.map(|p| p.username.clone()).unwrap_or_else(|| "???".into());
+                    let seasons = world.auth.users.get(&uname).map(|u| u.seasons_played).unwrap_or(0);
+                    // Bots wear the temporary `*` marker but are otherwise indistinguishable (the
+                    // queen frame carries no `npc` field, so the label alone never betrays them).
+                    let dname = qp.map(crate::bots::display_name).unwrap_or_else(|| "???".into());
+                    QueenLite {
+                        qid, x: q.x, y: q.y, size: q.size, hp: q.hp, max_hp: q.max_hp, level: q.level,
+                        color:         qp.map(|p| p.color.clone()).unwrap_or_else(|| "#888".into()),
+                        username:      dname,
+                        deaths:        qp.map(|p| p.deaths).unwrap_or(0),
+                        seasons_played: seasons,
+                        shield:        q.shield,
+                        bubble_r:      q.bubble_r,
+                        reveal:        qid == player_id || is_admin,
+                    }
                 }
             })
             .collect();
@@ -716,10 +819,6 @@ pub fn snapshot_view(world: &World, player_id: u32, include_tiles: bool) -> Opti
     } else {
         (0, 0, 0, Vec::new(), Vec::new())
     };
-
-    // Shared-fog / shared-vision roster: co-members other than self (empty if unaffiliated).
-    let allies: Vec<u32> = world.alliance_member_ids(player_id)
-        .into_iter().filter(|&id| id != player_id).collect();
 
     Some(RawView {
         x0, y0, w, h, tick: world.tick, include_tiles, player_id, skip_fog,
@@ -969,7 +1068,9 @@ pub fn finish_view(raw: &RawView, palette: &Value, fx_palette: &Value, prev: Opt
             let mut obj = json!({
                 "id": q.qid, "x": q.x, "y": q.y, "size": q.size,
                 "hp": q.hp, "maxHp": q.max_hp, "level": q.level,
-                "color": q.color, "username": q.username, "prestige": q.prestige,
+                "color": q.color, "username": q.username,
+                "deaths":   q.deaths,
+                "prestige": q.seasons_played,
                 "shield": q.shield,
             });
             if q.reveal { obj["bubbleR"] = json!(q.bubble_r); }
@@ -1256,7 +1357,7 @@ mod tests {
     fn ql(qid: u32, x: i32, y: i32, reveal: bool) -> QueenLite {
         QueenLite {
             qid, x, y, size: 2, hp: 10, max_hp: 10, level: 1, color: "#888".into(),
-            username: "q".into(), prestige: 0, shield: 0, bubble_r: 30.0, reveal,
+            username: "q".into(), deaths: 0, seasons_played: 0, shield: 0, bubble_r: 30.0, reveal,
         }
     }
 

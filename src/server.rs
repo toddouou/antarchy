@@ -155,6 +155,47 @@ async fn favicon_handler() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/png")], FAVICON)
 }
 
+// Brand identity kit (brand book §01b). The vector favicon + maskable PWA icons + og:image share card
+// + webmanifest; all served from our own origin (CSP `img-src 'self'` / `default-src 'self'` cover
+// them). PNGs are committed under public/ and generated from the ▲ mark (see scratchpad/gen-icons.mjs).
+static FAVICON_SVG: &str  = include_str!("../public/favicon.svg");
+static APPLE_ICON:  &[u8] = include_bytes!("../public/apple-touch-icon.png");
+static ICON_192:    &[u8] = include_bytes!("../public/icon-192.png");
+static ICON_512:    &[u8] = include_bytes!("../public/icon-512.png");
+static OG_IMAGE:    &[u8] = include_bytes!("../public/og.png");
+static WEBMANIFEST: &str  = include_str!("../public/site.webmanifest");
+
+// Passport country-flag sprite + CSS (self-hosted, no external CDN — same posture as the brand kit).
+// One sprite sheet (24×18 cell per ISO-3166 alpha-2 country) + a `.flag`/`.flag-<iso>` stylesheet.
+// (Re)generate with `python scripts/build_flags.py`.
+static FLAGS_PNG: &[u8] = include_bytes!("../public/flags.png");
+static FLAGS_CSS: &str  = include_str!("../public/flags.css");
+
+async fn favicon_svg_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], FAVICON_SVG)
+}
+async fn apple_icon_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], APPLE_ICON)
+}
+async fn icon_192_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], ICON_192)
+}
+async fn icon_512_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], ICON_512)
+}
+async fn og_image_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], OG_IMAGE)
+}
+async fn webmanifest_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "application/manifest+json")], WEBMANIFEST)
+}
+async fn flags_png_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png")], FLAGS_PNG)
+}
+async fn flags_css_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")], FLAGS_CSS)
+}
+
 /// `/ads.txt` (IAB authorized-sellers). Google AdSense throttles ad serving for domains without it;
 /// it must be reachable at the apex (`https://antarchy.fun/ads.txt`) and name our publisher id.
 static ADS_TXT: &str = "google.com, pub-8322666756328568, DIRECT, f08c47fec0942fa0\n";
@@ -469,6 +510,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                     }
                     Ok(Cmd::Disconnect { pid, conn_gen }) => {
                         w.paused_views.remove(&pid); // don't leave a reconnecting player stuck paused
+                        w.placing_views.remove(&pid); // clear placement-view state on disconnect
                         w.last_seq.remove(&pid);     // anti-replay: drop per-connection seq state
                         let uname = w.players.get(&pid).map(|p| p.username.clone()).unwrap_or_default();
                         // Snapshot current state for the welcome-back diff (read before the &mut borrow).
@@ -479,7 +521,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
                             kills:    q.map(|q| q.kills).unwrap_or(0),
                             level:    q.map(|q| q.level).unwrap_or(0),
                             army:     w.ant_counts.get(&pid).copied().unwrap_or(0),
-                            visited_countries: w.players.get(&pid).map(|p| p.visited_countries.len()).unwrap_or(0),
+                            passport_countries: w.players.get(&pid).map(|p| p.passport_countries.len()).unwrap_or(0),
                             queen_alive: q.map(|q| !q.dead).unwrap_or(false),
                         };
                         if let Some(p) = w.players.get_mut(&pid) {
@@ -504,6 +546,13 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             }
 
             if !w.paused { tick_world(&mut w); }
+
+            // Bot upkeep (off the hot per-tick path): arrive any staggered organic bots and keep
+            // every live bot's ants topped up + growing. Cheap O(bots) every ~3 s — `tick_world`
+            // stays a pure tick. See `crate::bots::maintain`.
+            if !w.paused && w.tick.is_multiple_of(crate::bots::MAINT_INTERVAL_TICKS) {
+                crate::bots::maintain(&mut w);
+            }
 
             // Daily ants are no longer auto-granted here — the old rolling 24 h refill stacked
             // portions day after day. The ONLY grant path is the `claim-daily` handler: one
@@ -540,7 +589,7 @@ pub fn sim_loop(world: WorldState, mut cmd_rx: CmdRx) {
             if last_save.elapsed().as_secs() >= 60 {
                 let path = cfg().save_file.clone();
                 match crate::persist::serialize_world(&w) {
-                    Ok(raw) => { w.auth.save(); pending_save = Some((raw, path)); }
+                    Ok(raw) => { w.auth.save(); w.events.save(); pending_save = Some((raw, path)); }
                     Err(e)  => eprintln!("[persist] autosave encode failed: {e}"),
                 }
                 last_save = Instant::now();
@@ -1153,14 +1202,17 @@ async fn egress_stats_handler(State(app): State<AppState>) -> impl IntoResponse 
 }
 
 /// Content-Security-Policy (OWASP A05, defence-in-depth). Scoped to our own origins plus the external
-/// services the pages legitimately use — Google Fonts, AdSense (landing), OSM/R2 map tiles, and the
-/// game WebSocket. `'unsafe-inline'` is required because the client is a single inline-script document;
-/// a nonce/extraction pass to drop it is a documented P1/P2 follow-up. Caddy is the prod enforcement
-/// layer and may tighten this further.
+/// services the pages legitimately use — Google Fonts, AdSense (landing), OSM/R2 map tiles, the optional
+/// MapLibre GL vector basemap (lib from unpkg, blob: web worker; style/tiles/glyphs ride `connect-src https:`),
+/// and the game WebSocket. `'unsafe-inline'` is required because the client is a single inline-script
+/// document; a nonce/extraction pass to drop it is a documented P1/P2 follow-up. Caddy is the prod
+/// enforcement layer and may tighten this further — its CSP must mirror these allowances or the vector
+/// basemap silently falls back to raster in prod.
 const CSP: &str = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; \
 img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; \
-style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
-script-src 'self' 'unsafe-inline' https://pagead2.googlesyndication.com https://*.googlesyndication.com https://*.google.com https://*.googleadservices.com https://*.doubleclick.net https://*.adtrafficquality.google; \
+worker-src 'self' blob:; \
+style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; \
+script-src 'self' 'unsafe-inline' blob: https://unpkg.com https://pagead2.googlesyndication.com https://*.googlesyndication.com https://*.google.com https://*.googleadservices.com https://*.doubleclick.net https://*.adtrafficquality.google; \
 connect-src 'self' ws: wss: https:; \
 frame-src https://*.googlesyndication.com https://*.doubleclick.net https://*.google.com https://*.adtrafficquality.google";
 
@@ -1187,6 +1239,14 @@ pub async fn run(world: WorldState, cmd_tx: CmdTx) {
         .route("/privacy",    get(privacy_page))        // privacy policy (AdSense-required)
         .route("/tos",        get(tos_page))            // terms of service
         .route("/favicon.png", get(favicon_handler))
+        .route("/favicon.svg", get(favicon_svg_handler))          // brand vector mark
+        .route("/apple-touch-icon.png", get(apple_icon_handler))
+        .route("/icon-192.png", get(icon_192_handler))            // maskable PWA icon
+        .route("/icon-512.png", get(icon_512_handler))            // maskable PWA icon
+        .route("/og.png",       get(og_image_handler))            // og:image / twitter:summary_large_image
+        .route("/site.webmanifest", get(webmanifest_handler))
+        .route("/flags.png",  get(flags_png_handler))             // passport country-flag sprite
+        .route("/flags.css",  get(flags_css_handler))             // passport flag sprite stylesheet
         .route("/ads.txt",    get(ads_txt_handler))     // AdSense authorized-sellers (apex)
         .route("/health",     get(health_handler))
         .route("/snap/*rest", get(snap_handler))         // dev origin tile fallback (HIVE_SNAP_LOCAL)

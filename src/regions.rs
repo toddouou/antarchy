@@ -27,12 +27,21 @@ struct Metro { name: String, cx: i32, cy: i32, r2: i64 }
 struct Country {
     name: String,
     continent: String,
+    /// ISO-3166 alpha-2 code, lowercase (e.g. "fr", "us"). The Natural Earth 110m dataset
+    /// uses "-99" for several countries (France, Norway, Kosovo, …); the build step applies a
+    /// small hardcoded override table to recover correct codes for those cases.
+    iso_a2: String,
     min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64,
     /// Each polygon is a list of rings (outer + holes); ring = list of (lon, lat).
     polygons: Vec<Vec<Vec<(f64, f64)>>>,
 }
 
-pub struct Regions { metros: Vec<Metro>, countries: Vec<Country> }
+pub struct Regions {
+    metros: Vec<Metro>,
+    countries: Vec<Country>,
+    /// country name → (iso_a2, continent) — built once during `build()`.
+    country_iso: std::collections::HashMap<String, (String, String)>,
+}
 
 static REGIONS: OnceLock<Regions> = OnceLock::new();
 
@@ -70,6 +79,22 @@ fn game_to_lat_lon(x: i32, y: i32) -> (f64, f64) {
 
 // ---- Build -----------------------------------------------------------------
 
+/// Hardcoded overrides for Natural Earth 110m countries whose `ISO_A2` property is "-99".
+/// Keyed by the `NAME`/`ADMIN` property value as it appears in the GeoJSON; value is the
+/// correct lowercase ISO-3166-1 alpha-2 code. Extend as needed.
+fn iso_override(name: &str) -> Option<&'static str> {
+    // Natural Earth 110m known -99 cases (verified against ISO-3166 registry + NE docs).
+    match name {
+        "France"          => Some("fr"),
+        "Norway"          => Some("no"),
+        "Kosovo"          => Some("xk"),  // provisional IANA/Unicode code
+        "Northern Cyprus" => Some("cy"),  // treated as Cyprus for flag purposes
+        "Somaliland"      => Some("so"),  // unrecognised; map to Somalia
+        "N. Cyprus"       => Some("cy"),
+        _                 => None,
+    }
+}
+
 fn build() -> Regions {
     let mf: MetrosFile = serde_json::from_str(METROS_JSON).unwrap_or(MetrosFile { metros: vec![] });
     let tm = cfg().tile_meters;
@@ -91,6 +116,17 @@ fn build() -> Regions {
                     .unwrap_or("Unknown").to_string();
                 let continent = f.pointer("/properties/CONTINENT").and_then(Value::as_str)
                     .unwrap_or("").to_string();
+
+                // Resolve ISO alpha-2: prefer the GeoJSON property; fall back to the override
+                // table for the known -99 / empty cases in Natural Earth 110m.
+                let raw_iso = f.pointer("/properties/ISO_A2").and_then(Value::as_str)
+                    .unwrap_or("-99");
+                let iso_a2 = if raw_iso == "-99" || raw_iso.is_empty() {
+                    iso_override(&name).unwrap_or("").to_string()
+                } else {
+                    raw_iso.to_lowercase()
+                };
+
                 let Some(geom) = f.get("geometry") else { continue };
                 let gtype = geom.get("type").and_then(Value::as_str).unwrap_or("");
                 let Some(coords) = geom.get("coordinates") else { continue };
@@ -114,13 +150,20 @@ fn build() -> Regions {
                     if lat < mny { mny = lat; }
                     if lat > mxy { mxy = lat; }
                 }}}
-                countries.push(Country { name, continent, min_lon: mnx, min_lat: mny,
+                countries.push(Country { name, continent, iso_a2, min_lon: mnx, min_lat: mny,
                     max_lon: mxx, max_lat: mxy, polygons });
             }
         }
     }
+
+    // Build the name→(iso, continent) lookup map once, so `iso_and_continent_for_country`
+    // is an O(1) hash probe instead of an O(countries) linear scan.
+    let country_iso: std::collections::HashMap<String, (String, String)> = countries.iter()
+        .map(|c| (c.name.clone(), (c.iso_a2.clone(), c.continent.clone())))
+        .collect();
+
     println!("[regions] {} metros, {} countries", metros.len(), countries.len());
-    Regions { metros, countries }
+    Regions { metros, countries, country_iso }
 }
 
 fn parse_polygon(v: &Value) -> Option<Vec<Vec<(f64, f64)>>> {
@@ -167,7 +210,7 @@ pub fn region_for(x: i32, y: i32) -> String {
 }
 
 /// (region_name, continent). Metros resolve their continent via the underlying country so the
-/// Discovery feature can still credit a continent for a metro hit.
+/// Passport feature can still credit a continent for a metro hit.
 pub fn region_and_continent(x: i32, y: i32) -> (String, String) {
     let r = regions();
     let mut best: Option<(&Metro, i64)> = None;
@@ -186,8 +229,8 @@ pub fn region_and_continent(x: i32, y: i32) -> (String, String) {
     country_and_continent(x, y)
 }
 
-/// The underlying **country** (+ its continent) at a tile, ignoring metros — used by the Discovery
-/// passport, which collects real countries (not metro names). "Open Water" outside all polygons.
+/// The underlying **country** (+ its continent) at a tile, ignoring metros — used by the Passport
+/// feature, which collects real countries (not metro names). "Open Water" outside all polygons.
 pub fn country_and_continent(x: i32, y: i32) -> (String, String) {
     let r = regions();
     let (lat, lon) = game_to_lat_lon(x, y);
@@ -227,6 +270,13 @@ pub fn metros_for_holder() -> Vec<(String, i32, i32, i64)> {
     regions().metros.iter().map(|m| (m.name.clone(), m.cx, m.cy, m.r2)).collect()
 }
 
+/// ISO-3166-1 alpha-2 code (lowercase) and continent string for a country by **name** (as stored in
+/// `Player.passport_countries`). `None` if the name is not in the built index (e.g. "Open Water").
+/// Used by `build_player_info` to enrich the `passportCountries` array with flag codes.
+pub fn iso_and_continent_for_country(name: &str) -> Option<(String, String)> {
+    regions().country_iso.get(name).cloned()
+}
+
 /// Convert a ground radius (km) at world tile (x,y) into a **squared tile radius**, using the same
 /// Mercator-aware metres-per-tile as the metro circles (`build`). Used by admin monument placement so
 /// a monument's capture circle covers the same real-world area a metro of that radius would.
@@ -238,9 +288,27 @@ pub fn radius_km_to_r2(x: i32, y: i32, radius_km: f64) -> i64 {
     (r_tiles * r_tiles) as i64
 }
 
+/// Public wrapper over the internal Mercator projection: a real-world (lat, lon) → game tile (x, y).
+/// Used to seed landmarks/monuments at ground-truth coordinates (see `main`); mirrors the client's
+/// own projection so a placed marker lands exactly where the basemap draws that place.
+pub fn latlon_to_game(lat: f64, lon: f64) -> (i32, i32) { lat_lon_to_game(lat, lon) }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Locks the landmark projection used to seed monuments at real coordinates: the Eiffel Tower
+    /// (48.8584 N, 2.2945 E) must land EAST of the prime meridian and NORTH of the equator (the
+    /// Paris quadrant), inside the world. Prints the exact game tile so accuracy can be eyeballed.
+    #[test]
+    fn eiffel_tower_projects_into_paris_quadrant() {
+        init();
+        let (x, y) = latlon_to_game(48.8584, 2.2945);
+        println!("Eiffel Tower (48.8584, 2.2945) -> game tile ({x}, {y})");
+        assert!(x > 750_000, "lon > 0 → east of grid centre");
+        assert!(y < 375_000, "lat > 0 → north of grid centre (smaller y)");
+        assert!(x >= 0 && (x as u32) < 1_500_000 && y >= 0 && (y as u32) < 750_000, "in world bounds");
+    }
 
     /// Geo-concealment invariant: the GUEST metro payload must carry hotspot geometry but **no real
     /// city name** (a named centre + a queen's public coords = a Mercator reverse-projection anchor),

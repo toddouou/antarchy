@@ -212,6 +212,7 @@ fn verify(world: &mut World, reg_id: String, code: String, is_email: bool) -> Au
         owned_cosmetics: Vec::new(),
         equipped: std::collections::HashMap::new(),
         last_accrual_day: 0,
+        seasons_played: 0,   // new account → no completed seasons yet (this is the new "prestige")
         alliance_id: None,
     });
     world.auth.save();

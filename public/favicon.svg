@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="antarchy">
+  <!-- antarchy mark — nectar-orange triangle on warm ink. The mark never rotates or changes colour. -->
+  <rect width="64" height="64" rx="14" fill="#161309"/>
+  <polygon points="32,12 49,42 15,42" fill="#ee6c1f"/>
+</svg>

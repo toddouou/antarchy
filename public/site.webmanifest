@@ -1,0 +1,17 @@
+{
+  "name": "antarchy",
+  "short_name": "antarchy",
+  "description": "A real-time, planet-scale Langton's-ant territory war. Place your queen. Paint the Earth. Hold the line.",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e7e5df",
+  "theme_color": "#ee6c1f",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+  ]
+}

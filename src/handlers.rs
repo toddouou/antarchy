@@ -48,6 +48,19 @@ pub fn handle_message(
 ) {
     let t = msg.get("t").and_then(Value::as_str).unwrap_or("");
 
+    // ---- Event history (paged, newest-first) for the persistent EVENTS log ----
+    // `before=null` → most-recent page; `before=<ts>` → "load older". Account-only (guests/NPCs none).
+    if t == "event-history" {
+        if let Some(id) = *player_id {
+            if let Some(uname) = world.players.get(&id)
+                .filter(|p| !p.npc && !p.guest).map(|p| p.username.clone()) {
+                let before = msg.get("before").and_then(Value::as_u64);
+                let _ = tx.send(build_event_page(world, &uname, before));
+            }
+        }
+        return;
+    }
+
     // ---- Register ----
     if t == "register" {
         let raw_u = msg["username"].as_str().unwrap_or("").trim().to_uppercase();
@@ -263,7 +276,23 @@ pub fn handle_message(
         return;
     }
 
-    // ---- Forbidden zones ----
+    // ---- Placement view (anonymized red occupancy blanket) ----
+    // While the client is choosing a QUEEN spot, mark this connection so the viewport pipeline serves
+    // it an anonymized, foreign-only, von-Neumann-dilated occupancy MASK (no real owner ids, ants,
+    // queens, or fog) instead of the live territory — see network::snapshot_view. The client gates
+    // queen placement against the red mask; the server re-validates via `range_has_foreign_tile`.
+    if t == "place-mode" {
+        if msg["on"].as_bool().unwrap_or(false) { world.placing_views.insert(pid); }
+        else { world.placing_views.remove(&pid); }
+        world.dirty_tick = world.tick;   // force the next viewport cycle to re-send tiles
+        let _ = tx.send(json!({"t":"place-info","r":cfg().place_clear_r}).to_string());
+        return;
+    }
+
+    // ---- Forbidden zones (ANT/BRUTE deploy only) ----
+    // Enemy queen bubbles are no-deploy zones for worker/brute placement (`too_close_to_queen`). The
+    // client shows + pre-blocks them during ant/brute placement. (Queen placement no longer uses this
+    // — it uses the anonymized red mask above.)
     if t == "get-forbidden-zones" {
         let zones: Vec<Value> = world.queens.iter()
             .filter(|(&qid, q)| !q.dead && qid != pid)
@@ -275,13 +304,7 @@ pub fn handle_message(
                 })
             })
             .collect();
-        // The requester's prospective bubble radius: queen placement must keep BOTH bubbles
-        // apart (zones may never intersect), so the client inflates each zone by `placeR`.
-        // Ant placement uses the raw `r`. Live queen → relocate at its current radius.
-        let place_r = world.queens.get(&pid).filter(|q| !q.dead)
-            .map(|q| q.bubble_r)
-            .unwrap_or_else(|| cfg().bubble_r);
-        let _ = tx.send(json!({"t":"forbidden-zones","zones":zones,"placeR":place_r}).to_string());
+        let _ = tx.send(json!({"t":"forbidden-zones","zones":zones,"placeR":0.0}).to_string());
         return;
     }
 
@@ -299,9 +322,10 @@ pub fn handle_message(
             let _ = tx.send(err("Out of bounds")); return;
         }
         let size = queen_size_for_level(1);
-        // No-overlap rule: the new queen's L1 bubble may not intersect any existing bubble.
-        if world.queen_zone_overlaps(x + size as i32 / 2, y + size as i32 / 2, c.bubble_r, pid) {
-            let _ = tx.send(err("Too close to another queen")); return;
+        // Empty-range rule: the new queen's initial range (radius `place_clear_r`) must contain no
+        // FOREIGN tiles (own/allied tiles never block). Replaces the old bubble-overlap spacing rule.
+        if world.range_has_foreign_tile(x + size as i32 / 2, y + size as i32 / 2, c.place_clear_r, pid) {
+            let _ = tx.send(err("Foreign territory in range")); return;
         }
         let max_hp = crate::config::max_hp_for_level(1, &c);
         let bubble_r = c.bubble_r;
@@ -310,10 +334,22 @@ pub fn handle_message(
         if let Some(p) = world.players.get_mut(&pid) {
             p.queen_placed_at = Some(current_ms());
             p.queens_fielded += 1;
+            // Flag that this account had a live queen in the current season — `wipe_world` uses
+            // this to decide whether to credit `UserRecord.seasons_played` on rollover.
+            // A queen can only be placed when the player has none (first time or post-death), so
+            // this fires exactly once per new queen per player, regardless of relocate.
+            p.had_queen_this_season = true;
             if q_country != "Open Water" && q_country != "Unknown" {
-                p.visited_countries.insert(q_country);
-                if !q_cont.is_empty() { p.visited_continents.insert(q_cont); }
+                p.passport_countries.insert(q_country);
+                if !q_cont.is_empty() { p.passport_continents.insert(q_cont); }
             }
+        }
+        // Per-queen reclaim: reset the daily-claim window so the player gets a fresh claim
+        // after deploying a new queen (death → reclaim on respawn).  This fires once per new
+        // queen (relocate goes through a different path and does NOT reset the window).
+        if let Some(uname) = world.players.get(&pid).map(|p| p.username.clone()) {
+            if let Some(u) = world.auth.users.get_mut(&uname) { u.last_claim_day = 0; }
+            world.auth.save();
         }
         world.queens.insert(pid, Queen {
             x, y, size, hp: max_hp, max_hp, level: 1, xp: 0.0, kills: 0,
@@ -326,21 +362,85 @@ pub fn handle_message(
         world.dirty_tick = world.tick; // tiles are about to change
         world.paint_queen_body(x, y, size, pid);
         let _ = tx.send(json!({"t":"queen-placed","x":x,"y":y}).to_string());
-        let _ = tx.send(json!({"t":"event","msg":"QUEEN PLACED · DEPLOY ANTS WITHIN BUBBLE"}).to_string());
+        world.log_event(pid, "Queen deployed".to_string(),
+                        "Deploy worker ants within your bubble to start claiming ground".to_string());
+        // If this queen landed in an empty region (no live queen within ~10 mi), quietly seed 2–3
+        // bots on a 5–7-mi ring around it so the player has someone to run into. No-op otherwise.
+        crate::bots::maybe_spawn_for_lone_queen(world, pid);
         return;
     }
 
-    // ---- Daily claim (the ONLY daily-ant grant path; the rolling auto-refill is gone) ----
-    // One portion per 00:00-UTC window, idempotent via UserRecord.last_claim_day. The rewarded-ad
-    // gate (Group C) will become a precondition here — keep every grant inside claim_daily.
-    if t == "claim-daily" {
-        if !check_seq(world, pid, &msg) { return; }
-        match claim_daily(world, pid, current_ms()) {
+    // ---- Daily claim — two-step ad-gate flow ----
+    // Step 1: client sends `daily-claim-begin` → server checks eligibility; on success issues a
+    //         nonce (5-min TTL) and replies `daily-claim-token`.  `verified=true` is the PLUGGABLE
+    //         SSV HOOK — a future POST /api/ad-ssv from the ad network would flip it only AFTER
+    //         confirming the rewarded-ad was watched.  For now it is set immediately so the flow
+    //         works without a live ad network.
+    // Step 2: client (after the ad reward) sends `claim-daily` with the nonce → server validates
+    //         nonce + re-checks eligibility + performs the grant.
+    if t == "daily-claim-begin" {
+        let now = current_ms();
+        match daily_claim_eligible(world, pid, now) {
+            Err(e) => { let _ = tx.send(err(e)); }
             Ok(amount) => {
-                world.auth.save();   // persist the claimed window (users.json)
+                // Prune expired nonces opportunistically (at most once per begin call).
+                world.pending_daily_claims.retain(|_, v| v.expires_ms > now);
+                // Generate a 16-byte URL-safe hex nonce.  `rand::random::<[u8; 16]>()` is the
+                // same source used for ant ids — no additional dep needed.
+                let raw: [u8; 16] = rand::random();
+                let nonce: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+                world.pending_daily_claims.insert(nonce.clone(), crate::world::PendingDailyClaim {
+                    pid,
+                    expires_ms: now + 300_000,   // 5-minute window (generous for a slow ad network)
+                    verified: true,               // SSV HOOK PLACEHOLDER — set true until ad network wired
+                });
+                let _ = tx.send(json!({"t":"daily-claim-token","nonce":nonce,"amount":amount}).to_string());
+            }
+        }
+        return;
+    }
+
+    // Step 2: client supplies the nonce from step 1; server validates + grants.
+    if t == "claim-daily" {
+        // No `seq` guard here: this is step 2 of the ad-gate flow, and the single-use `nonce`
+        // (consumed before the grant below) is itself the replay guard — a stale or duplicated
+        // claim-daily can't re-grant once its nonce has been removed from `pending_daily_claims`.
+        let now = current_ms();
+        let nonce = match msg.get("nonce").and_then(|v| v.as_str()) {
+            Some(n) => n.to_string(),
+            None => {
+                // No nonce → legacy path (back-compat or old clients); send an error so the client
+                // knows to use the two-step flow instead of silently granting.
+                let _ = tx.send(err("Use daily-claim-begin first")); return;
+            }
+        };
+        // Validate the pending nonce.
+        let pending = match world.pending_daily_claims.get(&nonce) {
+            Some(p) => p.clone(),
+            None => { let _ = tx.send(err("Invalid or expired claim token")); return; }
+        };
+        if pending.pid != pid {
+            let _ = tx.send(err("Claim token mismatch")); return;
+        }
+        if now > pending.expires_ms {
+            world.pending_daily_claims.remove(&nonce);
+            let _ = tx.send(err("Claim token expired — request a new one")); return;
+        }
+        if !pending.verified {
+            // SSV HOOK: the ad network hasn't confirmed the view yet.  Rare in prod but guard it.
+            let _ = tx.send(err("Ad reward not yet confirmed — try again in a moment")); return;
+        }
+        // Remove BEFORE re-checking eligibility so a racing replay can't slip through.
+        world.pending_daily_claims.remove(&nonce);
+        // Re-check eligibility (clock might have rolled past 00:00 UTC since begin was issued;
+        // also guards double-claim if the player somehow sent begin twice).
+        match claim_daily(world, pid, now) {
+            Ok(amount) => {
+                world.auth.save();
                 let avail = world.players.get(&pid).map(|p| p.ants_avail).unwrap_or(0);
                 let _ = tx.send(json!({"t":"daily-claimed","amount":amount,"antsAvail":avail}).to_string());
-                let _ = tx.send(json!({"t":"event","msg":format!("+{amount} DAILY WORKERS")}).to_string());
+                world.log_event(pid, format!("Claimed {amount} daily workers"),
+                                "Your daily worker allotment — resets at 00:00 UTC".to_string());
             }
             Err(e) => { let _ = tx.send(err(e)); }
         }
@@ -507,6 +607,7 @@ pub fn handle_message(
                 } else if let Some(uname) = world.players.get(&tid).map(|p| p.username.clone()) {
                     world.auth.banned.insert(uname.clone());
                     world.auth.save(); // moderation state must survive a crash, not just the next graceful save
+                    world.events.clear_user(&uname);   // drop the banned account's event history
                     world.force_logout(tid, "BANNED BY ADMIN");
                     let msg = json!({"t":"event","msg":format!("[ADMIN] {uname} BANNED")}).to_string();
                     world.broadcast(&msg);
@@ -760,7 +861,8 @@ pub fn handle_message(
                     "hp":       q.map(|q| q.hp).unwrap_or(0),
                     "maxHp":    q.map(|q| q.max_hp).unwrap_or(0),
                     "ants":     p.ants_avail,
-                    "prestige": p.prestige,
+                    "deaths":   p.deaths,
+                    "prestige": acct.map(|u| u.seasons_played).unwrap_or(0),
                     "nectar":   p.nectar,
                     // Account currency + cosmetics (users.json) — for the admin gem/cosmetic controls.
                     "gems":      acct.map(|u| u.gems).unwrap_or(0),
@@ -808,14 +910,15 @@ pub fn handle_message(
 
         match item.as_str() {
             "relocate" => {
-                let old_pos = world.queens.get(&pid).filter(|q| !q.dead).map(|q| (q.x, q.y, q.size, q.bubble_r));
-                let Some((ox, oy, sz, my_r)) = old_pos else { let _ = tx.send(err("Need a live queen")); return; };
+                let old_pos = world.queens.get(&pid).filter(|q| !q.dead).map(|q| (q.x, q.y, q.size));
+                let Some((ox, oy, sz)) = old_pos else { let _ = tx.send(err("Need a live queen")); return; };
                 let x = msg["x"].as_i64().unwrap_or(-1) as i32;
                 let y = msg["y"].as_i64().unwrap_or(-1) as i32;
                 let ww = world.world_w as i32; let wh = world.world_h as i32;
                 if x < 2 || y < 2 || x >= ww - 8 || y >= wh - 8 { let _ = tx.send(err("Out of bounds")); return; }
-                // No-overlap rule: relocating keeps the queen's current bubble — same circle test.
-                if world.queen_zone_overlaps(x + sz as i32 / 2, y + sz as i32 / 2, my_r, pid) { let _ = tx.send(err("Too close to another queen")); return; }
+                // Empty-range rule: the destination range must be clear of FOREIGN territory (your own
+                // tiles never block, so you can relocate into/near your own land).
+                if world.range_has_foreign_tile(x + sz as i32 / 2, y + sz as i32 / 2, cfg().place_clear_r, pid) { let _ = tx.send(err("Foreign territory in range")); return; }
                 charge(world, pid, price, unlimited_nectar);
                 world.clear_queen_body(ox, oy, sz, pid);
                 if let Some(q) = world.queens.get_mut(&pid) { q.x = x; q.y = y; q.region = crate::regions::region_for(x, y); }
@@ -1043,28 +1146,61 @@ pub fn handle_message(
     if t == "admin-cfg-reset" {
         if !is_admin { let _ = tx.send(err("Admin only")); return; }
         let vals = reset_to_defaults();
-        for (key, value) in vals {
+        for (key, value) in &vals {
             let cfg_msg = json!({"t":"cfg","key":key.to_uppercase(),"value":value}).to_string();
             world.broadcast(&cfg_msg);
         }
+        // Re-level every LIVE queen from its current XP under the freshly-restored curve, so the reset
+        // takes effect on existing queens immediately (their XP bar realigns; a queen sitting on lots of
+        // XP under a harder curve jumps to its correct level) instead of only affecting future XP gains.
+        // Mirrors the admin set-level path: set_level → clamp hp → queen_map_dirty; unlock gates on a rise.
+        let c = cfg().clone();
+        let qids: Vec<u32> = world.queens.iter().filter(|(_, q)| !q.dead).map(|(&id, _)| id).collect();
+        for qid in qids {
+            let (old_lvl, new_lvl) = match world.queens.get(&qid) {
+                Some(q) => (q.level, level_for_xp(q.xp, &c)),
+                None    => continue,
+            };
+            if new_lvl != old_lvl {
+                if let Some(q) = world.queens.get_mut(&qid) {
+                    q.set_level(new_lvl, &c);
+                    q.hp = q.hp.min(q.max_hp);
+                }
+                if new_lvl > old_lvl { apply_peak_unlocks(world, qid, new_lvl); }
+            }
+        }
+        world.queen_map_dirty = true;
+        crate::config::save_config();   // persist config.json NOW, not just on the next ~60 s autosave
+        let _ = tx.send(json!({"t":"event","msg":"[ADMIN] CONFIG RESET TO DEFAULTS"}).to_string());
     }
 }
 
-/// Grant the daily ant portion for the current 00:00-UTC window. Idempotent: the account's
-/// `last_claim_day` (users.json) marks the window claimed — a replay/double-call is rejected, and
-/// an unclaimed window is simply forfeited once the next one starts (no carry-over, no stacking).
-/// Pure state change; the caller persists via `Auth::save` on success. Returns the portion size.
-fn claim_daily(world: &mut World, pid: u32, now: u64) -> Result<i32, &'static str> {
+/// Non-mutating eligibility check for the daily-ant claim. Returns `Ok(amount)` if the player
+/// may claim the current 00:00-UTC window, or `Err(reason)` if not. Does NOT modify any state —
+/// the grant is performed by `claim_daily`.  Used by `daily-claim-begin` to issue a nonce.
+fn daily_claim_eligible(world: &World, pid: u32, now: u64) -> Result<i32, &'static str> {
     let Some(p) = world.players.get(&pid) else { return Err("Not logged in"); };
     if p.npc || p.guest { return Err("Spectators cannot claim"); }
-    let uname = p.username.clone();
+    let uname = &p.username;
+    let day = crate::config::utc_day(now);
+    let Some(u) = world.auth.users.get(uname) else { return Err("No account record"); };
+    if u.last_claim_day >= day { return Err("Already claimed — next portion at 00:00 UTC"); }
+    Ok(cfg().daily_ants)
+}
+
+/// Perform the daily-ant grant for the current 00:00-UTC window. Idempotent: the account's
+/// `last_claim_day` (users.json) marks the window claimed. Callers MUST persist via `Auth::save`
+/// on success. Should only be called after `daily_claim_eligible` returns `Ok`.
+fn claim_daily(world: &mut World, pid: u32, now: u64) -> Result<i32, &'static str> {
+    // Re-validate (the window might have changed between begin and claim, or a race occurred).
+    let amount = daily_claim_eligible(world, pid, now)?;
+    let uname = world.players.get(&pid).map(|p| p.username.clone())
+        .ok_or("Not logged in")?;
     let day = crate::config::utc_day(now);
     let Some(u) = world.auth.users.get_mut(&uname) else { return Err("No account record"); };
-    if u.last_claim_day >= day { return Err("Already claimed — next portion at 00:00 UTC"); }
     u.last_claim_day = day;
-    let daily = cfg().daily_ants;
-    if let Some(p) = world.players.get_mut(&pid) { p.ants_avail += daily; }
-    Ok(daily)
+    if let Some(p) = world.players.get_mut(&pid) { p.ants_avail += amount; }
+    Ok(amount)
 }
 
 // ======================================================================================
@@ -1512,6 +1648,15 @@ fn backfill_peak_level(world: &mut World, id: u32) {
     if changed { world.auth.save(); }
 }
 
+/// Build a newest-first `event-page` frame for an account. `append` mirrors whether a `before`
+/// cursor was supplied, so the client knows to replace (initial/refresh) vs. append (load older).
+fn build_event_page(world: &World, username: &str, before: Option<u64>) -> String {
+    let (entries, more) = world.events.page(username, before, crate::events::PAGE_SIZE);
+    let arr: Vec<Value> = entries.iter()
+        .map(|e| json!({"ts": e.ts, "head": e.head, "sub": e.sub})).collect();
+    json!({"t":"event-page", "entries": arr, "more": more, "append": before.is_some()}).to_string()
+}
+
 fn create_or_reconnect_player(
     world: &mut World,
     id: u32, username: &str, color: &str, hue_idx: i32,
@@ -1559,6 +1704,7 @@ fn create_or_reconnect_player(
             p.color = eff_color;
             p.away.take()
         };
+        world.send_to(id, build_event_page(world, username, None));   // replay recent EVENTS history
         println!("[reconnect] {username} ({})", id);
         return away.and_then(|s| build_welcome_back(world, id, &s, now));
     }
@@ -1572,6 +1718,7 @@ fn create_or_reconnect_player(
         tile_fx, aura, trail,
         ..Default::default()
     });
+    world.send_to(id, build_event_page(world, username, None));   // recent EVENTS history (may be empty)
     println!("[connect] {username} ({})", id);
     None
 }
@@ -1587,7 +1734,7 @@ fn build_welcome_back(world: &World, id: u32, snap: &crate::world::AwaySnapshot,
     let cur_kills   = q.map(|q| q.kills).unwrap_or(0);
     let cur_level   = q.map(|q| q.level).unwrap_or(0);
     let cur_army    = world.ant_counts.get(&id).copied().unwrap_or(0);
-    let cur_visited = world.players.get(&id).map(|p| p.visited_countries.len()).unwrap_or(0);
+    let cur_visited = world.players.get(&id).map(|p| p.passport_countries.len()).unwrap_or(0);
     Some(json!({
         "t":              "welcome-back",
         "awayMs":         away_ms,
@@ -1596,7 +1743,7 @@ fn build_welcome_back(world: &World, id: u32, snap: &crate::world::AwaySnapshot,
         "killsDelta":     cur_kills as i64 - snap.kills as i64,
         "levelsDelta":    cur_level as i64 - snap.level as i64,
         "armyDelta":      cur_army as i64 - snap.army as i64,
-        "countriesDelta": cur_visited as i64 - snap.visited_countries as i64,
+        "countriesDelta": cur_visited as i64 - snap.passport_countries as i64,
     }).to_string())
 }
 

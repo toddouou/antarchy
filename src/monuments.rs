@@ -28,6 +28,37 @@ struct MonumentsFile {
     monuments: Vec<Monument>,
 }
 
+/// The 100 famous landmarks seeded on boot, embedded at compile time like `data/regions.json`.
+const LANDMARKS_JSON: &str = include_str!("../data/landmarks.json");
+
+/// Capture radius for a seeded landmark, in tiles (≈ `radius × tile_meters` metres ≈ 2.67 km @ 26.72).
+/// Stored squared (`r2`) to match `Monument.r2` and the king-of-the-hill tile scan.
+const LANDMARK_RADIUS_TILES: i64 = 100;
+
+#[derive(Deserialize)]
+struct LandmarkSeed {
+    name: String,
+    lat:  f64,
+    lon:  f64,
+}
+
+/// Parse the embedded landmark list and project each real-world `(lat, lon)` → game tile via the live
+/// Mercator (`regions::latlon_to_game`), so a seeded marker lands exactly where the client basemap
+/// draws that place — the map TILE, not the raw lat/lon, is the placement. Radius = 100 tiles
+/// (`r2 = 10_000`). `id` is left `0`; the caller (`main`) assigns a collision-free id from the monument
+/// allocator. Malformed JSON → empty (logged), never panics.
+pub fn seeded_landmarks() -> Vec<Monument> {
+    let list: Vec<LandmarkSeed> = match serde_json::from_str(LANDMARKS_JSON) {
+        Ok(v)  => v,
+        Err(e) => { eprintln!("[landmarks] embedded landmarks.json invalid — none seeded ({e})"); return Vec::new(); }
+    };
+    let r2 = LANDMARK_RADIUS_TILES * LANDMARK_RADIUS_TILES;
+    list.into_iter().map(|l| {
+        let (x, y) = crate::regions::latlon_to_game(l.lat, l.lon);
+        Monument { id: 0, name: l.name, x, y, r2 }
+    }).collect()
+}
+
 /// Path of the monuments store beside the world snapshot (so it rides `HIVE_DATA_DIR`), same trick as
 /// `config::config_path` (`world.snapshot` → `monuments.json`).
 fn monuments_path() -> String { cfg().save_file.replace("world.snapshot", "monuments.json") }
@@ -77,5 +108,46 @@ mod tests {
         assert_eq!(back.monuments[0].name, "Eiffel");
         assert_eq!(back.monuments[1].x, 300);
         assert_eq!(back.monuments[1].r2, 12_000);
+    }
+
+    /// Verifies the 100 seeded landmarks land correctly ON THE MAP — not just that lat/lon parses.
+    /// For each: the projected tile is in-bounds, sits in the hemisphere quadrant its lat/lon demands
+    /// (catches transposed/sign-flipped coordinates), and is resolved through the country polygons to
+    /// confirm it lands on the right landmass. Prints the full name → tile → country table as evidence,
+    /// and lists any that resolve to open water (coastal/island sites — expected for a handful).
+    #[test]
+    fn seeded_landmarks_land_on_the_map_correctly() {
+        crate::regions::init();
+        let raw: Vec<LandmarkSeed> = serde_json::from_str(LANDMARKS_JSON).expect("landmarks.json parses");
+        assert_eq!(raw.len(), 100, "exactly 100 landmarks");
+
+        let mut names = std::collections::HashSet::new();
+        for l in &raw { assert!(names.insert(l.name.clone()), "duplicate landmark name: {}", l.name); }
+
+        let (sx, sy, ww, wh) = {
+            let c = cfg();
+            (c.spawn_x as i32, c.spawn_y as i32, c.world_w, c.world_h)
+        };
+
+        let mut water: Vec<String> = Vec::new();
+        println!("\n{:<30}{:>10}{:>10}{:>10}{:>10}  country", "landmark", "lat", "lon", "tile_x", "tile_y");
+        for l in &raw {
+            let (x, y) = crate::regions::latlon_to_game(l.lat, l.lon);
+            assert!(x >= 0 && (x as u32) < ww && y >= 0 && (y as u32) < wh,
+                    "{} projects out of bounds → ({x},{y})", l.name);
+            // Hemisphere quadrant must match the lat/lon sign (east/west of centre, north/south of it).
+            if l.lon > 0.0 { assert!(x > sx, "{}: lon>0 must land EAST of grid centre", l.name); }
+            if l.lon < 0.0 { assert!(x < sx, "{}: lon<0 must land WEST of grid centre", l.name); }
+            if l.lat > 0.0 { assert!(y < sy, "{}: lat>0 must land NORTH of grid centre", l.name); }
+            if l.lat < 0.0 { assert!(y > sy, "{}: lat<0 must land SOUTH of grid centre", l.name); }
+            let (country, _) = crate::regions::country_and_continent(x, y);
+            if country == "Open Water" { water.push(l.name.clone()); }
+            println!("{:<30}{:>10.4}{:>10.4}{:>10}{:>10}  {country}", l.name, l.lat, l.lon, x, y);
+        }
+        println!("\n{} of {} landmarks resolved to LAND; {} on/near water (coastal/island — expected): {:?}",
+                 raw.len() - water.len(), raw.len(), water.len(), water);
+        // Coarse Natural-Earth 110m polygons miss small coastal/island sites; tolerate a handful but
+        // fail loudly if MOST fall in ocean (which would mean the projection itself is broken).
+        assert!(water.len() <= 20, "too many landmarks resolved to open water ({}) — projection likely broken", water.len());
     }
 }

@@ -78,15 +78,27 @@ pub fn valid_hex_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Lifetime tile-count milestones (rounded "nice numbers"), ascending. Each is awarded **once per
-/// queen** — the first tick its peak tile count (`tiles_ever_held`) reaches the threshold. The XP
-/// per milestone scales with its 1-based index (`xp_tile_award × index`), so later milestones pay
-/// a bit more. See `tick_world` Phase 4.
-pub const TILE_MILESTONES: &[u64] = &[
-    10_000, 25_000, 50_000, 100_000, 250_000, 500_000,
-    1_000_000, 2_500_000, 5_000_000, 10_000_000,
-    25_000_000, 50_000_000, 100_000_000, 250_000_000, 500_000_000, 1_000_000_000,
+/// Lifetime tile-count milestones as **(threshold_tiles, xp_awarded)** pairs, ascending. Each is
+/// awarded **once per queen** — the first tick its peak tile count (`tiles_ever_held`) reaches the
+/// threshold. Hand-tuned to ramp the opening ~10 levels fast (engagement), then scale with the
+/// territory you actually hold. The award is multiplied by the global `xp_tile_award` scalar (1.0 =
+/// these base values). See `tick_world` Phase 4. (Mindless per-tile painting earns nothing here —
+/// only crossing a threshold pays out; the slow trickle is the passive grant below.)
+pub const TILE_MILESTONES: &[(u64, f64)] = &[
+    (10, 10.0), (50, 25.0), (100, 50.0), (250, 100.0), (500, 150.0),
+    (1_000, 250.0), (1_500, 350.0), (2_500, 500.0), (5_000, 800.0), (10_000, 1_500.0),
+    (25_000, 3_000.0), (50_000, 6_000.0), (100_000, 12_000.0), (250_000, 30_000.0), (500_000, 60_000.0),
+    (1_000_000, 120_000.0), (2_500_000, 300_000.0), (5_000_000, 600_000.0), (10_000_000, 1_200_000.0),
+    (25_000_000, 3_000_000.0), (50_000_000, 6_000_000.0), (100_000_000, 12_000_000.0),
+    (250_000_000, 30_000_000.0), (500_000_000, 60_000_000.0), (1_000_000_000, 120_000_000.0),
 ];
+
+/// Passive territory XP (legacy constant, retired from the tick): was "+1 XP for every 100 NET
+/// tiles" keyed off the high-water mark. Replaced by the `passive_xp_per_tile` Config field (a
+/// per-tick trickle based on CURRENT holdings). Retained as a documentation anchor; no longer read
+/// by the simulation. The new defaults give roughly similar early-game rates at 1 000 tiles held.
+#[allow(dead_code)]
+pub const XP_PASSIVE_PER_100_TILES: f64 = 1.0;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -102,6 +114,10 @@ pub struct Config {
     /// Multiplier the placement bubble reaches at the level cap, relative to `bubble_r` (L1).
     /// The radius grows linearly L1 → cap (see `bubble_r_for_level`); 4.0 = quadruple the reach.
     pub bubble_r_level_mult: f64,
+    /// Queen-placement clearance radius (tiles): a new/relocated queen's initial range must contain
+    /// NO foreign tiles within this radius of the queen center (see `World::range_has_foreign_tile`).
+    /// Defaults to `bubble_r` (the L1 zone). Also the radius of the red "range ring" shown client-side.
+    pub place_clear_r: f64,
     /// Queen max-HP at level 1 (the low anchor of the exponential HP curve).
     pub hp_base: i32,
     /// Queen max-HP at the level cap (the high anchor of the exponential HP curve).
@@ -115,7 +131,8 @@ pub struct Config {
     pub xp_base: f64,
     pub xp_exp: f64,
     pub xp_level_cap: u16,
-    /// Base XP for the *first* tile milestone; milestone `i` (1-based) grants `xp_tile_award × i`.
+    /// Global multiplier on **territory XP** — both the `TILE_MILESTONES` payouts and the passive
+    /// `+1 / 100 tiles` grant are scaled by this. `1.0` = the tuned base values.
     pub xp_tile_award: f64,
     pub xp_kill: f64,
     pub xp_convert: f64,
@@ -164,6 +181,14 @@ pub struct Config {
     pub alliance_xp_kill: f64,
     /// Alliance XP per real day per 100,000 tiles the alliance's members collectively hold.
     pub alliance_xp_per_100k_day: f64,
+    // ---- Passive territory XP (new per-tick trickle to replace the old high-water growth grant) ----
+    /// How many ticks between passive territory XP pulses.  Default 50 = 1 s at 50 Hz (or ~3.3 s at
+    /// the live 15 Hz tick); set to 0 to disable.  Admin-tunable (floored to 1 in the setter).
+    pub passive_xp_every_ticks: u64,
+    /// XP granted per CURRENT held tile per pulse.  Default 0.001 — at 1 000 tiles a queen earns
+    /// ~1 XP/pulse ≈ 60 XP/min, so early levels stay reachable but you need sustained territory to
+    /// climb the curve.  Combined with the raised `xp_base` / `xp_exp` this makes XP "hard".
+    pub passive_xp_per_tile: f64,
 }
 
 impl Default for Config {
@@ -179,6 +204,7 @@ impl Default for Config {
             lifespan:   1_296_000,
             bubble_r:          30.0,
             bubble_r_level_mult: 2.5,
+            place_clear_r:     30.0,
             hp_base:            50,
             hp_max:          2_428,
             convert_pct:       0.65,
@@ -187,14 +213,14 @@ impl Default for Config {
             capitol_lat: 0.0,
             capitol_lon: 0.0,
             tile_meters: 26.72,
-            xp_base:         400.0,
-            xp_exp:           1.14,
+            xp_base:         300.0,   // cost of L1→L2 — harder early game than before; paired with the TILE_MILESTONES on-ramp
+            xp_exp:           1.18,    // steeper per-level growth → L100 reachable only by sustained large holdings/kills
             xp_level_cap:    100,
-            xp_tile_award:   150.0,
+            xp_tile_award:     1.0,    // global multiplier on territory XP (milestones + passive); 1.0 = tuned base values
             xp_kill:        5000.0,
-            xp_convert:        5.0,
+            xp_convert:        0.0,   // clash-conversion XP retired (the passive trickle replaces it)
             xp_heal:           0.0,
-            xp_highway_tick:   0.5,
+            xp_highway_tick:   0.0,    // per-tile "highway" XP OFF — mindless wandering earns nothing; territory XP comes from milestones + the passive +1/100 grant
             levelup_ant_grant: 1,
             ant_damage:        1.0,
             ant_hz:            15,
@@ -214,6 +240,8 @@ impl Default for Config {
             mayday_hp_pct:            0.5,
             alliance_xp_kill:        10.0,
             alliance_xp_per_100k_day: 5.0,
+            passive_xp_every_ticks:   50,   // pulse every 50 ticks ≈ 1 s @ 50 Hz / ~3.3 s @ 15 Hz
+            passive_xp_per_tile:       0.001, // 1 000 tiles → ~1 XP/pulse ≈ 60 XP/min
         }
     }
 }
@@ -252,6 +280,7 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("lifespan",       1000.0, 8_640_000.0),
     ("bubble_r",          5.0,     5_000.0),
     ("bubble_r_level_mult", 1.0,      20.0),
+    ("place_clear_r",     0.0,     5_000.0),
     ("hp_base",           1.0, 1_000_000.0),
     ("hp_max",            1.0, 1_000_000_000.0),
     ("convert_pct",       0.1,         1.0),
@@ -279,6 +308,9 @@ const ADMIN_CLAMP: &[(&str, f64, f64)] = &[
     ("mayday_hp_pct",         0.0,          1.0),
     ("alliance_xp_kill",      0.0,  1_000_000.0),
     ("alliance_xp_per_100k_day", 0.0,  100_000.0),
+    // Passive territory XP trickle — the new per-tick holdings-based grant.
+    ("passive_xp_every_ticks", 1.0, 10_000.0),   // ticks between pulses (floored to 1)
+    ("passive_xp_per_tile",    0.0,     100.0),   // XP per current tile per pulse
 ];
 
 /// Returns the clamped value, or None if key is unknown.
@@ -293,6 +325,7 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "lifespan"          => c.lifespan           = v as u32,
         "bubble_r"          => c.bubble_r           = v,
         "bubble_r_level_mult" => c.bubble_r_level_mult = v,
+        "place_clear_r"     => c.place_clear_r      = v,
         "hp_base"           => c.hp_base            = v as i32,
         "hp_max"            => c.hp_max             = v as i32,
         "convert_pct"       => c.convert_pct        = v,
@@ -320,6 +353,8 @@ pub fn apply_admin_param(key: &str, value: f64) -> Option<f64> {
         "mayday_hp_pct"         => c.mayday_hp_pct         = v,
         "alliance_xp_kill"      => c.alliance_xp_kill      = v,
         "alliance_xp_per_100k_day" => c.alliance_xp_per_100k_day = v,
+        "passive_xp_every_ticks" => c.passive_xp_every_ticks = (v as u64).max(1),
+        "passive_xp_per_tile"    => c.passive_xp_per_tile    = v,
         _ => return None,
     }
     // A tunable changed → flag for the next off-lock persist (server.rs autosave / shutdown), so
@@ -469,12 +504,34 @@ pub fn basemap_url() -> Option<String> {
     V.get_or_init(|| std::env::var("HIVE_BASEMAP_URL").ok().filter(|s| !s.trim().is_empty())).clone()
 }
 
-/// Optional MapLibre GL **vector** basemap style URL. When set, authed clients load a vector basemap
-/// (and restrict labels to country/city/town/neighbourhood, zero icons) instead of the raster path.
-/// Empty → client keeps the raster basemap. Read once. (e.g. `https://tiles.openfreemap.org/styles/liberty`.)
+/// MapLibre GL **vector** basemap style URL sent to authed clients. The client loads a vector basemap
+/// (labels restricted to country/city/town/neighbourhood, zero icons) instead of the raster OSM path.
+///
+/// **On by default**: when `HIVE_VECTOR_STYLE_URL` is unset we fall back to the free, no-API-key
+/// OpenFreeMap *liberty* style — a full-colour OpenMapTiles base (land/water/parks render in colour,
+/// not greyscale). The client pushes it back with a gentle desaturation so the muted faction territory
+/// stays legible on top (see `blitVectorBasemap` in client.html). Override with any
+/// MapLibre/OpenMapTiles-schema style URL (e.g. `https://tiles.openfreemap.org/styles/positron` for the
+/// old neutral grey base, or a keyed MapTiler URL). Set it to an empty string / `off` / `none` / `0` to
+/// disable and keep the raster basemap. Guests never receive it (see `build_player_info`). Read once.
 pub fn vector_style_url() -> Option<String> {
     static V: OnceLock<Option<String>> = OnceLock::new();
-    V.get_or_init(|| std::env::var("HIVE_VECTOR_STYLE_URL").ok().filter(|s| !s.trim().is_empty())).clone()
+    // Default to a full-colour vector style (liberty) — the map reads in colour, not black-and-white;
+    // the client softens it under the muted territory layer (blitVectorBasemap). Swap via env code-free.
+    const DEFAULT: &str = "https://tiles.openfreemap.org/styles/liberty";
+    V.get_or_init(|| match std::env::var("HIVE_VECTOR_STYLE_URL") {
+        Ok(s) => {
+            let t = s.trim();
+            // Explicit opt-out keeps the raster basemap.
+            if t.is_empty() || t.eq_ignore_ascii_case("off") || t.eq_ignore_ascii_case("none") || t == "0" {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        Err(_) => Some(DEFAULT.to_string()),
+    })
+    .clone()
 }
 
 /// Default half-extent (in tiles) of the camera "home region" a player may pan within, centred on
@@ -804,6 +861,7 @@ fn params_of(c: &Config) -> Vec<(&'static str, f64)> {
         ("lifespan",          c.lifespan as f64),
         ("bubble_r",          c.bubble_r),
         ("bubble_r_level_mult", c.bubble_r_level_mult),
+        ("place_clear_r",     c.place_clear_r),
         ("hp_base",           c.hp_base as f64),
         ("hp_max",            c.hp_max as f64),
         ("convert_pct",       c.convert_pct),
@@ -831,6 +889,8 @@ fn params_of(c: &Config) -> Vec<(&'static str, f64)> {
         ("mayday_hp_pct",         c.mayday_hp_pct),
         ("alliance_xp_kill",      c.alliance_xp_kill),
         ("alliance_xp_per_100k_day", c.alliance_xp_per_100k_day),
+        ("passive_xp_every_ticks", c.passive_xp_every_ticks as f64),
+        ("passive_xp_per_tile",    c.passive_xp_per_tile),
     ]
 }
 
@@ -967,16 +1027,19 @@ pub fn max_hp_for_level(lvl: u16, cfg: &Config) -> i32 {
 /// Cumulative XP required to *reach* level `n` (a running total; queen.xp stores this directly).
 /// `xp_exp` is the **per-level growth rate** (1.07 = +7%/level), so the cost of the single level
 /// `L→L+1` is `total(L+1) − total(L) = xp_base · rate^(L-1)`, and this closed-form geometric sum is
-/// its running total. With the defaults: L2 = 400, L100 ≈ 1.23 billion (very back-loaded so
-/// mid/late levels are a long grind). `n ≤ 1 → 0`.
+/// its running total. With the defaults: L2 = 120 (cheap early on-ramp), L100 ≈ 1.8 billion (still
+/// very back-loaded, so high levels stay a long grind). `n ≤ 1 → 0`.
 pub fn total_xp_for_level(n: u16, cfg: &Config) -> f64 {
     if n <= 1 { return 0.0; }
     let rate  = cfg.xp_exp;          // per-level XP growth multiplier (1.07 = +7%/level)
-    let steps = (n - 1) as f64;
+    let steps = (n - 1) as i32;
     if (rate - 1.0).abs() < 1e-9 {
-        (cfg.xp_base * steps).floor()                          // degenerate (no growth): linear
+        (cfg.xp_base * steps as f64).floor()                   // degenerate (no growth): linear
     } else {
-        (cfg.xp_base * (rate.powf(steps) - 1.0) / (rate - 1.0)).floor()
+        // Compute the geometric RATIO first, then scale by xp_base: for one step the ratio is x/x = 1.0
+        // exactly, so L1→L2 == xp_base for any rate. (powi = exact integer power; and the old left-to-
+        // right `xp_base*num/den` rounded the intermediate product, flooring L2 to xp_base−1 for 1.16.)
+        (cfg.xp_base * ((rate.powi(steps) - 1.0) / (rate - 1.0))).floor()
     }
 }
 

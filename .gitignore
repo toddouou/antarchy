@@ -5,9 +5,14 @@
 /target-cosmetics
 /target-cosm
 /target-ui
+/target-deps
+/target-front
+/temporary
 users.json
 users.json.tmp
 sessions.json
+events.json
+events.json.tmp
 *.snapshot
 world.snapshot
 *.snapshot.tmp

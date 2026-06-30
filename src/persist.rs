@@ -1,4 +1,4 @@
-//! World + account persistence: gzip-compressed JSON snapshots so a restart (e.g. a Railway
+//! World + account persistence: zstd-compressed bincode snapshots so a restart (e.g. a service
 //! redeploy) restores the map, queens, players, and territory instead of starting empty.
 //!
 //! Two files, both under the directory from `HIVE_DATA_DIR` (see `config::lock`):
@@ -9,27 +9,30 @@
 //! snapshot. Reads are best-effort: a missing / corrupt / wrong-version file yields `None` and the
 //! caller starts fresh rather than crashing.
 //!
-//! **∥A off-lock persistence (Phase v2).** The heavy save is split so the sim tick is never stalled:
-//! `serialize_world` (fast **bincode** encode) runs under a short **read** lock — which the viewport
-//! thread shares, so it doesn't block frame delivery — and the slow gzip + atomic disk write
-//! (`write_snapshot_bytes`) runs **off-lock** on a dedicated thread. The format moved JSON → bincode
-//! (`Box<[u16]>` cells = 2 bytes vs ASCII int-lists → much smaller + faster); `load` still accepts
-//! the old v1 gzip-JSON so a live `world.snapshot` survives the upgrade with no data loss.
+//! **∥A off-lock persistence.** The heavy save is split so the sim tick is never stalled:
+//! `serialize_world` (fast **bincode 2** encode) runs under a short **read** lock — which the
+//! viewport thread shares, so it doesn't block frame delivery — and the slow zstd compression +
+//! atomic disk write (`write_snapshot_bytes`) runs **off-lock** on a dedicated thread. The **v3
+//! format = zstd-framed bincode 2** (`Box<[u16]>` cells = 2 bytes); it is a deliberate hard break
+//! from the older gzip-bincode (v2) / gzip-JSON (v1) snapshots, which no longer load — acceptable
+//! for a wipe-tolerant world.
 
 use std::fs;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::tile_map::TileMap;
 use crate::world::{Ant, Player, Queen, World};
 
-/// Snapshot layout/format version. v1 = gzip-JSON (legacy, still loadable); v2 = gzip-bincode.
-const SNAPSHOT_VERSION: u32 = 2;
+/// Snapshot layout/format version. v3 = zstd-framed bincode 2 (current). Older gzip-bincode (v2) and
+/// gzip-JSON (v1) snapshots are a deliberate hard break and no longer load.
+const SNAPSHOT_VERSION: u32 = 3;
+
+/// zstd compression level for `world.snapshot` + the WAL. Level 3 is zstd's default — a strong
+/// ratio/speed balance that keeps the off-lock encode cheap.
+const ZSTD_LEVEL: i32 = 3;
 
 /// Borrowing view of the world used **only for saving** — avoids cloning the (potentially large)
 /// tile map / ant vec just to serialize them. Field names must match `WorldSnapshot` so the JSON
@@ -71,11 +74,14 @@ struct PlayerSnapshot {
     next_refill:         u64,
     queen_placed_at:     Option<u64>,
     npc:                 bool,
-    prestige:            u32,
+    // Field was previously named `prestige` but the runtime struct renamed it to `deaths`.
+    // The bincode layout is POSITIONAL (no field names on the wire), so this rename is
+    // layout-compatible — no snapshot version bump required.
+    deaths:              u32,
     nectar:             u64,
     defenders:           Vec<u64>,
-    visited_countries:   FxHashSet<String>,
-    visited_continents:  FxHashSet<String>,
+    passport_countries:   FxHashSet<String>,
+    passport_continents:  FxHashSet<String>,
     lifetime_kills:      u32,
     lifetime_peak_tiles: u64,
     queens_fielded:      u32,
@@ -100,11 +106,11 @@ impl PlayerSnapshot {
             next_refill:         p.next_refill,
             queen_placed_at:     p.queen_placed_at,
             npc:                 p.npc,
-            prestige:            p.prestige,
+            deaths:              p.deaths,
             nectar:             p.nectar,
             defenders:           p.defenders.clone(),
-            visited_countries:   p.visited_countries.clone(),
-            visited_continents:  p.visited_continents.clone(),
+            passport_countries:   p.passport_countries.clone(),
+            passport_continents:  p.passport_continents.clone(),
             lifetime_kills:      p.lifetime_kills,
             lifetime_peak_tiles: p.lifetime_peak_tiles,
             queens_fielded:      p.queens_fielded,
@@ -133,11 +139,11 @@ impl PlayerSnapshot {
             egress_meter:        None,
             bin:                 false,
             conn_gen:            0,
-            prestige:            self.prestige,
+            deaths:              self.deaths,
             nectar:             self.nectar,
             defenders:           self.defenders,
-            visited_countries:   self.visited_countries,
-            visited_continents:  self.visited_continents,
+            passport_countries:   self.passport_countries,
+            passport_continents:  self.passport_continents,
             lifetime_kills:      self.lifetime_kills,
             lifetime_peak_tiles: self.lifetime_peak_tiles,
             queens_fielded:      self.queens_fielded,
@@ -146,6 +152,7 @@ impl PlayerSnapshot {
             killed_by:           self.killed_by,
             kills_of:            self.kills_of,
             away:                None,
+            had_queen_this_season: false,   // runtime-only; always false on load (set on next place-queen)
             tile_fx:             None,   // runtime caches; reloaded from the account on connect
             aura:                None,
             trail:               None,
@@ -169,18 +176,18 @@ pub fn serialize_world(world: &World) -> io::Result<Vec<u8>> {
         tick:           world.tick,
         started_at:     world.started_at,
     };
-    bincode::serialize(&snap).map_err(io::Error::other)
+    bincode::serde::encode_to_vec(&snap, bincode::config::standard()).map_err(io::Error::other)
 }
 
-/// **Slow, off-lock half of the save:** gzip the bincode buffer and write it atomically
+/// **Slow, off-lock half of the save:** zstd-compress the bincode buffer and write it atomically
 /// (temp file + rename). Touches no `World`, so it runs on a dedicated thread without any lock.
 pub fn write_snapshot_bytes(raw: &[u8], path: &str) -> io::Result<()> {
     let tmp = format!("{path}.tmp");
     {
         let f = fs::File::create(&tmp)?;
-        let mut enc = GzEncoder::new(BufWriter::new(f), Compression::default());
+        let mut enc = zstd::Encoder::new(BufWriter::new(f), ZSTD_LEVEL)?;
         enc.write_all(raw)?;
-        let w = enc.finish()?;
+        let w = enc.finish()?; // flush the zstd frame; returns the inner BufWriter
         // fsync before the rename — the rename must never promote a not-yet-durable temp file to
         // being the live snapshot (a power cut could otherwise leave a truncated one behind it).
         w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
@@ -228,22 +235,14 @@ pub fn load_epoch(world_path: &str) -> Option<u64> {
         .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
-/// Load a world snapshot from `path`. Accepts both the new **v2 gzip-bincode** and the legacy
-/// **v1 gzip-JSON** (detected by the first decompressed byte: `{` → JSON), so an existing live
-/// snapshot loads unchanged after the format upgrade. Returns `None` if absent/unreadable/corrupt.
+/// Load a **v3 zstd-bincode** world snapshot from `path`. Older gzip-bincode (v2) / gzip-JSON (v1)
+/// files are a deliberate hard break: zstd decode fails on them → `None` → the caller starts fresh.
+/// Returns `None` if absent / unreadable / corrupt / wrong-version.
 pub fn load(path: &str) -> Option<WorldSnapshot> {
     let f = fs::File::open(path).ok()?;
-    let mut dec = GzDecoder::new(BufReader::new(f));
-    let mut raw = Vec::new();
-    dec.read_to_end(&mut raw).ok()?;
-
-    // First non-whitespace byte distinguishes the format: JSON objects start with '{'.
-    let is_json = raw.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{');
-    let snap: WorldSnapshot = if is_json {
-        serde_json::from_slice(&raw).ok()?
-    } else {
-        bincode::deserialize(&raw).ok()?
-    };
+    let raw = zstd::decode_all(BufReader::new(f)).ok()?;
+    let snap: WorldSnapshot =
+        bincode::serde::decode_from_slice(&raw, bincode::config::standard()).ok()?.0;
     if snap.version > SNAPSHOT_VERSION {
         eprintln!("[persist] ignoring snapshot: version {} > {SNAPSHOT_VERSION}", snap.version);
         return None;
@@ -305,7 +304,7 @@ struct WalRecord { tick: u64, chunks: Vec<WalChunk> }
 /// WAL file path, derived from the snapshot path (`world.snapshot` → `world.snapshot.wal`).
 pub fn wal_path(snapshot_path: &str) -> String { format!("{snapshot_path}.wal") }
 
-/// Append a gzip-bincode WAL record capturing the current owner-id state of `keys` (the chunks
+/// Append a zstd-bincode WAL record capturing the current owner-id state of `keys` (the chunks
 /// changed since the last record). Length-prefixed so records read back sequentially. The writer
 /// half operators schedule when running with `HIVE_WAL`; not on the default autosave path.
 #[allow(dead_code)]
@@ -321,12 +320,11 @@ pub fn append_wal(world: &World, keys: &[u64], path: &str) -> io::Result<()> {
         WalChunk { key, owners }
     }).collect();
     let rec = WalRecord { tick: world.tick, chunks };
-    let raw = bincode::serialize(&rec).map_err(io::Error::other)?;
-    let mut gz = Vec::new();
-    { let mut enc = GzEncoder::new(&mut gz, Compression::default()); enc.write_all(&raw)?; enc.finish()?; }
+    let raw = bincode::serde::encode_to_vec(&rec, bincode::config::standard()).map_err(io::Error::other)?;
+    let comp = zstd::encode_all(&raw[..], ZSTD_LEVEL)?;
     let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
-    f.write_all(&(gz.len() as u32).to_le_bytes())?;
-    f.write_all(&gz)?;
+    f.write_all(&(comp.len() as u32).to_le_bytes())?;
+    f.write_all(&comp)?;
     Ok(())
 }
 
@@ -340,11 +338,10 @@ pub fn replay_wal(world: &mut World, path: &str) -> usize {
         let len = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as usize;
         off += 4;
         if off + len > bytes.len() { break; }
-        let mut dec = GzDecoder::new(&bytes[off..off + len]);
+        let Ok(raw) = zstd::decode_all(&bytes[off..off + len]) else { break; };
         off += len;
-        let mut raw = Vec::new();
-        if dec.read_to_end(&mut raw).is_err() { break; }
-        let Ok(rec) = bincode::deserialize::<WalRecord>(&raw) else { break; };
+        let Ok((rec, _)) = bincode::serde::decode_from_slice::<WalRecord, _>(&raw, bincode::config::standard())
+        else { break; };
         for ch in rec.chunks { world.tiles.restore_chunk_owners(ch.key, &ch.owners); applied += 1; }
         world.tick = world.tick.max(rec.tick);
     }
@@ -376,9 +373,9 @@ mod tests {
         w.players.insert(42, Player {
             id: 42, username: "ALICE".into(), color: "#abc".into(), hue_idx: 3,
             ants_avail: 7, next_refill: 123_456, queen_placed_at: Some(42), conn_gen: 5,
-            prestige: 2, nectar: 50, defenders: vec![1, 2, 3],
-            visited_countries:  ["US".to_string()].into_iter().collect(),
-            visited_continents: ["NA".to_string()].into_iter().collect(),
+            deaths: 2, nectar: 50, defenders: vec![1, 2, 3],
+            passport_countries:  ["US".to_string()].into_iter().collect(),
+            passport_continents: ["NA".to_string()].into_iter().collect(),
             lifetime_kills: 9, lifetime_peak_tiles: 1234, queens_fielded: 2,
             unlimited_nectar: true,
             killed_by: [("BOB".to_string(), 2)].into_iter().collect(),
@@ -387,7 +384,7 @@ mod tests {
 
         // Point persistence at a unique temp dir; the path keeps the `world.snapshot` name so the
         // auth `users.json` derivation lands beside it. Cleaned up at the end.
-        let dir = std::env::temp_dir().join(format!("hive_persist_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("antarchy_persist_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("world.snapshot").to_str().unwrap().to_string();
         cfg_write().save_file = path.clone();
@@ -414,7 +411,7 @@ mod tests {
         assert_eq!(p.username, "ALICE");
         assert_eq!(p.nectar, 50);
         assert_eq!(p.defenders, vec![1, 2, 3]);
-        assert!(p.visited_countries.contains("US"));
+        assert!(p.passport_countries.contains("US"));
         assert!(p.tx.is_none() && p.view.is_none(), "runtime channels not persisted");
         assert_eq!(p.conn_gen, 0, "conn_gen reset on restore");
         assert!(p.unlimited_nectar && !p.unlimited_ants, "god-mode flags survive round-trip");
@@ -432,7 +429,7 @@ mod tests {
 
     #[test]
     fn epoch_sidecar_absent_then_present() {
-        let dir = std::env::temp_dir().join(format!("hive_epoch_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("antarchy_epoch_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("world.snapshot").to_str().unwrap().to_string();
 
@@ -448,9 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn v2_bincode_round_trips_in_memory() {
+    fn bincode_round_trips_in_memory() {
         // serialize_world → write_snapshot_bytes → load reconstructs tiles + counters (no live
-        // server needed). Exercises the off-lock split + the bincode format end-to-end.
+        // server needed). Exercises the off-lock split + the v3 zstd-bincode format end-to-end.
         let mut w = World::new();
         for x in 0..300u32 { w.tiles.set(x, 50, 11); }   // spans a chunk boundary, some Dense
         w.tiles.set(1000, 1000, 22);
@@ -458,15 +455,15 @@ mod tests {
         w.tick = 4242;
 
         let raw = serialize_world(&w).expect("serialize");
-        // Sanity: it is NOT JSON (first byte is the bincode u32 version little-endian = 0x02).
+        // Sanity: bincode, not JSON (its first byte is the version varint = 0x03, never '{').
         assert_ne!(raw.first().copied(), Some(b'{'));
 
-        let dir = std::env::temp_dir().join(format!("hive_v2_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("antarchy_snapshot_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("world.snapshot").to_str().unwrap().to_string();
         write_snapshot_bytes(&raw, &path).expect("write");
 
-        let snap = load(&path).expect("v2 loads");
+        let snap = load(&path).expect("snapshot loads");
         let mut w2 = World::new();
         restore(&mut w2, snap);
         assert_eq!(w2.tiles.get(0, 50), 11);
@@ -481,41 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_json_snapshot_still_loads() {
-        // A hand-written v1 gzip-JSON snapshot must still load after the bincode upgrade, so a live
-        // world.snapshot survives the first deploy of the new binary.
-        let mut w = World::new();
-        w.tiles.set(5, 5, 9);
-        w.next_player_id = 3;
-        w.tick = 7;
-        let snap = WorldSnapshotRef {
-            version: 1, tiles: &w.tiles, ants: &w.ants, queens: &w.queens,
-            players: w.players.values().map(PlayerSnapshot::from_player).collect(),
-            next_player_id: w.next_player_id, tick: w.tick, started_at: w.started_at,
-        };
-        let json = serde_json::to_vec(&snap).unwrap();
-
-        let dir = std::env::temp_dir().join(format!("hive_v1_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("world.snapshot").to_str().unwrap().to_string();
-        // gzip the JSON exactly like the old save did.
-        write_gzip_raw(&json, &path).unwrap();
-
-        let loaded = load(&path).expect("v1 JSON still loads");
-        let mut w2 = World::new();
-        restore(&mut w2, loaded);
-        assert_eq!(w2.tiles.get(5, 5), 9);
-        assert_eq!(w2.tick, 7);
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    // Test helper: gzip arbitrary bytes to `path` (used to forge a v1 JSON snapshot).
-    fn write_gzip_raw(raw: &[u8], path: &str) -> io::Result<()> {
-        super::write_snapshot_bytes(raw, path)
-    }
-
-    #[test]
     fn wal_replays_chunk_deltas_onto_base() {
         // Base snapshot has one painted cell; then more cells change. The WAL captures the changed
         // chunks; replaying it onto the base reconstructs the full latest state.
@@ -523,7 +485,7 @@ mod tests {
         w.tiles.set(10, 10, 5);
         let base = serialize_world(&w).unwrap();
 
-        let dir = std::env::temp_dir().join(format!("hive_wal_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("antarchy_wal_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("world.snapshot").to_str().unwrap().to_string();
         write_snapshot_bytes(&base, &path).unwrap();

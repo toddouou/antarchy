@@ -6,52 +6,114 @@
 <!-- Theme: default light; honour the saved choice before first paint (no flash). -->
 <script>try{var t=localStorage.getItem('antarchy-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
 <title>antarchy — the ants are revolting</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#ee6c1f">
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Flat-flag sprite (served by infra; span.flag.flag-<iso> renders a 24×18 country flag) -->
+<link rel="stylesheet" href="/flags.css">
+<!-- AdSense H5 Games Ads (rewarded ad gate for daily claim + HUD rectangle) -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8322666756328568" crossorigin="anonymous"></script>
+<script>
+  window.adsbygoogle=window.adsbygoogle||[];
+  // adBreak() is the H5 Games Ads API surface; always wraps in try/catch so a blocked ad SDK
+  // never surfaces an exception to callers.
+  const adBreak=o=>{try{adsbygoogle.push(o);}catch(e){}};
+  try{adsbygoogle.push({preloadAdBreaks:'on'});}catch(e){}
+</script>
 <style>
-  /* BRAND BIBLE palette — paper surfaces, ink text, nectar-orange primary signature. Token names are
-     kept stable so every component re-skins for free; --orange is the new brand-primary accent. */
+  /* ════════════════════════════════════════════════════════════════════════════
+     antarchy DESIGN TOKENS — inlined copy of brand/tokens.css (the single source of
+     truth). Keep in sync with sim/brand/tokens.css. Light is default; dark is the
+     in-game Settings opt-in. The LEGACY ALIASES block maps the old token names this
+     client already uses onto the canonical tokens, so every existing component
+     re-skins for free with the corrected, calmer palette.
+     ════════════════════════════════════════════════════════════════════════════ */
   :root {
-    --bg: #fbf9f2; --bg2: #fdfbf5; --ink: #161309;
-    --dim: #8d8978; --line: #d8d2c0; --grid: #ece7d8;
-    --red: #e0335c; --yel: #e6b400; --grn: #4faa2e; --blu: #2f6fd6;
-    --orange: #ee6c1f; --orange-d: #d65d14;   /* brand primary + pressed/hover */
+    /* ---- SURFACES (warm paper) ---- */
+    --bg: #e7e5df; --surface: #f4f0e6; --surface-2: #fbf9f2; --surface-3: #ece7d8;
+    /* ---- INK (warm near-black) ---- */
+    --ink: #161309; --ink-dim: #5b574c; --ink-mute: #8d8978; --ink-faint: #a7a294;
+    --on-accent: #ffffff; --on-ink: #fbf9f2;
+    /* ---- LINES ---- */
+    --line: #161309; --line-soft: #e4dfd0; --line-mid: #d8d2c0;
+    /* ---- ACCENT + SEMANTICS (one calm register; each carries a -soft wash) ---- */
+    --accent: #ee6c1f; --accent-soft: #fcefe2; --accent-press: #d65c14;
+    --danger: #e0335c; --danger-soft: #fbe6ec;
+    --success: #4faa2e; --success-soft: #e9f4ec;
+    --info: #2f6fd6; --info-soft: #e6eefb;
+    --warning: #e6b400; --warning-soft: #fbf3d6;
+    /* ---- CURRENCIES (theme-stable brand objects) ---- */
+    --nectar: #ff8a00; --gems: #4faa2e;
+    /* ---- CANVAS / MAP (UI-side mirror of tokens.json) ---- */
+    --canvas-ground: #ffffff; --canvas-browse: #c8d8e8;
+    --fog: #96bee6; --fog-lo: #78a2d4; --fog-hi: #c4def6;
+    --water: #1a6fa8; --entity-ink: #161309; --shield: #2f6fd6;
+    /* ---- RADII (8-bit sharp corners — all zero) ---- */
+    --r-xs: 0px; --r-sm: 0px; --r-md: 0px; --r-lg: 0px; --r-xl: 0px; --r-pill: 0px;
+    --r-drop: 50% 50% 50% 0;
+    /* ---- SHADOWS (opaque hard-offset — restrained 8-bit read) ---- */
+    --shadow-sm: 1px 1px 0 rgba(13,13,13,.55); --shadow-md: 2px 2px 0 rgba(13,13,13,.6);
+    --shadow-pop: 3px 3px 0 rgba(13,13,13,.7); --scrim: rgba(22,19,9,.55);
+    /* ---- MOTION ---- */
+    --ease-snap: cubic-bezier(.2,.8,.2,1); --ease-out: cubic-bezier(0,0,.2,1);
+    --dur-1: 80ms; --dur-2: 120ms; --dur-3: 250ms; --dur-pulse: 1400ms;
+    /* ---- FACTION / PLAYER COLOURS (must match config.rs HUES + tokens.json) ---- */
+    --faction-1: #b5524a; --faction-2: #c08a52; --faction-3: #b8a24a; --faction-4: #6f8f5a;
+    --faction-5: #4a8f86; --faction-6: #4a6f9c; --faction-7: #6b5b95; --faction-8: #8a8a8a;
+
+    /* ---- LEGACY ALIASES → canonical (so existing components re-skin for free) ---- */
+    --bg2: var(--surface-2); --dim: var(--ink-mute); --grid: var(--surface-3);
+    --red: var(--danger); --yel: var(--warning); --grn: var(--success); --blu: var(--info);
+    --orange: var(--accent); --orange-d: var(--accent-press);
+    --on-yel: #161309;   /* text on a gold fill — gold is light in both themes → always dark */
     /* dark "chrome bar" surface (stays dark in BOTH themes) + scrims / scanline overlay */
-    --inkbar: #161309; --modal-scrim: rgba(251,249,242,.93); --scan: rgba(22,19,9,.022);
-    --on-yel: #161309;   /* text on a yellow/gold fill — gold is light in both themes → always dark */
+    --inkbar: #161309; --modal-scrim: rgba(251,249,242,.93); --scan: rgba(22,19,9,.05);
   }
-  /* DARK THEME — brand accents on dark paper-ink surfaces; default for new players (toggle in Settings). */
+  /* DARK THEME — canonical dark tokens; in-game Settings opt-in. Legacy aliases above
+     reference these via var(), so they invert automatically — only the canonical tokens
+     and the client-specific chrome vars need redeclaring here. */
   html[data-theme="dark"] {
-    --bg: #16140f; --bg2: #1f1c15; --ink: #f1ede1;
-    --dim: #a7a294; --line: #3a342a; --grid: #25211a;
-    --red: #ff4d72; --yel: #e6b400; --grn: #5fc23c; --blu: #4a8fe6;
-    --orange: #ff8a3d; --orange-d: #ee6c1f;
-    --inkbar: #241d12; --modal-scrim: rgba(13,11,7,.88); --scan: rgba(255,255,255,.026);
+    --bg: #14120e; --surface: #1d1a14; --surface-2: #25211a; --surface-3: #2c2820;
+    --ink: #efe9d9; --ink-dim: #b8b09c; --ink-mute: #8d8674; --ink-faint: #6b6553;
+    --on-ink: #14120e;
+    --line: #efe9d9; --line-soft: #322c22; --line-mid: #3a342a;
+    --accent: #ff8a3d; --accent-soft: #2e2114; --accent-press: #ee6c1f;
+    --danger: #ff5277; --danger-soft: #2e151c;
+    --success: #5fc23c; --success-soft: #16240f;
+    --info: #5b9bff; --info-soft: #131d2e;
+    --warning: #ffcc33; --warning-soft: #2a2410;
+    --canvas-ground: #1b1f24; --canvas-browse: #243240;
+    --shadow-sm: 1px 1px 0 rgba(13,13,13,.55); --shadow-md: 2px 2px 0 rgba(13,13,13,.6);
+    --shadow-pop: 3px 3px 0 rgba(13,13,13,.7); --scrim: rgba(8,6,3,.7);
+    --inkbar: #241d12; --modal-scrim: rgba(13,11,7,.88); --scan: rgba(255,255,255,.055);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html,body { height:100%; background:var(--bg); color:var(--ink);
     font-family:'IBM Plex Mono',monospace; overflow:hidden; user-select:none;
     overscroll-behavior:none; touch-action:none; }
   body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
-    background:repeating-linear-gradient(0deg, transparent 0px, transparent 2px, var(--scan) 2px, var(--scan) 3px); }
+    background:repeating-linear-gradient(0deg, transparent 0, transparent 2px, var(--scan) 2px, var(--scan) 4px); }
   body.no-scan::after { display:none; }
 
   /* Layout — admin panel is dynamic */
   body { display:grid;
-    grid-template-columns: 270px 1fr 0px;
-    grid-template-rows: 52px 1fr;
+    grid-template-columns: 405px 1fr 0px;
+    grid-template-rows: 68px 1fr;
     grid-template-areas: "h h h" "s c a";
     transition: grid-template-columns .25s; }
-  body.admin-on { grid-template-columns: 270px 1fr 360px; }
+  body.admin-on { grid-template-columns: 405px 1fr 360px; }
 
   header { grid-area:h; border-bottom:2px solid var(--ink); display:flex; align-items:center;
-    padding:0 16px; gap:16px; background:var(--bg2); }
-  .logo { font-family:'Press Start 2P',monospace; font-size:14px; display:flex; align-items:center; gap:8px;
+    padding:0 18px; gap:18px; background:var(--bg2); }
+  .logo { font-family:'Press Start 2P',monospace; font-size:19px; display:flex; align-items:center; gap:9px;
     letter-spacing:.02em; text-transform:lowercase; }
-  .logo::before { content:"▲"; color:var(--orange); font-size:18px; }   /* the mark — orange, never recoloured */
+  .logo::before { content:"▲"; color:var(--orange); font-size:23px; }   /* the mark — orange, never recoloured */
   .logo em { color:var(--orange); font-style:normal; }
   /* header divider between the currency counters and the button group */
-  .hdr-div { width:2px; align-self:stretch; margin:11px 2px; background:var(--line); flex:0 0 auto; }
+  .hdr-div { width:2px; align-self:stretch; margin:11px 2px; background:var(--line-mid); flex:0 0 auto; }
   .admin-badge { font-family:'Press Start 2P',monospace; font-size:8px; padding:4px 8px;
     background:var(--inkbar); color:var(--yel); border:1px solid var(--ink); display:none; }
   body.admin-on .admin-badge { display:inline-block; }
@@ -59,7 +121,7 @@
   .hstats { display:flex; }
   body:not(.is-admin) .hstats { display:none; }   /* server stats moved to the admin panel — admins only */
   .hstat { display:flex; flex-direction:column; align-items:flex-end; padding:0 11px;
-    border-left:1px solid var(--line); }
+    border-left:1px solid var(--line-mid); }
   .hstat .l { font-family:'Press Start 2P',monospace; color:var(--dim); font-size:7px; }
   .hstat .v { font-family:'Press Start 2P',monospace; font-size:11px; margin-top:4px; }
   .hstat.sh .l { color:var(--blu); opacity:.7; }      /* server-health bundle */
@@ -67,26 +129,30 @@
   .hdr-logout { margin-left:12px; font-family:'Press Start 2P',monospace; font-size:7px;
     background:var(--bg2); color:var(--ink); border:1.5px solid var(--ink); border-radius:7px;
     padding:8px 11px; cursor:pointer; transition:background .12s, color .12s, box-shadow .08s, transform .08s; }
-  .hdr-logout:hover { background:var(--red); color:#fff; transform:translate(-1px,-1px);
-    box-shadow:2px 2px 0 0 var(--ink); }
+  .hdr-logout:hover { background:var(--red); color:#fff; transform:translateY(-1px);
+    box-shadow:var(--shadow-md); }
 
-  /* HEADER ACTION BUTTONS — brand icon-over-label cells, uniform 52px, hairline ink outline */
-  .hdr-actions { display:flex; gap:6px; }
-  .hbtn { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
-    width:52px; height:50px; padding:0; background:var(--bg2); border:1.5px solid var(--ink);
-    border-radius:7px; color:var(--ink); cursor:pointer;
-    transition:background .12s, transform .08s, box-shadow .08s, border-color .12s; }
-  .hbtn .ic { width:16px; height:16px; line-height:0; display:block; }   /* inline SVG glyph */
-  .hbtn .lb { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); letter-spacing:.03em; }
-  .hbtn:hover { transform:translate(-1px,-1px); box-shadow:2px 2px 0 0 var(--ink); border-color:var(--orange); }
-  .hbtn:hover .ic, .hbtn:hover .lb { color:var(--orange); }
-  .hbtn.on { border-color:var(--orange); background:var(--bg2); }
-  .hbtn.on .ic, .hbtn.on .lb { color:var(--orange); }
+  /* HEADER ACTION BUTTONS — compact icon-only cells, soft outline; the tooltip (title=) is the label */
+  .hdr-actions { display:flex; gap:5px; }
+  /* equal-width TEXT-LABEL buttons (not icons) — uniform 64px cells, bold ink outline */
+  .hbtn { position:relative; display:flex; align-items:center; justify-content:center;
+    width:64px; height:42px; padding:0; background:var(--bg2); border:2px solid var(--ink);
+    border-radius:8px; color:var(--ink); cursor:pointer;
+    transition:background .12s, transform .08s, box-shadow .08s, border-color .12s, color .12s; }
+  .hbtn.badge::after { content:''; position:absolute; top:-4px; right:-4px; width:11px; height:11px;
+    background:var(--orange); border:2px solid var(--bg2); border-radius:50%; }   /* unread tutorial page */
+  .hbtn .ic { display:none; }                                            /* labels, not icons */
+  .hbtn .lb { display:block; font-family:'Press Start 2P',monospace; font-size:9px; color:var(--ink); letter-spacing:.04em; }
+  .hbtn:hover { transform:translateY(-1px); box-shadow:var(--shadow-sm); border-color:var(--orange);
+    color:var(--orange); background:var(--surface); }
+  .hbtn:hover .lb { color:var(--orange); }
+  .hbtn.on { border-color:var(--orange); background:var(--accent-soft); }
+  .hbtn.on .lb { color:var(--orange); }
 
   /* HEADER BALANCES — the two new currency readouts (D3): nectar (orange drop) + gems (green gem). */
-  .hbal { display:flex; align-items:center; gap:12px; }
-  .hbal-chip { display:flex; align-items:center; gap:6px; font-family:'Press Start 2P',monospace; font-size:8px; }
-  .hbal-ic { width:12px; height:12px; display:inline-block; flex:0 0 auto; }
+  .hbal { display:flex; align-items:center; gap:14px; }
+  .hbal-chip { display:flex; align-items:center; gap:7px; font-family:'Press Start 2P',monospace; font-size:11px; }
+  .hbal-ic { width:16px; height:16px; display:inline-block; flex:0 0 auto; }
   .hbal-ic.nectar { background:var(--orange); border-radius:50% 50% 50% 0; transform:rotate(45deg); }   /* soft currency · teardrop */
   .hbal-ic.gems   { background:var(--grn); transform:rotate(45deg); }                                    /* hard currency · diamond */
   .hbal-v { color:var(--ink); }
@@ -97,9 +163,9 @@
   #killfeed { position:fixed; top:62px; right:14px; z-index:60; display:flex;
     flex-direction:column; gap:6px; align-items:flex-end; pointer-events:none; }
   .kf-row { font-family:'Press Start 2P',monospace; font-size:9px; line-height:1;
-    background:var(--bg2); color:var(--ink); border:2px solid var(--ink);
+    background:var(--bg2); color:var(--ink); border:1.5px solid var(--ink); border-radius:var(--r-sm);
     padding:8px 11px; display:flex; align-items:center; gap:8px; white-space:nowrap;
-    box-shadow:3px 3px 0 0 var(--ink); animation:kfIn .18s ease-out; }
+    box-shadow:var(--shadow-md); animation:kfIn .18s ease-out; }
   .kf-row.kf-out { animation:kfOut .5s ease-in forwards; }
   .kf-name { display:inline-flex; align-items:center; gap:5px; }
   .kf-sw { width:10px; height:10px; border:1px solid var(--ink); flex:none; }
@@ -118,20 +184,20 @@
   .wk-type.active { background:var(--orange); color:#fff; border-color:var(--ink); }
   .wk-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; margin-bottom:6px; }
   .wk-grid.two { grid-template-columns:1fr 1fr; }
-  .wk-cell { background:var(--bg); border:1.5px solid var(--line); border-radius:6px; padding:6px 3px; text-align:center; }
+  .wk-cell { background:var(--bg); border:1.5px solid var(--line-mid); border-radius:6px; padding:6px 3px; text-align:center; }
   .wk-l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
   .wk-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:5px; color:var(--ink); }
   #ants-avail { color:var(--orange); }   /* READY workers — the actionable resource, nectar-orange */
   .wk-v.sm { font-size:8px; color:var(--blu); }
   .wk-hint { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:6px; line-height:1.5; }
   .wk-toggle { width:100%; margin-top:8px; font-family:'Press Start 2P',monospace; font-size:7px;
-    background:var(--bg2); border:2px solid var(--ink); color:var(--ink); padding:6px 7px;
+    background:var(--bg2); border:1.5px solid var(--ink); color:var(--ink); padding:6px 7px;
     cursor:pointer; text-align:left; }
   .wk-toggle:hover { background:var(--yel); }
   .wk-list { margin-top:6px; overflow:hidden; display:flex; flex-direction:column; gap:3px; }
   .wk-ant { display:flex; align-items:center; gap:5px; font-family:'Press Start 2P',monospace; font-size:6px; }
   .wk-ant-ic { width:9px; text-align:center; color:var(--grn); }
-  .wk-ant-bar { flex:1; height:6px; background:var(--bg); border:1px solid var(--line); overflow:hidden; }
+  .wk-ant-bar { flex:1; height:6px; background:var(--bg); border:1px solid var(--line-mid); overflow:hidden; }
   /* THE FIX: the fill is a <span> (inline) — without display:block the browser ignores width/height,
      so the fill box was always 0×0 and NOTHING ever painted (it was never "green", it was invisible).
      Colour is set inline to the player's queen/tile colour; --grn is only a fallback. */
@@ -141,36 +207,37 @@
   .lb-reg { display:block; font-family:'Press Start 2P',monospace; font-size:5px; color:var(--blu); margin-top:2px; }
   .lb-detail { font-family:'Press Start 2P',monospace; font-size:5px; color:var(--dim); margin-top:2px; }
   .lb-tabs { display:flex; flex-wrap:wrap; gap:3px; padding:6px 2px; }
-  .lb-tab { font-family:'Press Start 2P',monospace; font-size:5px; padding:3px 5px; border:1px solid var(--line);
+  .lb-tab { font-family:'Press Start 2P',monospace; font-size:5px; padding:3px 5px; border:1px solid var(--line-mid);
     color:var(--dim); cursor:pointer; }
   .lb-tab.on { background:var(--ink); color:var(--yel); border-color:var(--ink); }
   .lb-tab:hover { background:var(--yel); color:var(--ink); }
   .lb-sep { text-align:center; color:var(--dim); font-size:8px; padding:2px 0; }
   .lb-expand { width:100%; margin-top:6px; font-family:'Press Start 2P',monospace; font-size:6px;
-    background:var(--bg2); border:2px solid var(--ink); color:var(--ink); padding:6px; cursor:pointer; }
+    background:var(--bg2); border:1.5px solid var(--ink); color:var(--ink); padding:6px; cursor:pointer; }
   .lb-expand:hover { background:var(--yel); }
   .region-opt { font-family:'Press Start 2P',monospace; font-size:7px; padding:7px 12px; cursor:pointer;
-    border-bottom:1px solid var(--line); white-space:nowrap; }
+    border-bottom:1px solid var(--line-mid); white-space:nowrap; }
   .region-opt:hover { background:var(--yel); }
   .lb-sub { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); padding:4px 2px 7px; letter-spacing:.06em; }
   .lb-empty { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); padding:10px 0; text-align:center; }
 
   /* Reusable app window */
-  .win-bg { position:fixed; inset:0; background:rgba(13,13,13,.55); z-index:500; display:grid; place-items:center; }
-  .win { background:var(--bg2); border:3px solid var(--ink); box-shadow:9px 9px 0 0 var(--red);
-    width:min(820px,93vw); max-height:86vh; display:flex; flex-direction:column; }
-  .win-head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px;
+  .win-bg { position:fixed; inset:0; background:var(--scrim); z-index:500; display:grid; place-items:center; }
+  .win { background:var(--bg2); border:2px solid var(--ink); border-radius:var(--r-xl); overflow:hidden;
+    box-shadow:var(--shadow-pop);
+    width:min(880px,94vw); max-height:88vh; display:flex; flex-direction:column; }
+  .win-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px;
     border-bottom:2px solid var(--ink); background:var(--yel); }
-  .win-title { font-family:'Press Start 2P',monospace; font-size:12px; letter-spacing:.04em; color:var(--on-yel); }
+  .win-title { font-family:'Press Start 2P',monospace; font-size:14px; letter-spacing:.04em; color:var(--on-yel); }
   .win-close { font-family:'Press Start 2P',monospace; font-size:11px; background:var(--inkbar); color:#fff;
-    border:2px solid var(--ink); padding:6px 9px; cursor:pointer; }
+    border:1.5px solid var(--ink); border-radius:var(--r-xs); padding:6px 9px; cursor:pointer; }
   .win-close:hover { background:var(--red); }
   .win-body { padding:18px 20px 22px; overflow:auto; }
   /* Full leaderboard table inside the window */
   .lbw-head, .lbw-row { display:grid; grid-template-columns:34px 16px 1fr 90px 70px 38px 30px 38px;
     align-items:center; gap:8px; font-family:'Press Start 2P',monospace; font-size:8px; }
-  .lbw-head { color:var(--dim); font-size:6px; padding:6px 4px; border-bottom:2px solid var(--ink); margin-top:6px; }
-  .lbw-row { padding:7px 4px; border-bottom:1px solid var(--line); }
+  .lbw-head { color:var(--dim); font-size:6px; padding:6px 4px; border-bottom:1.5px solid var(--ink); margin-top:6px; }
+  .lbw-row { padding:7px 4px; border-bottom:1px solid var(--line-mid); }
   .lbw-row.lb-me { background:var(--bg); }
   .lbw-rank { color:var(--dim); }
   .lbw-sw { width:12px; height:12px; border:1px solid var(--ink); }
@@ -182,20 +249,22 @@
      TILES/SCORE columns so abbreviated numbers ("1.23 M") fit without overflowing/wrapping. */
   .fac-head, .fac-row { display:grid; grid-template-columns:30px 18px 1fr 34px 48px 64px 72px;
     align-items:center; gap:8px; font-family:'Press Start 2P',monospace; font-size:8px; }
-  .fac-head { color:var(--dim); font-size:6px; padding:6px 4px; border-bottom:2px solid var(--ink); margin-top:6px; }
-  .fac-row { padding:7px 4px; border-bottom:1px solid var(--line); }
+  .fac-head { color:var(--dim); font-size:6px; padding:6px 4px; border-bottom:1.5px solid var(--ink); margin-top:6px; }
+  .fac-row { padding:7px 4px; border-bottom:1px solid var(--line-mid); }
   .fac-row.lb-me { background:var(--bg); }
 
   /* SIDEBAR */
+  /* The whole sidebar is scaled 150% (text + edges) via zoom; an explicit pre-zoom width of 270px
+     renders to the 405px grid column so nothing overflows. Mobile resets this (drawer below). */
   .sidebar { grid-area:s; border-right:2px solid var(--ink); background:var(--bg2);
-    overflow-y:auto; padding:10px; }
-  .panel { margin-bottom:12px; border:2px solid var(--ink); background:var(--bg2); }
+    overflow-y:auto; padding:10px; width:270px; box-sizing:border-box; zoom:1.5; }
+  .panel { margin-bottom:12px; border:2px solid var(--ink); border-radius:var(--r-lg); overflow:hidden; background:var(--bg2); }
   .ptitle { padding:5px 8px; border-bottom:2px solid var(--ink); font-family:'Press Start 2P',monospace;
     font-size:7px; background:var(--yel); letter-spacing:.05em; }
   .ptitle::before { content:"▶ "; }
   .pbody { padding:8px; }
   .profile { display:flex; gap:10px; align-items:center; }
-  .pfp { width:40px; height:40px; flex:0 0 auto; border:1.5px solid var(--ink); border-radius:6px;
+  .pfp { width:40px; height:40px; flex:0 0 auto; border:1.5px solid var(--ink); border-radius:0;
     display:grid; place-items:center; font-family:'VT323',monospace; font-size:24px;
     background:var(--bg); color:var(--orange); }
   .pinfo { min-width:0; }
@@ -204,13 +273,13 @@
   .pmeta { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:4px; }
   .pmeta #s-prestige { color:var(--yel); }
   /* divider between the queen identity/bars and the worker controls */
-  .prof-div { height:2px; background:var(--line); margin:11px 0 9px; }
+  .prof-div { height:2px; background:var(--line-mid); margin:11px 0 9px; }
   /* HP caption row (label + numeric readout), brand small chrome */
   .bar-cap { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
     margin-top:10px; margin-bottom:3px; display:flex; justify-content:space-between; align-items:baseline; }
   .bar-cap .bar-meta { font-size:7px; color:var(--ink); }
   /* the CLAIM | RANKS button pair under DEPLOY */
-  .prof-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
+  .prof-actions { display:grid; grid-template-columns:1fr; gap:6px; margin-top:6px; }
 
   .hp-bar { height:10px; background:var(--bg); border:1px solid var(--ink); position:relative;
     margin-top:4px;
@@ -227,8 +296,8 @@
   .xp-fill { height:100%; background:linear-gradient(90deg,var(--grn) 0,#8fd96a 100%);
     transition:width .4s; }
 
-  .stat-grid { display:grid; grid-template-columns:1fr 1fr; border-top:2px solid var(--ink); }
-  .stat-cell { padding:6px 8px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .stat-grid { display:grid; grid-template-columns:1fr 1fr; border-top:1.5px solid var(--ink); }
+  .stat-cell { padding:6px 8px; border-right:1px solid var(--line-mid); border-bottom:1px solid var(--line-mid); }
   .stat-cell:nth-child(2n) { border-right:none; }
   .stat-cell:nth-last-child(-n+2) { border-bottom:none; }
   .stat-cell .l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
@@ -238,11 +307,11 @@
   .stat-cell .v.b { color:var(--blu); }
   /* STATS sub-divider inside the merged QUEEN panel */
   .psub { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--blu);
-    padding:6px 8px 4px; letter-spacing:.05em; border-top:2px solid var(--ink); }
+    padding:6px 8px 4px; letter-spacing:.05em; border-top:1.5px solid var(--ink); }
   .stat-grid.nbt { border-top:none; }
 
   /* SCORE PANEL — dark chrome surface, orange eyebrow, the grand-score number does the selling */
-  .score-panel { border:2px solid var(--ink); background:var(--inkbar); color:#fbf9f2;
+  .score-panel { border:1.5px solid var(--ink); background:var(--inkbar); color:#fbf9f2;
     border-radius:8px; padding:11px 12px; margin-bottom:12px; }
   .score-panel .slbl { font-family:'Press Start 2P',monospace; font-size:7px;
     color:var(--orange); letter-spacing:.05em; margin-bottom:7px; }
@@ -256,12 +325,12 @@
 
   /* BUTTONS */
   /* BUTTONS (brand) — primary = nectar-orange, hairline ink outline, rounded, offset shadow */
-  .btn { background:var(--orange); color:#fff; border:1.5px solid var(--ink); border-radius:7px; padding:9px 10px;
+  .btn { background:var(--orange); color:#fff; border:1.5px solid var(--ink); border-radius:var(--r-sm); padding:9px 10px;
     font-family:'Press Start 2P',monospace; font-size:8px; cursor:pointer; width:100%;
-    box-shadow:2px 2px 0 0 var(--ink); transition:transform .08s, box-shadow .08s, background .12s; letter-spacing:.05em; }
-  .btn:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:3px 3px 0 0 var(--ink); background:var(--orange-d); }
-  .btn:active:not(:disabled) { transform:translate(1px,1px); box-shadow:1px 1px 0 0 var(--ink); }
-  .btn:disabled { background:var(--grid); color:var(--dim); cursor:default; border-color:var(--line); box-shadow:2px 2px 0 0 var(--line); }
+    box-shadow:var(--shadow-sm); transition:transform .08s, box-shadow .12s, background .12s; letter-spacing:.05em; }
+  .btn:hover:not(:disabled) { transform:translateY(-1px); box-shadow:var(--shadow-md); background:var(--orange-d); }
+  .btn:active:not(:disabled) { transform:translateY(1px); box-shadow:var(--shadow-sm); }
+  .btn:disabled { background:var(--grid); color:var(--dim); cursor:default; border-color:var(--line-mid); box-shadow:none; }
   .btn.active { background:var(--ink); color:var(--yel); animation:pulseGlow 1s steps(2) infinite; }
   @keyframes pulseGlow { 0%,100%{box-shadow:2px 2px 0 0 var(--orange);} 50%{box-shadow:2px 2px 0 0 var(--yel);} }
   .btn.ghost { background:var(--bg2); color:var(--ink); }
@@ -272,7 +341,7 @@
   @keyframes claimShine { 0%,100%{ box-shadow:2px 2px 0 0 var(--ink); } 50%{ box-shadow:2px 2px 0 0 var(--ink), 0 0 11px 1px var(--orange); } }
   .lb-table { display:flex; flex-direction:column; }
   .lb-row { display:grid; grid-template-columns:26px 1fr auto; align-items:center; gap:6px;
-    padding:5px 2px; border-bottom:1px solid var(--line);
+    padding:5px 2px; border-bottom:1px solid var(--line-mid);
     font-family:'IBM Plex Mono',monospace; font-size:10px; font-weight:600; }
   .lb-row:last-child { border-bottom:none; }
   .lb-rank { color:var(--dim); }
@@ -285,6 +354,14 @@
   .lb-trend.dn { color:var(--red); }
   .lb-me { background:rgba(255,184,0,.18); box-shadow:inset 3px 0 0 var(--yel); }
 
+  /* Orchard-rounded refinement — blanket radius for the long-tail controls/cards that predate
+     the token system, so the whole UI shares one soft shape language (the big containers above
+     set their own radius + soft shadow explicitly). */
+  .wk-toggle,.shop-tab,.shop-buy,.lb-expand,.lb-tab,.pass-chip,.al-btn,.al-chip,.al-input,.al-ic,
+  .al-create-btn,.al-leave-btn,.adm-in,.adm-in-sm,.adm-tgt-name,.adm-xp-preview,.cap-label { border-radius:var(--r-xs); }
+  .set-toggle,.tog-track { border-radius:var(--r-pill); }
+  .set-toggle .knob,.tog-thumb { border-radius:0; }
+
   /* CANVAS */
   .canvas-area { grid-area:c; position:relative; background:var(--bg2); overflow:hidden; touch-action:none; }
 canvas { display:block; width:100%; height:100%; cursor:grab;
@@ -295,8 +372,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 
   #dir-overlay { position:absolute; pointer-events:none; display:none; z-index:50; }
   .ovr { position:absolute; pointer-events:none; font-family:'Press Start 2P',monospace; font-size:8px; }
-  .coord { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--red); }
-  .zooml { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:4px; }
+  .coord { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--ink); line-height:1.5; letter-spacing:.5px; }
+  .zooml { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-top:7px; }
   /* Unit-laddered time + muted location lines: most-significant unit brightest, rest dimmer.
      Opacity multiplies the inherited colour, so these reuse across header/sidebar/location. */
   .t0 { opacity:1; } .t1 { opacity:.72; } .t2 { opacity:.5; } .tx { opacity:.45; }
@@ -309,19 +386,19 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   @keyframes bigSparkle { 0%,100%{ text-shadow:0 0 3px currentColor; } 50%{ text-shadow:0 0 9px #fff,0 0 4px currentColor; } }
   @keyframes bigRainbow { 0%{ filter:hue-rotate(0deg) saturate(1.5) brightness(1.2); } 100%{ filter:hue-rotate(360deg) saturate(1.5) brightness(1.2); } }
   .place-prompt { bottom:28px; left:50%; transform:translateX(-50%); background:var(--red);
-    color:#fff; border:2px solid var(--ink); padding:12px 20px;
+    color:#fff; border:1.5px solid var(--ink); border-radius:var(--r-sm); padding:12px 20px;
     font-family:'Press Start 2P',monospace; font-size:10px;
-    box-shadow:4px 4px 0 0 var(--ink); animation:bob 1.2s steps(2) infinite; }
+    box-shadow:var(--shadow-md); animation:bob 1.2s steps(2) infinite; }
   @keyframes bob { 0%,100%{transform:translateX(-50%) translateY(0);} 50%{transform:translateX(-50%) translateY(-3px);} }
   .toast { position:absolute; top:70px; left:50%; transform:translateX(-50%);
-    background:var(--ink); color:var(--bg2); border:2px solid var(--ink);
+    background:var(--ink); color:var(--bg2); border:1.5px solid var(--ink); border-radius:var(--r-sm);
     padding:10px 16px; font-family:'Press Start 2P',monospace; font-size:8px;
     opacity:0; transition:opacity .3s; pointer-events:none; z-index:100;
-    box-shadow:4px 4px 0 0 var(--red); }
+    box-shadow:var(--shadow-pop); }
   .toast.show { opacity:1; }
 
   /* INSPECT — folded into the POSITION panel (left sidebar) */
-  .insp-div { border-top:2px dashed var(--line); margin:7px 0 5px; }
+  .insp-div { border-top:2px dashed var(--line-mid); margin:7px 0 5px; }
   #inspect-section { pointer-events:none; }
   .inspect-header { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--red);
     margin-bottom:5px; letter-spacing:.1em; }
@@ -334,21 +411,21 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     background:rgba(13,13,13,.82); }
   #death-screen.vis { display:grid; animation:ds-fade .3s ease-out; }
   @keyframes ds-fade { from{opacity:0} to{opacity:1} }
-  .ds-card { background:var(--bg2); border:3px solid var(--ink); box-shadow:9px 9px 0 0 var(--red);
+  .ds-card { background:var(--bg2); border:1.5px solid var(--ink); border-radius:var(--r-xl); box-shadow:var(--shadow-pop);
     width:min(440px,92vw); padding:26px 28px; text-align:center; }
   .ds-title { font-family:'Press Start 2P',monospace; font-size:16px; line-height:1.5; color:var(--ink); }
   .ds-title em { color:var(--red); font-style:normal; }
   .ds-sub { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
     margin-top:8px; letter-spacing:.1em; }
   .ds-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px; background:var(--ink);
-    border:2px solid var(--ink); margin:18px 0; }
+    border:1.5px solid var(--ink); margin:18px 0; }
   .ds-stat { background:var(--bg2); padding:9px 6px; }
   .ds-l { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
   .ds-v { font-family:'Press Start 2P',monospace; font-size:12px; margin-top:5px; color:var(--ink); }
   .ds-prestige { display:flex; align-items:center; gap:12px; text-align:left;
-    border:2px solid var(--ink); background:var(--bg); padding:10px 12px; margin-bottom:18px; }
+    border:1.5px solid var(--ink); background:var(--bg); padding:10px 12px; margin-bottom:18px; }
   .ds-pr-badge { font-family:'Press Start 2P',monospace; font-size:16px; color:var(--ink);
-    background:var(--yel); border:2px solid var(--ink); padding:8px 10px; flex-shrink:0; }
+    background:var(--yel); border:1.5px solid var(--ink); padding:8px 10px; flex-shrink:0; }
   .ds-pr-text { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink); line-height:1.5; }
   .ds-pr-text span { color:var(--dim); font-size:6px; }
   .ds-redeploy { font-size:11px; padding:13px; }
@@ -373,36 +450,49 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     background:rgba(13,13,13,.82); }
   #welcome-screen.vis { display:grid; animation:ds-fade .3s ease-out; }
   .wb-list { display:flex; flex-direction:column; gap:7px; margin:16px 0 18px; text-align:left; }
-  .wb-row { display:flex; align-items:center; gap:10px; border:2px solid var(--ink); background:var(--bg);
+  .wb-row { display:flex; align-items:center; gap:10px; border:1.5px solid var(--ink); background:var(--bg);
     padding:9px 11px; font-family:'Press Start 2P',monospace; font-size:8px; color:var(--ink); }
   .wb-ico { font-size:13px; flex-shrink:0; }
   .wb-row b { margin-left:auto; }
   .wb-pos { color:var(--grn); } .wb-neg { color:var(--red); }
 
-  /* DISCOVERY window */
-  .disc-sec { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--blu);
-    margin:4px 0 10px; padding-bottom:5px; border-bottom:2px solid var(--ink); letter-spacing:.05em; }
-  .disc-sec:not(:first-child) { margin-top:22px; }
-  .disc-counts { display:flex; gap:22px; margin-bottom:12px; }
-  .disc-count b { font-family:'Press Start 2P',monospace; font-size:20px; color:var(--ink); }
-  .disc-count span { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); display:block; margin-top:4px; }
-  .disc-chips { display:flex; flex-wrap:wrap; gap:5px; }
-  .disc-chip { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink);
+  /* PASSPORT window */
+  .pass-sec { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--blu);
+    margin:4px 0 10px; padding-bottom:5px; border-bottom:1.5px solid var(--ink); letter-spacing:.05em; }
+  .pass-sec:not(:first-child) { margin-top:22px; }
+  .pass-counts { display:flex; gap:22px; margin-bottom:12px; }
+  .pass-count b { font-family:'Press Start 2P',monospace; font-size:20px; color:var(--ink); }
+  .pass-count span { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); display:block; margin-top:4px; }
+  .pass-chips { display:flex; flex-wrap:wrap; gap:5px; }
+  .pass-chip { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink);
     border:1px solid var(--ink); background:var(--bg2); padding:5px 7px; }
-  .disc-chip.cont { background:var(--ink); color:var(--yel); }
-  .disc-empty { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); }
-  .disc-cmp { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--ink); border:2px solid var(--ink); }
-  .disc-col { background:var(--bg2); padding:10px 12px; }
-  .disc-col h4 { font-family:'Press Start 2P',monospace; font-size:8px; margin-bottom:8px; }
-  .disc-col.user h4 { color:var(--red); } .disc-col.queen h4 { color:var(--grn); }
-  .disc-stat { display:flex; justify-content:space-between; gap:8px; font-family:'Press Start 2P',monospace;
-    font-size:7px; color:var(--dim); padding:5px 0; border-bottom:1px solid var(--line); }
-  .disc-stat:last-child { border-bottom:none; }
-  .disc-stat b { color:var(--ink); text-align:right; }
+  .pass-chip.cont { background:var(--ink); color:var(--yel); }
+  .win-empty { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); }
+  .pass-cmp { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--ink); border:1.5px solid var(--ink); }
+  .pass-col { background:var(--bg2); padding:10px 12px; }
+  .pass-col h4 { font-family:'Press Start 2P',monospace; font-size:8px; margin-bottom:8px; }
+  .pass-col.user h4 { color:var(--red); } .pass-col.queen h4 { color:var(--grn); }
+  .pass-stat { display:flex; justify-content:space-between; gap:8px; font-family:'Press Start 2P',monospace;
+    font-size:7px; color:var(--dim); padding:5px 0; border-bottom:1px solid var(--line-mid); }
+  .pass-stat:last-child { border-bottom:none; }
+  .pass-stat b { color:var(--ink); text-align:right; }
+  .pass-stat.mine { background:var(--accent-soft); }
+  .pass-stat.mine b { color:var(--orange); }
+
+  /* PASSPORT — continent-grouped flag grid */
+  .pass-cont-hdr { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
+    margin:10px 0 5px; letter-spacing:.05em; text-transform:uppercase; }
+  .pass-flags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:2px; }
+  .pass-flags .flag { cursor:default; display:inline-block; }
+  /* fallback text chip for unknown iso */
+  .pass-flag-chip { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--ink);
+    border:1px solid var(--ink); background:var(--bg2); padding:2px 5px; display:inline-block; }
+  /* HUD ad panel matches sidebar panel look */
+  #hud-ad-panel { padding:4px; text-align:center; min-height:60px; }
 
   /* SHOP window — product cards */
   .shop-top { display:flex; align-items:center; justify-content:flex-start; gap:22px; flex-wrap:wrap;
-    border:2px solid var(--ink); background:var(--ink); color:var(--bg2); padding:11px 14px; margin-bottom:14px; }
+    border:1.5px solid var(--ink); background:var(--ink); color:var(--bg2); padding:11px 14px; margin-bottom:14px; }
   .shop-cr { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--yel); }
   .shop-cr b { font-size:15px; color:#fff; margin-left:6px; }
   .shop-note { font-family:'Press Start 2P',monospace; font-size:6px; color:rgba(255,255,255,.55); }
@@ -415,77 +505,100 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .bal-ic.gems   { background:var(--grn); transform:rotate(45deg); }
   .shop-tabs { display:flex; gap:6px; margin-bottom:14px; }
   .shop-tab { flex:1; font-family:'Press Start 2P',monospace; font-size:8px; padding:8px 6px;
-    background:var(--bg2); border:2px solid var(--ink); color:var(--dim); cursor:pointer; }
+    background:var(--bg2); border:1.5px solid var(--ink); color:var(--dim); cursor:pointer; }
   .shop-tab.active { background:var(--ink); color:#fff; }
   .shop-foot { font-family:'Press Start 2P',monospace; font-size:7px; color:rgba(255,255,255,.55);
     margin-top:14px; text-align:center; line-height:1.7; }
   .shop-foot.blu { color:var(--blu); } .shop-foot.red { color:var(--red); }
-  /* HELP window (E2) — field manual */
-  .help-intro { font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--dim); line-height:1.6; margin-bottom:16px; }
-  .help-sec { margin-bottom:16px; }
-  .help-h { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--ink); border-bottom:2px solid var(--ink); padding-bottom:6px; margin-bottom:6px; }
-  .help-row { display:flex; justify-content:space-between; gap:14px; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:3px 0; }
-  .help-row span:first-child { color:var(--dim); }
-  .help-row span:last-child { color:var(--ink); text-align:right; }
+  /* HELP window — TUTORIAL / field manual (left rail of concept pages + right reading pane) */
+  .tut-wrap { display:grid; grid-template-columns:158px 1fr; gap:16px; align-items:start; }
+  .tut-rail { display:flex; flex-direction:column; gap:2px; border-right:1.5px solid var(--line-mid); padding-right:12px; }
+  .tut-group { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--orange); letter-spacing:.06em; margin:12px 2px 5px; }
+  .tut-group:first-child { margin-top:0; }
+  .tut-item { display:flex; align-items:center; justify-content:space-between; gap:6px; text-align:left;
+    font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:600; color:var(--ink);
+    background:none; border:none; border-radius:var(--r-xs); padding:6px 7px; cursor:pointer; width:100%; }
+  .tut-item:hover:not(:disabled) { background:var(--surface); }
+  .tut-item.on { background:var(--accent-soft); color:var(--accent-press); }
+  .tut-item.locked { color:var(--ink-faint); cursor:default; }
+  .tut-it-t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tut-new { font-family:'Press Start 2P',monospace; font-size:5px; color:#fff; background:var(--orange);
+    border-radius:var(--r-pill); padding:2px 4px; flex:0 0 auto; letter-spacing:.04em; }
+  .tut-pane { min-width:0; }
+  .tut-title { font-family:'Press Start 2P',monospace; font-size:11px; color:var(--ink); margin-bottom:12px; letter-spacing:.03em; line-height:1.5; }
+  .tut-anim { position:relative; aspect-ratio:16/9; width:100%; background:var(--surface-3);
+    border:1.5px dashed var(--line-mid); border-radius:var(--r-md); display:flex; align-items:center; justify-content:center; margin-bottom:14px; }
+  .tut-anim span { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--ink-faint); letter-spacing:.06em; }
+  .tut-body { font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:var(--ink-dim); line-height:1.75; }
+  .tut-body b { color:var(--ink); }
+  .tut-locked { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--ink-faint); line-height:1.9; }
   /* EVENTS window (E3) — timestamped log */
   .evt-log { display:flex; flex-direction:column; }
-  .evt-row { display:flex; gap:9px; font-family:'IBM Plex Mono',monospace; font-size:12px; padding:4px 0; border-bottom:1px solid var(--line); }
-  .evt-ts { color:var(--dim); flex:0 0 auto; }
-  .evt-msg { color:var(--ink); word-break:break-word; }
+  .evt-row { display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+    padding:9px 0; border-bottom:1px solid var(--line-mid); }
+  .evt-body { min-width:0; }
+  .evt-head { font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:700; color:var(--ink); word-break:break-word; }
+  .evt-sub { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--dim); margin-top:2px; word-break:break-word; }
+  .evt-ts { font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--ink-faint); flex:0 0 auto; white-space:nowrap; padding-top:1px; }
   /* ALLIANCE window */
-  .al-sec { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--ink); border-bottom:2px solid var(--ink); padding-bottom:6px; margin:16px 0 8px; }
-  .al-row { display:flex; align-items:center; gap:9px; padding:6px 2px; border-bottom:1px solid var(--line); }
+  .al-sec { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--ink); border-bottom:1.5px solid var(--ink); padding-bottom:6px; margin:16px 0 8px; }
+  .al-row { display:flex; align-items:center; gap:9px; padding:6px 2px; border-bottom:1px solid var(--line-mid); }
   .al-rname { flex:1; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink); }
   .al-dim { color:var(--dim); font-size:10px; }
   .al-actions { display:flex; gap:5px; }
-  .al-btn { font-family:'Press Start 2P',monospace; font-size:7px; padding:6px 8px; border:2px solid var(--ink); background:var(--bg2); color:var(--ink); cursor:pointer; }
+  .al-btn { font-family:'Press Start 2P',monospace; font-size:7px; padding:6px 8px; border:1.5px solid var(--ink); background:var(--bg2); color:var(--ink); cursor:pointer; }
   .al-btn.ok { background:var(--ink); color:#fff; } .al-btn.ok:disabled { opacity:.4; cursor:default; }
   .al-btn.no { color:var(--red); }
   .al-badge { font-size:15px; line-height:1; } .al-badge.big { font-size:26px; }
   .al-header { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
   .al-title { font-family:'Press Start 2P',monospace; font-size:11px; color:var(--ink); }
-  .al-bar { height:10px; background:var(--bg2); border:2px solid var(--ink); margin:4px 0; }
+  .al-bar { height:10px; background:var(--bg2); border:1.5px solid var(--ink); margin:4px 0; }
   .al-bar-fill { height:100%; background:var(--ink); }
   .al-dim.sm { font-size:9px; }
   .al-buffs { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
-  .al-chip { font-family:'IBM Plex Mono',monospace; font-size:11px; border:2px solid var(--ink); padding:4px 7px; background:var(--bg2); }
+  .al-chip { font-family:'IBM Plex Mono',monospace; font-size:11px; border:1.5px solid var(--ink); padding:4px 7px; background:var(--bg2); }
   .al-chip b { color:var(--dim); margin-right:5px; font-size:9px; }
   .al-create, .al-invite { display:flex; gap:8px; }
   .al-create { flex-direction:column; }
-  .al-input { font-family:'IBM Plex Mono',monospace; font-size:13px; padding:8px; border:2px solid var(--ink); background:var(--bg2); color:var(--ink); flex:1; }
+  .al-input { font-family:'IBM Plex Mono',monospace; font-size:13px; padding:8px; border:1.5px solid var(--ink); background:var(--bg2); color:var(--ink); flex:1; }
   .al-icons { display:flex; flex-wrap:wrap; gap:5px; }
-  .al-ic { font-size:16px; padding:4px 6px; border:2px solid var(--line); background:var(--bg2); cursor:pointer; }
+  .al-ic { font-size:16px; padding:4px 6px; border:2px solid var(--line-mid); background:var(--bg2); cursor:pointer; }
   .al-ic.on { border-color:var(--ink); }
-  .al-create-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:2px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; margin-top:6px; }
-  .al-leave-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:2px solid var(--ink); background:var(--bg2); color:var(--red); cursor:pointer; width:100%; margin-top:14px; }
+  .al-create-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:1.5px solid var(--ink); background:var(--ink); color:#fff; cursor:pointer; margin-top:6px; }
+  .al-leave-btn { font-family:'Press Start 2P',monospace; font-size:9px; padding:11px; border:1.5px solid var(--ink); background:var(--bg2); color:var(--red); cursor:pointer; width:100%; margin-top:14px; }
   .shop-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
-  .shop-card { border:2px solid var(--ink); background:var(--bg2); padding:14px 12px; display:flex;
-    flex-direction:column; align-items:center; text-align:center; gap:7px; box-shadow:3px 3px 0 0 var(--ink); }
+  .shop-card { border:1.5px solid var(--ink); border-radius:var(--r-md); background:var(--bg2); padding:14px 12px; display:flex;
+    flex-direction:column; align-items:center; text-align:center; gap:7px; box-shadow:var(--shadow-sm); }
   .shop-card.wip { opacity:.5; }
   .shop-ic { font-size:30px; line-height:1; }
   .shop-nm { font-family:'Press Start 2P',monospace; font-size:9px; }
   .shop-ds { font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--dim); line-height:1.45; min-height:42px; }
   .shop-pr { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--grn); }
   .shop-buy { width:100%; font-family:'Press Start 2P',monospace; font-size:8px; background:var(--red);
-    color:#fff; border:2px solid var(--ink); padding:8px; cursor:pointer; transition:background .1s; }
+    color:#fff; border:1.5px solid var(--ink); padding:8px; cursor:pointer; transition:background .1s; }
   .shop-buy:hover:not(:disabled) { background:var(--ink); }
   .shop-buy:disabled { background:var(--bg); color:var(--dim); cursor:not-allowed; }
 
   /* SETTINGS window — toggle rows + volume */
   .set-row { display:flex; align-items:center; justify-content:space-between; gap:16px;
-    padding:14px 4px; border-bottom:1px solid var(--line); }
+    padding:14px 4px; border-bottom:1px solid var(--line-mid); }
   .set-row:last-child { border-bottom:none; }
   .set-info { display:flex; flex-direction:column; gap:5px; }
   .set-name { font-family:'Press Start 2P',monospace; font-size:9px; color:var(--ink); }
   .set-desc { font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--dim); }
-  .set-toggle { width:54px; height:26px; border:2px solid var(--ink); background:var(--bg);
+  .set-toggle { width:54px; height:26px; border:1.5px solid var(--ink); background:var(--bg);
     position:relative; cursor:pointer; flex-shrink:0; transition:background .15s; }
   .set-toggle .knob { position:absolute; top:1px; left:1px; width:20px; height:20px;
     background:var(--ink); transition:left .15s, background .15s; }
   .set-toggle.on { background:var(--grn); }
   .set-toggle.on .knob { left:31px; background:#fff; }
   .set-vol { display:flex; align-items:center; gap:10px; }
-  .set-vol input[type=range] { width:130px; accent-color:var(--red); cursor:pointer; }
+  .set-vol input[type=range] { width:130px; accent-color:var(--orange); cursor:pointer; }
+  .set-group { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--orange); letter-spacing:.06em;
+    margin:20px 2px 2px; padding-bottom:6px; border-bottom:1.5px solid var(--ink); }
+  .set-group:first-child { margin-top:2px; }
+  .set-btn { width:auto; flex:0 0 auto; padding:8px 12px; font-size:7px; }
+  .set-row .set-btn.danger { color:var(--red); border-color:var(--red); }
 
   /* CAPITOL MARKER on map */
   .cap-label { position:absolute; pointer-events:none;
@@ -494,12 +607,12 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     border:1px solid var(--ink); z-index:20; transform:translate(-50%,12px); }
 
   /* ADMIN PANEL */
-  .admin { grid-area:a; border-left:2px solid var(--ink); background:var(--bg2);
+  .admin { grid-area:a; border-left:1.5px solid var(--ink); background:var(--bg2);
     overflow:hidden; display:flex; flex-direction:column; }
   body:not(.admin-on) .admin { display:none; }
-  .adm-tabs { display:flex; border-bottom:2px solid var(--ink); flex-shrink:0; }
+  .adm-tabs { display:flex; border-bottom:1.5px solid var(--ink); flex-shrink:0; }
   .adm-tab { flex:1; padding:6px 2px; font-family:'Press Start 2P',monospace; font-size:6px;
-    background:var(--bg2); border:none; border-right:1px solid var(--line); cursor:pointer;
+    background:var(--bg2); border:none; border-right:1px solid var(--line-mid); cursor:pointer;
     color:var(--dim); letter-spacing:.03em; }
   .adm-tab:last-child { border-right:none; }
   .adm-tab:hover { background:var(--bg); }
@@ -507,12 +620,12 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .adm-pane { display:none; padding:10px; overflow-y:auto; flex:1; }
   .adm-pane.active { display:block; }
   .adm-cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px;
-    background:var(--ink); border:2px solid var(--ink); margin-bottom:10px; }
+    background:var(--ink); border:1.5px solid var(--ink); margin-bottom:10px; }
   .adm-card { background:var(--bg2); padding:6px 8px; }
   .adm-cl { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); }
   .adm-cv { font-family:'Press Start 2P',monospace; font-size:10px; margin-top:3px; color:var(--red); }
   .adm-subsec { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--blu);
-    margin:16px 0 6px; padding-bottom:3px; border-bottom:1px solid var(--line); letter-spacing:.05em; }
+    margin:16px 0 6px; padding-bottom:3px; border-bottom:1px solid var(--line-mid); letter-spacing:.05em; }
   .adm-subsec:first-of-type { margin-top:6px; }
   .adm-log { max-height:220px; overflow-y:auto; }
   .adm-log-entry { font-family:'IBM Plex Mono',monospace; font-size:9px; color:var(--dim);
@@ -522,12 +635,12 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     gap:4px; padding:4px 6px; background:var(--ink); color:var(--yel);
     font-family:'Press Start 2P',monospace; font-size:6px; margin-bottom:2px; }
   .adm-ptable-row { display:grid; grid-template-columns:1fr 22px 28px 48px 16px;
-    gap:4px; padding:5px 6px; border-bottom:1px solid var(--line);
+    gap:4px; padding:5px 6px; border-bottom:1px solid var(--line-mid);
     font-family:'Press Start 2P',monospace; font-size:6px; cursor:pointer; align-items:center; }
   .adm-ptable-row:hover { background:var(--yel); }
   .adm-ptable-row:last-child { border-bottom:none; }
   .adm-tgt-name { font-family:'Press Start 2P',monospace; font-size:9px;
-    padding:6px 8px; margin-bottom:6px; border:2px solid var(--ink); }
+    padding:6px 8px; margin-bottom:6px; border:1.5px solid var(--ink); }
   .adm-tgt-meta { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
     margin-bottom:8px; }
   .adm-tgt-hp-bar { height:8px; background:var(--bg); border:1px solid var(--ink); margin-bottom:2px; }
@@ -535,15 +648,15 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .adm-il { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
     white-space:nowrap; flex-shrink:0; width:30px; text-align:right; }
   .btn-sm.on { background:#2e7d32; color:#fff; }
-  .adm-in { background:var(--bg); border:2px solid var(--ink); color:var(--ink);
+  .adm-in { background:var(--bg); border:1.5px solid var(--ink); color:var(--ink);
     font-family:'IBM Plex Mono',monospace; font-size:11px; padding:4px 6px; width:100%; }
   .adm-in:focus { outline:none; background:var(--yel); }
-  .adm-in-sm { background:var(--bg); border:2px solid var(--ink); color:var(--ink);
+  .adm-in-sm { background:var(--bg); border:1.5px solid var(--ink); color:var(--ink);
     font-family:'IBM Plex Mono',monospace; font-size:11px; padding:3px 5px; min-width:0; flex:1; }
   .adm-in-sm:focus { outline:none; background:var(--yel); }
   .adm-speed.active-speed { background:var(--blu); color:#fff; }
   .adm-xp-preview { font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim);
-    padding:6px; background:var(--bg); border:1px dashed var(--line); margin-bottom:8px; line-height:1.8; }
+    padding:6px; background:var(--bg); border:1px dashed var(--line-mid); margin-bottom:8px; line-height:1.8; }
   .slider-g { margin-bottom:12px; }
   .slider-l { display:flex; justify-content:space-between; align-items:center;
     font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); margin-bottom:3px; }
@@ -563,15 +676,15 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     height:6px; background:var(--bg); border:1px solid var(--ink); outline:none; }
   input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none;
     width:14px; height:14px; background:var(--red); cursor:pointer;
-    border:2px solid var(--ink); border-radius:0; }
+    border:1.5px solid var(--ink); border-radius:0; }
   input[type="range"]::-moz-range-thumb { width:14px; height:14px; background:var(--red);
-    cursor:pointer; border:2px solid var(--ink); border-radius:0; }
+    cursor:pointer; border:1.5px solid var(--ink); border-radius:0; }
   .btn-row { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:4px; }
-  .btn-sm { background:var(--bg2); border:2px solid var(--ink); color:var(--ink);
+  .btn-sm { background:var(--bg2); border:1.5px solid var(--ink); color:var(--ink); border-radius:var(--r-xs);
     padding:6px; font-family:'Press Start 2P',monospace; font-size:7px; cursor:pointer;
-    box-shadow:2px 2px 0 0 var(--ink); }
+    box-shadow:var(--shadow-sm); }
   .btn-sm:hover { background:var(--yel); }
-  .btn-sm:active { transform:translate(1px,1px); box-shadow:1px 1px 0 0 var(--ink); }
+  .btn-sm:active { transform:translateY(1px); box-shadow:none; }
   .btn-sm.r { background:var(--red); color:#fff; }
   .btn-sm.r:hover { background:#ff1020; }
   /* Daily-claim button (workers panel) — pulses while the day's portion is unclaimed. */
@@ -582,20 +695,14 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .diag { font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim); line-height:1.8; }
   .diag span { color:var(--red); }
 
-  /* connection status — relocated from the (removed) footer into the header, far right */
-  .hdr-conn { display:flex; align-items:center; gap:5px; margin-left:10px;
-    font-family:'Press Start 2P',monospace; font-size:6px; color:var(--dim); white-space:nowrap; }
-  .hdr-conn .dot { font-size:9px; line-height:1; animation:blink .5s steps(2) infinite; }
-  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
-  .hdr-conn .dot.ok { color:var(--grn); }
-  .hdr-conn .dot.bad { color:var(--red); }
+  /* (connection status blinker removed — disconnects now surface as a one-shot toast instead) */
   /* admin toggle switch */
   .admin-tog { display:none; align-items:center; gap:7px; cursor:pointer;
     font-family:'Press Start 2P',monospace; font-size:7px; color:var(--dim);
     user-select:none; }
   .admin-tog.vis { display:flex; }
   .admin-tog input { display:none; }
-  .tog-track { width:32px; height:14px; background:var(--line); border:1px solid var(--ink);
+  .tog-track { width:32px; height:14px; background:var(--line-mid); border:1px solid var(--ink);
     position:relative; flex-shrink:0; transition:background .15s; }
   .admin-tog input:checked ~ .tog-track { background:var(--yel); }
   .tog-thumb { position:absolute; top:1px; left:1px; width:10px; height:10px;
@@ -606,15 +713,15 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   #spawn-screen {
     position:fixed; inset:0; z-index:200; pointer-events:none;
     display:none;
-    grid-template-columns:270px 1fr;
-    grid-template-rows:52px 1fr;
+    grid-template-columns:405px 1fr;
+    grid-template-rows:68px 1fr;
   }
   #spawn-screen.vis { display:grid; animation:ss-in .22s ease-out; }
   @keyframes ss-in { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:translateY(0)} }
   #ss-header {
     grid-column:1/3; grid-row:1;
     background:var(--inkbar); color:var(--yel);
-    border-bottom:2px solid var(--ink);
+    border-bottom:1.5px solid var(--ink);
     display:flex; align-items:center; padding:0 18px; gap:14px;
     pointer-events:auto;
     font-family:'Press Start 2P',monospace; font-size:8px; letter-spacing:.05em;
@@ -626,7 +733,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   #ss-header .ss-pswatch { width:10px; height:10px; border:1px solid var(--yel); flex-shrink:0; }
   #ss-left {
     grid-column:1; grid-row:2;
-    background:var(--bg2); border-right:2px solid var(--ink);
+    background:var(--bg2); border-right:1.5px solid var(--ink);
     overflow-y:auto; padding:18px 14px;
     pointer-events:auto;
     display:flex; flex-direction:column; gap:0;
@@ -640,7 +747,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     font-family:'VT323',monospace; font-size:18px;
     color:var(--dim); line-height:1.4; margin-bottom:14px;
   }
-  .ss-rule { border:none; border-top:2px solid var(--line); margin:12px 0; }
+  .ss-rule { border:none; border-top:2px solid var(--line-mid); margin:12px 0; }
   .ss-sub {
     font-family:'Press Start 2P',monospace; font-size:7px;
     color:var(--dim); margin-bottom:8px; letter-spacing:.05em;
@@ -653,7 +760,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .ss-step-arrow { color:var(--red); flex-shrink:0; }
   .ss-status {
     margin-top:auto; padding-top:14px;
-    border-top:2px solid var(--line);
+    border-top:2px solid var(--line-mid);
     display:flex; flex-direction:column; gap:8px;
   }
   .ss-stat {
@@ -664,14 +771,14 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .ss-ident {
     display:flex; align-items:center; gap:8px;
     font-family:'Press Start 2P',monospace; font-size:8px;
-    border:2px solid var(--ink); padding:7px 9px; background:var(--bg);
+    border:1.5px solid var(--ink); padding:7px 9px; background:var(--bg);
   }
   .ss-ident-swatch { width:14px; height:14px; border:1px solid var(--ink); flex-shrink:0; }
   /* grid col 2 / row 2 is intentionally absent — canvas shows through */
   #ss-footer {
     grid-column:1/3; grid-row:3;
     background:var(--inkbar);
-    border-top:2px solid var(--ink);
+    border-top:1.5px solid var(--ink);
     display:flex; align-items:center; padding:0 16px; gap:20px;
     pointer-events:auto;
     font-family:'Press Start 2P',monospace; font-size:7px;
@@ -681,14 +788,14 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   /* Floating cursor card */
   #ss-card {
     position:fixed; z-index:201; pointer-events:none;
-    border:2px solid var(--ink); padding:9px 12px;
+    border:1.5px solid var(--ink); border-radius:var(--r-sm); padding:9px 12px;
     font-family:'Press Start 2P',monospace; font-size:7px;
-    box-shadow:3px 3px 0 0 var(--ink);
+    box-shadow:var(--shadow-md);
     min-width:160px; display:none;
   }
   #ss-card.ok { background:var(--inkbar); color:var(--yel); }
   #ss-card.bad { background:var(--red); color:#fff; }
-  #ss-card.out { background:var(--bg2); color:var(--dim); border-color:var(--line); box-shadow:none; }
+  #ss-card.out { background:var(--bg2); color:var(--dim); border-color:var(--line-mid); box-shadow:none; }
   #ss-card.water { background:#1a6fa8; color:#e0f0ff; }
   #ss-card-title { font-size:8px; margin-bottom:4px; }
   #ss-card-sub { font-size:6px; opacity:.7; }
@@ -696,8 +803,8 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   /* AUTH MODAL */
   .modal-bg { position:fixed; inset:0; background:var(--modal-scrim);
     display:grid; place-items:center; z-index:1000; }
-  .modal { background:var(--bg2); border:3px solid var(--ink); padding:30px 34px;
-    max-width:440px; width:90%; box-shadow:8px 8px 0 0 var(--red); }
+  .modal { background:var(--bg2); border:2px solid var(--ink); border-radius:var(--r-xl); padding:30px 34px;
+    max-width:440px; width:90%; box-shadow:var(--shadow-pop); }
   .modal h2 { font-family:'Press Start 2P',monospace; font-size:16px; line-height:1.4;
     margin-bottom:6px; }
   .modal h2 em { color:var(--red); font-style:normal; }
@@ -706,13 +813,13 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   .step { display:none; } .step.active { display:block; }
   .modal label { display:block; font-family:'Press Start 2P',monospace; font-size:8px;
     color:var(--ink); margin-bottom:5px; margin-top:10px; }
-  .modal input { width:100%; background:var(--bg); border:2px solid var(--ink);
+  .modal input { width:100%; background:var(--bg); border:1.5px solid var(--ink); border-radius:var(--r-sm);
     color:var(--ink); padding:10px 12px; font-family:'IBM Plex Mono',monospace; font-size:14px; }
   .modal input:focus { outline:none; background:var(--yel); }
   .hue-picker { display:grid; grid-template-columns:repeat(8,1fr); gap:4px; margin-top:6px; }
-  .hue-sw { aspect-ratio:1; cursor:pointer; border:2px solid var(--ink); }
-  .hue-sw:hover { transform:translate(-1px,-1px); box-shadow:2px 2px 0 0 var(--ink); }
-  .hue-sw.sel { transform:translate(-2px,-2px); box-shadow:3px 3px 0 0 var(--ink); }
+  .hue-sw { aspect-ratio:1; cursor:pointer; border:1.5px solid var(--ink); border-radius:var(--r-xs); }
+  .hue-sw:hover { transform:translateY(-1px); box-shadow:var(--shadow-sm); }
+  .hue-sw.sel { transform:translateY(-2px); box-shadow:var(--shadow-md); }
   .actions { margin-top:18px; display:flex; gap:6px; }
   .switch { font-family:'Press Start 2P',monospace; font-size:8px; color:var(--dim);
     margin-top:12px; text-align:center; }
@@ -741,14 +848,14 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
      zone) + left slide-out drawer for the side panel.
      ============================================================ */
   /* Mobile-only chrome — hidden on desktop, revealed in the @media block. */
-  #mobile-nav, #drawer-scrim, .drawer-close, .hdr-menu, .mobile-only { display:none; }
+  #mobile-nav, #mhud, #mdeploy, #drawer-scrim, .drawer-close, .hdr-menu, .mobile-only { display:none; }
 
   @media (max-width: 768px) {
     /* --- Layout: one full-bleed canvas under a compact header --- */
     body {
       grid-template-columns: 1fr;
-      grid-template-rows: calc(46px + env(safe-area-inset-top)) 1fr auto;
-      grid-template-areas: "h" "c" "n";
+      grid-template-rows: calc(46px + env(safe-area-inset-top)) 1fr auto auto;
+      grid-template-areas: "h" "c" "d" "n";
     }
     body.admin-on { grid-template-columns: 1fr; }   /* no admin column on phones */
     footer { display: none; }                        /* status line: not core-loop */
@@ -761,17 +868,18 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
                                         max(12px, env(safe-area-inset-left));
     }
     .logo { font-size: 12px; }
-    .hstats, .region, .hdr-actions, .hdr-logout { display: none; }
+    .hstats, .region, .hdr-actions, .hdr-logout, .hbal, .hdr-div { display: none; }
     .admin-badge { font-size: 7px; padding: 3px 6px; }
     .hdr-menu {
       display: flex; align-items: center; justify-content: center;
       margin-left: auto; width: 46px; height: 38px; font-size: 18px;
-      background: var(--bg); border: 2px solid var(--ink); color: var(--ink); cursor: pointer;
+      background: var(--bg); border: 1.5px solid var(--ink); color: var(--ink); cursor: pointer;
     }
     .hdr-menu:active { background: var(--yel); }
 
-    /* --- Sidebar → left slide-out drawer --- */
+    /* --- Sidebar → left slide-out drawer (reset the desktop 150% zoom so the drawer fits) --- */
     .sidebar {
+      zoom: 1;
       position: fixed; top: 0; bottom: 0; left: 0;
       width: min(86vw, 320px); z-index: 650;
       transform: translateX(-100%); transition: transform .25s ease; will-change: transform;
@@ -785,7 +893,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       display: flex; align-items: center; justify-content: center;
       margin-left: auto; margin-bottom: 8px;
       width: 44px; height: 44px; font-size: 13px;
-      background: var(--inkbar); color: #fff; border: 2px solid var(--ink); cursor: pointer;
+      background: var(--inkbar); color: #fff; border: 1.5px solid var(--ink); cursor: pointer;
       font-family: 'Press Start 2P', monospace;
     }
     #drawer-scrim { position: fixed; inset: 0; z-index: 640; background: rgba(13,13,13,.5); }
@@ -795,14 +903,14 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     /* --- Bottom nav (thumb zone) --- */
     #mobile-nav {
       display: flex; grid-area: n; position: relative; z-index: 70;
-      background: var(--bg2); border-top: 2px solid var(--ink);
+      background: var(--bg2); border-top: 1.5px solid var(--ink);
       padding-bottom: env(safe-area-inset-bottom);
       padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right);
     }
     .mnav-btn {
       flex: 1; min-height: 54px; padding: 6px 2px;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-      background: var(--bg2); border: none; border-left: 1px solid var(--line);
+      background: var(--bg2); border: none; border-left: 1px solid var(--line-mid);
       color: var(--ink); cursor: pointer;
     }
     .mnav-btn:first-child { border-left: none; }
@@ -817,12 +925,56 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     .mnav-btn.mnav-deploy.active .mic, .mnav-btn.mnav-deploy.active .mlb { color: var(--yel); }
 
     /* Canvas overlays clear of the header inset and the bottom nav --- */
-    #killfeed { top: calc(env(safe-area-inset-top) + 52px); right: 10px; }
-    .toast { top: calc(env(safe-area-inset-top) + 58px); }
-    .place-prompt { bottom: 12px; }   /* canvas-area now ends above the nav row, so a small offset clears it */
+    #killfeed { top: calc(env(safe-area-inset-top) + 88px); right: 10px; }   /* clear the vitals strip */
+    .toast { top: calc(env(safe-area-inset-top) + 94px); }
+    .place-prompt { bottom: 12px; }   /* canvas-area now ends above the deploy bar, so a small offset clears it */
 
-    /* --- Windows / modals at narrow width --- */
-    .win { width: 96vw; max-height: 86vh; }
+    /* --- Persistent vitals HUD over the map (HP/shield · level+XP · nectar+gems) --- */
+    #mhud {
+      display: block; position: fixed; left: 0; right: 0; z-index: 60; pointer-events: none;
+      top: calc(env(safe-area-inset-top) + 46px);
+      padding: 5px max(10px,env(safe-area-inset-right)) 5px max(10px,env(safe-area-inset-left));
+    }
+    .mhud-row { display: flex; align-items: center; gap: 8px; }
+    .mhud-hp { flex: 1.4; min-width: 0; display: flex; }
+    .mhud-lv { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; }
+    .mhud-lvn { font-family:'Press Start 2P',monospace; font-size: 8px; color: var(--ink); white-space: nowrap; }
+    .mhud-bar { position: relative; flex: 1; height: 9px; border: 1.5px solid var(--ink); background: var(--bg); border-radius: 3px; overflow: hidden; box-shadow: var(--shadow-pop); }
+    .mhud-fill { position: absolute; top: 0; left: 0; height: 100%; }
+    .mhud-bar.hp .mhud-fill { background: var(--red); }
+    .mhud-bar.xp .mhud-fill { background: linear-gradient(90deg,var(--grn) 0,#8fd96a 100%); }
+    .mhud-shield { position: absolute; top: 0; left: 0; height: 100%; background: var(--blu); }
+    .mhud-cur { display: flex; gap: 6px; font-family:'Press Start 2P',monospace; font-size: 8px; }
+    .mhud-chip { display: flex; align-items: center; gap: 4px; padding: 3px 6px; background: var(--bg2); border: 1.5px solid var(--ink); border-radius: 5px; color: var(--ink); }
+    .mhud-chip .hbal-ic { width: 11px; height: 11px; }   /* keep the strip slim */
+
+    /* --- Persistent deploy bar (grid row "d"): worker/brute toggle + ready/cost + claim --- */
+    #mdeploy {
+      display: flex; grid-area: d; align-items: stretch; gap: 6px; z-index: 65;
+      background: var(--bg2); border-top: 1.5px solid var(--ink); padding: 6px 8px;
+    }
+    #mdeploy .mdep-types { display: flex; gap: 5px; flex: 1.3; min-width: 0; }
+    #mdeploy .wk-type { flex: 1; }
+    #mdeploy .mdep-ready { display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-width: 52px; border: 1.5px solid var(--ink); border-radius: 5px; background: var(--bg); padding: 2px 4px; }
+    #mdeploy .mdep-l { font-family:'Press Start 2P',monospace; font-size: 6px; color: var(--dim); }
+    #mdeploy .mdep-v { font-family:'Press Start 2P',monospace; font-size: 9px; color: var(--ink); }
+    #mdeploy #m-btn-claim { flex: 1; min-width: 0; }
+
+    /* --- Drawer is now overflow-only: vitals/deploy/rankings live in the HUD + tab bar --- */
+    .sidebar .panel { display: none; }
+
+    /* --- Windows / modals → slide-up bottom-sheets --- */
+    .win-bg { place-items: end center; }
+    .win {
+      width: 100vw; max-width: 100vw; max-height: 88vh;
+      border-radius: 18px 18px 0 0; border-bottom: none;
+      padding-bottom: env(safe-area-inset-bottom); animation: sheetUp .22s ease;
+    }
+    @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .win-head { position: relative; padding: 14px 16px 12px; }
+    .win-head::before { content:''; position: absolute; left: 50%; top: 5px; transform: translateX(-50%);
+      width: 38px; height: 4px; border-radius: 2px; background: var(--on-yel); opacity: .35; }
     .win-body { padding: 14px 14px 18px; }
     .win-close { min-width: 44px; min-height: 44px; }
     /* Full leaderboard table: drop the region column so 8 cols fit a phone */
@@ -838,7 +990,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     #ss-header .ss-title { font-size: 8px; flex-basis: 100%; text-align: left; order: 3; }
     #ss-left {
       grid-column: 1; grid-row: 3;
-      border-right: none; border-top: 2px solid var(--ink);
+      border-right: none; border-top: 1.5px solid var(--ink);
       max-height: 44vh; overflow-y: auto;
       padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
     }
@@ -873,16 +1025,27 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
   <div class="hdr-div"></div>
   <div class="hdr-actions">
     <button class="hbtn" id="hbtn-shop" title="Shop" style="display:none" onclick="openShopWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 5h10l-1 8.5H4L3 5z"/><path d="M6 5.5V4a2 2 0 0 1 4 0v1.5"/></svg><span class="lb">SHOP</span></button>
-    <button class="hbtn" id="hbtn-disc" title="Discovery" onclick="openDiscoveryWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 4.2l1.7 3.8L8 11.8 6.3 8z" fill="currentColor" stroke="none"/></svg><span class="lb">DISC</span></button>
-    <button class="hbtn" id="hbtn-alliance" title="Alliance" onclick="openAllianceWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 2l5 2v3.5c0 3.8-5 6-5 6S3 11.3 3 7.5V4l5-2z"/></svg><span class="lb">ALLY</span></button>
+    <button class="hbtn" id="hbtn-passport" title="Passport" onclick="openPassportWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="3.2" y="2" width="9.6" height="12" rx="1.6"/><circle cx="8" cy="6.7" r="2.1"/><path d="M6.4 10.6h3.2"/></svg><span class="lb">PASS</span></button>
+    <button class="hbtn" id="hbtn-alliance" title="Alliance" onclick="openAllianceWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="8" r="3.3"/><circle cx="10" cy="8" r="3.3"/></svg><span class="lb">ALLY</span></button>
     <button class="hbtn" id="hbtn-events" title="Events log" onclick="openEventsWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h7"/></svg><span class="lb">LOG</span></button>
     <button class="hbtn" id="hbtn-help" title="Help" onclick="openHelpWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5.6 6a2.4 2.4 0 1 1 3.2 2.3c-.7.4-.8.9-.8 1.7"/><circle cx="8" cy="12.3" r=".55" fill="currentColor" stroke="none"/></svg><span class="lb">HELP</span></button>
-    <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v2.1M8 12.3v2.1M1.6 8h2.1M12.3 8h2.1M3.5 3.5l1.5 1.5M11 11l1.5 1.5M12.5 3.5L11 5M5 11l-1.5 1.5"/></svg><span class="lb">SET</span></button>
+    <button class="hbtn" id="hbtn-settings" title="Settings" onclick="openSettingsWindow()"><svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h10"/><circle cx="6" cy="4.5" r="1.7" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.7" fill="currentColor" stroke="none"/><circle cx="5.5" cy="11.5" r="1.7" fill="currentColor" stroke="none"/></svg><span class="lb">SET</span></button>
   </div>
-  <div class="hdr-conn" title="Server connection status"><span class="dot ok" id="dot">●</span><span id="cstat">CONNECTING…</span></div>
-  <button class="hdr-logout" id="btn-logout" title="Log out">⎋ LOGOUT</button>
   <button class="hdr-menu" id="hdr-menu" onclick="openSidebar()" aria-label="Open menu">☰</button>
 </header>
+
+<!-- MOBILE: always-on vitals HUD over the map (HP/shield · level+XP · nectar+gems). Hidden on desktop;
+     populated by updateHUD() alongside the desktop sidebar values (single source of truth: `me`). -->
+<div id="mhud">
+  <div class="mhud-row">
+    <div class="mhud-hp"><div class="mhud-bar hp"><div class="mhud-fill" id="m-hp-fill" style="width:100%"></div><div class="mhud-shield" id="m-shield-fill" style="width:0%"></div></div></div>
+    <div class="mhud-lv"><span class="mhud-lvn">L<span id="m-lvl">1</span></span><div class="mhud-bar xp"><div class="mhud-fill" id="m-xp-fill" style="width:0%"></div></div></div>
+    <div class="mhud-cur">
+      <span class="mhud-chip"><span class="hbal-ic nectar"></span><span id="m-nectar">0</span></span>
+      <span class="mhud-chip"><span class="hbal-ic gems"></span><span id="m-gems">0</span></span>
+    </div>
+  </div>
+</div>
 
 <aside class="sidebar">
   <button class="drawer-close" id="drawer-close" onclick="closeSidebar()" aria-label="Close menu">✕</button>
@@ -891,7 +1054,7 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     <div class="score-big" id="score-big">0</div>
     <div class="score-sub">
       <div title="Tiles your territory currently covers (abbreviated K / M / B).">TILES<b id="sc-tiles">0</b></div>
-      <div title="How long your current queen has survived — minutes:seconds (MM:SS).">TIME<b id="sc-time">0:00</b></div>
+      <div title="How long your current queen has survived — DD:HH past a day, else HH:MM.">TIME<b id="sc-time">0:00</b></div>
       <div>KILLS<b id="sc-kills">0</b></div>
     </div>
   </div>
@@ -927,7 +1090,6 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div id="drag-hint" class="wk-hint" style="display:none;">▲ Click &amp; drag to aim · click again to stop</div>
       <div class="prof-actions">
         <button class="btn" id="btn-claim" onclick="claimDaily()" disabled title="Claim your daily workers (resets 00:00 UTC)">--</button>
-        <button class="btn ghost" id="btn-lb" onclick="openLeaderboardWindow()" title="Open the full world rankings">RANKS</button>
       </div>
     </div>
   </div>
@@ -947,11 +1109,24 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
     </div>
   </div>
 
-  <button class="btn ghost" id="btn-recenter" style="margin-bottom:5px;">⊕ CENTER QUEEN</button>
-  <!-- Mobile-only: the header HELP/EVENTS buttons are hidden ≤768px, so surface them in the drawer. -->
+  <div class="panel">
+    <div class="ptitle">RANKINGS</div>
+    <div class="pbody"><div id="lb-body"></div></div>
+  </div>
+
+  <!-- HUD display ad — rectangle slot; owner must create the ad unit in AdSense and fill the slot id below -->
+  <div class="panel" id="hud-ad-panel">
+    <ins class="adsbygoogle" style="display:block"
+         data-ad-client="ca-pub-8322666756328568"
+         data-ad-slot="FILL_HUD_SLOT_ID"
+         data-ad-format="rectangle"
+         data-full-width-responsive="false"></ins>
+  </div>
+  <!-- Mobile-only: header ALLY/EVENTS/HELP buttons are hidden ≤768px, so surface them in the drawer overflow. -->
+  <button class="btn ghost mobile-only" onclick="openAllianceWindow()" style="margin-bottom:5px;">🛡 ALLIANCE</button>
   <button class="btn ghost mobile-only" onclick="openEventsWindow()" style="margin-bottom:5px;">📜 EVENTS LOG</button>
   <button class="btn ghost mobile-only" onclick="openHelpWindow()" style="margin-bottom:5px;">❓ HELP</button>
-  <button class="btn ghost mobile-only" onclick="document.getElementById('btn-logout').click()" style="margin-bottom:5px;">⎋ LOGOUT</button>
+  <button class="btn ghost mobile-only" onclick="doLogout()" style="margin-bottom:5px;">⎋ LOGOUT</button>
 </aside>
 
 <main class="canvas-area">
@@ -992,12 +1167,12 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
       <div class="ds-stat"><div class="ds-l">KILLS</div><div class="ds-v" id="ds-kills">0</div></div>
       <div class="ds-stat"><div class="ds-l">TIME ALIVE</div><div class="ds-v" id="ds-time">0:00</div></div>
       <div class="ds-stat"><div class="ds-l">LEVEL</div><div class="ds-v" id="ds-level">1</div></div>
-      <div class="ds-stat"><div class="ds-l">REGION</div><div class="ds-v" id="ds-region" style="font-size:8px">—</div></div>
+      <div class="ds-stat"><div class="ds-l">DEATHS</div><div class="ds-v" id="ds-deaths" style="color:var(--red)">0</div></div>
       <div class="ds-stat"><div class="ds-l">NECTAR</div><div class="ds-v" id="ds-credits" style="color:#ff8a00">0</div></div>
     </div>
     <div class="ds-prestige">
       <div class="ds-pr-badge" id="ds-prestige">P0</div>
-      <div class="ds-pr-text">PRESTIGE EARNED<br><span>Each fallen queen raises your prestige. Prestige, stats &amp; nectar persist — only your territory is lost.</span></div>
+      <div class="ds-pr-text">PRESTIGE = SEASONS<br><span>This death adds to your DEATHS count. Prestige counts the seasons you fielded a queen. Stats &amp; nectar persist — only territory is lost.</span></div>
     </div>
     <button class="btn ds-redeploy" id="ds-redeploy">▲ REDEPLOY QUEEN</button>
     <div class="ds-foot">A new queen deploys at full strength.</div>
@@ -1330,14 +1505,25 @@ canvas { display:block; width:100%; height:100%; cursor:grab;
 <!-- MOBILE: backdrop behind the side-panel drawer (tap to close). Hidden on desktop. -->
 <div id="drawer-scrim" onclick="closeSidebar()"></div>
 
-<!-- MOBILE: fixed bottom nav (thumb zone). Hidden on desktop; reuses existing handlers. -->
+<!-- MOBILE: persistent deploy bar (grid row "d"): worker/brute toggle · ready/cost · daily claim.
+     Hidden on desktop; the toggle/claim mirror the (now drawer-hidden) sidebar controls. -->
+<div id="mdeploy">
+  <div class="mdep-types" id="m-wk-types">
+    <button class="wk-type active" id="m-wk-normal" onclick="setWorkerType('normal')">▴ WORKER</button>
+    <button class="wk-type" id="m-wk-brute" style="display:none" onclick="setWorkerType('brute')">◼ BRUTE</button>
+  </div>
+  <div class="mdep-ready"><span class="mdep-l" id="m-dep-l">READY</span><span class="mdep-v" id="m-ready">0</span></div>
+  <button class="btn" id="m-btn-claim" onclick="claimDaily()" disabled title="Claim your daily workers (resets 00:00 UTC)">--</button>
+</div>
+
+<!-- MOBILE: fixed bottom nav (thumb zone). Hidden on desktop; reuses existing handlers.
+     DEPLOY (center) drives the hidden #btn-ant; the drawer (header ☰) holds overflow. -->
 <nav id="mobile-nav" aria-label="Primary">
   <button class="mnav-btn" id="mnav-shop" style="display:none" onclick="openShopWindow()"><span class="mic">🛒</span><span class="mlb">SHOP</span></button>
-  <button class="mnav-btn" onclick="openDiscoveryWindow()"><span class="mic">🧭</span><span class="mlb">DISC</span></button>
+  <button class="mnav-btn" onclick="openPassportWindow()"><span class="mic">🛂</span><span class="mlb">PASS</span></button>
   <button class="mnav-btn mnav-deploy" id="mnav-deploy" onclick="document.getElementById('btn-ant').click()"><span class="mic">▲</span><span class="mlb">DEPLOY</span></button>
-  <button class="mnav-btn" onclick="openAllianceWindow()"><span class="mic">🛡</span><span class="mlb">ALLY</span></button>
+  <button class="mnav-btn" onclick="openLeaderboardWindow()"><span class="mic">🏆</span><span class="mlb">RANKS</span></button>
   <button class="mnav-btn" onclick="openSettingsWindow()"><span class="mic">⚙</span><span class="mlb">SET</span></button>
-  <button class="mnav-btn" onclick="openSidebar()"><span class="mic">☰</span><span class="mlb">MENU</span></button>
 </nav>
 
 <div id="spawn-screen">
@@ -1480,9 +1666,12 @@ function applyCfgSlider(key, val) {
 }
 
 let ws=null, me=null, reconnecting=false, _queenPlaceCooldown=false, reconnectAttempts=0;
+let pendingNonce=null;   // nonce for the rewarded-ad daily-claim gate
+let claimInFlight=false; // true from daily-claim-token until the ad resolves — keeps updateHUD from re-enabling the claim button mid-ad
 let view={x:32768, y:32768, zoom:0.22};
 let zoomTarget=1;       // smooth zoom lerp target
 let panTarget=null;     // {x,y} smooth camera fly target, null when idle
+let queenArrowHit=null; // {x,y,r} CSS-px hot-zone of the off-screen "fly to queen" arrow (null = on-screen)
 let vw=null;
 let palette={0:'#ffffff'};
 // Per-owner tile-effect codes (e.g. {id:'glow'}) from the tile-frame palette — parallel to `palette`.
@@ -1585,7 +1774,7 @@ const TRAIL_WIN=10;
 function drawTrail(cp){
   if (effReduce()){ if(trailCells.size) trailCells.clear(); return; }
   if (!trailCells.size || !tileCache) return;
-  const W=cvs.width, H=cvs.height;   // (these are render-locals elsewhere; bind them here too)
+  const W=viewW, H=viewH;   // (CSS-px viewport — these are render-locals elsewhere; bind them here too)
   const curTick=vw?.tick||0;
   ctx.save(); ctx.imageSmoothingEnabled=false;
   for (const [key,rec] of trailCells){
@@ -1688,11 +1877,26 @@ function emitAura(wx,wy,rad,spec,isQueen,hx,hy){
     _spawn(wx+(Math.random()-0.5)*AR*0.4/cp, wy, (Math.random()-0.5)*0.04/cp, -(0.2+Math.random()*0.14)/cp,
            160+Math.random()*120, psz*0.85, 0, auraSprite(col,'dot'), 1, Math.random());
 }
+// Clash CONVERSION burst — a quick radial pop in the WINNER's colour where enemy workers were flipped.
+// Reuses the global particle pool (additive stars/dots) so it draws wherever auras do; `n` = workers
+// converted this tick, sizing the pop. Spawns directly into the pool (independent of cosmetics — the
+// draw gate runs whenever any particle is live), so a conversion is always visible.
+let _lastClashSnd=0;
+function emitConversionBurst(wx, wy, color, n){
+  const cp=CELL*view.zoom;
+  const cnt=Math.max(8, Math.min(30, 8 + (n|0)*2));            // particle count scales with conversions
+  const star=auraSprite(color,'star'), dot=auraSprite(color,'dot');
+  for(let j=0;j<cnt;j++){
+    const a=Math.random()*6.283, spd=0.05+Math.random()*0.13;  // SCREEN px/ms → world units via /cp
+    _spawn(wx, wy, Math.cos(a)*spd/cp, Math.sin(a)*spd/cp,
+           340+Math.random()*320, 6+Math.random()*4, 0, (j&1)?star:dot, 1, Math.random());
+  }
+}
 // Update the pool once, then draw in two blend passes (additive sparks, then source-over smoke).
 function stepAuraParticles(cp){
   let dt=performance.now()-_auraLastT; _auraLastT+=dt; if(dt>50)dt=50; if(dt<0)dt=0;
   if(!pcount) return;
-  const W=cvs.width, H=cvs.height, t=performance.now();
+  const W=viewW, H=viewH, t=performance.now();
   for(let i=0;i<pcount;i++){ Pl[i]-=dt;
     if(Pl[i]<=0){ const j=--pcount; Px[i]=Px[j];Py[i]=Py[j];Pvx[i]=Pvx[j];Pvy[i]=Pvy[j];Pl[i]=Pl[j];Pml[i]=Pml[j];Psz[i]=Psz[j];Pgrow[i]=Pgrow[j];Pseed[i]=Pseed[j];Pspr[i]=Pspr[j];Padd[i]=Padd[j]; i--; continue; }
     Px[i]+=Pvx[i]*dt; Py[i]+=Pvy[i]*dt; Psz[i]+=Pgrow[i]*dt; }
@@ -1944,19 +2148,10 @@ function bigTier(n){ return n>=1e9?4 : n>=1e8?3 : n>=1e7?2 : n>=1e5?1 : 0; }
 function setBig(el,n,glow){ if(!el)return; el.textContent=fmtBig(n);
   if(!glow)return; const t=bigTier(+n||0);
   if(el._bt!==t){ el.className=(el.className.replace(/\bbg[0-4]\b/g,'').trim()+' bg'+t).trim(); el._bt=t; } }
-// OSM tile cache
-const osmCache=new Map(), osmSubs=['a','b','c']; let _osmSubIdx=0;
-// Parallel-B: optional licensed base-map URL template (server-provided via `logged-in`). When set it
-// replaces the raw OSM source. Supports {s} (subdomain), {z}/{x}/{y}. Empty → raw OSM fallback.
-let BASEMAP_URL='';
-// ---- Optional MapLibre GL vector basemap (config-gated via me.vectorStyleUrl). When active it
-// replaces the raster basemap and restricts labels to country/city/town/neighbourhood (zero icons).
-// Default OFF: VECTOR_STYLE_URL stays '' → the raster path runs unchanged (rollback-safe). ----
-let VECTOR_STYLE_URL='', mlMap=null, mlReady=false, mlLoading=false, mlW=0, mlH=0, mlWaterLayers=[];
-function osmTileUrl(z,x,y){
-  if (BASEMAP_URL) return BASEMAP_URL.replace('{s}',osmSubs[(_osmSubIdx++)%3]).replace('{z}',z).replace('{x}',x).replace('{y}',y);
-  return `https://${osmSubs[(_osmSubIdx++)%3]}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
-}
+// ---- MapLibre GL vector basemap (the ONLY basemap; style URL from me.vectorStyleUrl, server-defaulted
+// to OpenFreeMap liberty). Restricts labels to country/city/town/neighbourhood (zero icons). The legacy
+// OSM raster tile layer was removed. ----
+let VECTOR_STYLE_URL='', mlMap=null, mlReady=false, mlLoading=false, mlW=0, mlH=0, mlRatio=0, mlWaterLayers=[];
 // Phase-6: R2 snapshot-tile base layer. SNAP_BASE = public R2 URL (server-provided); SNAP_EPOCH =
 // generation tag (cache-bust on wipe). Empty SNAP_BASE → the whole compositor stays dormant (legacy
 // WS-keyframe path only). Tiles are keyed by GAME chunk (cx,cy)=(x>>8,y>>8): snap/{epoch}/0/{cx}/{cy}.png
@@ -1966,10 +2161,6 @@ const snapCache=new Map();
 // `let`, not `const`: the server can serve 1024px (S=4) tiles. Fallback 256 = back-compat / un-set.
 const SNAP_RETRY_MS=60000;
 let SNAP_CHUNK=256;
-// 1×1 canvas for reading water color from OSM tiles
-const _waterSampleCanvas=document.createElement('canvas');
-_waterSampleCanvas.width=_waterSampleCanvas.height=1;
-const _waterSampleCtx=_waterSampleCanvas.getContext('2d',{willReadFrequently:true});
 // Water-spawn check cache: `${tx},${ty}` → boolean (true = water, no queen)
 const waterCache=new Map();
 let hoverIsWater=false, _waterCheckTile=null;
@@ -2012,8 +2203,8 @@ function toRGB(hex) {
 // `!browsable` background fill shares the tone so any uncovered pixel matches. Tunable in one place.
 // FOG_MIST_LO/HI bound the noise shading variance (deeper vs lighter mist patches).
 const FOG_SLATE=[150,190,230];  // base fog tone (kept name) — light blue
-const FOG_MIST_LO=[120,162,212];// darker mist patches (shading variance)
-const FOG_MIST_HI=[196,222,246];// lighter mist patches
+const FOG_MIST_LO=[150,186,224];// darker mist patches (shading variance) — raised floor → gentler
+const FOG_MIST_HI=[202,225,247];// near-white highlight
 const VOID_GREY=FOG_SLATE;      // background fill behind everything (kept name; used by render())
 const VOID_GREY_CSS=`rgb(${VOID_GREY[0]},${VOID_GREY[1]},${VOID_GREY[2]})`;
 const FOG_BASE_CSS=VOID_GREY_CSS;
@@ -2114,6 +2305,7 @@ function rasterizeCache(lx, ly, lw, lh){
   if (lw<=0 || lh<=0) return;
   const myId=me?.id||0;
   const browsable = worldBrowsable();
+  const placing = mode==='place-queen';   // render the anonymized red placement mask, don't hide it
   const showMap = mapVisible;
   const td=territoryImg.data;
   const fd=fogRevealImg ? fogRevealImg.data : null;
@@ -2127,11 +2319,12 @@ function rasterizeCache(lx, ly, lw, lh){
         fd[o+3]= f>=100 ? 0 : (f<=0 ? 255 : (((100-f)/100)*255)|0);
       }
       const t=tileCache[ci];
-      if (browsable || t===0 || f>=100){ td[o+3]=0; continue; }
+      if ((browsable && !placing) || t===0 || f>=100){ td[o+3]=0; continue; }
       const rgb=toRGB(palette[t]||'#9b3027');   // each player's own colour (no shared alliance colour)
       td[o]=rgb[0]; td[o+1]=rgb[1]; td[o+2]=rgb[2];
-      // Own land is solid; others are dimmed when the basemap shows beneath, so the map reads through.
-      td[o+3]= (t===myId) ? 255 : (showMap ? 150 : 255);
+      // Own land is solid; rivals are only lightly dimmed when the basemap shows beneath, so enemy
+      // colours stay clearly legible while the map still hints through.
+      td[o+3]= (t===myId) ? 255 : (showMap ? 205 : 255);
     }
   }
   territoryCtx.putImageData(territoryImg, 0,0, lx, ly, lw, lh);
@@ -2151,7 +2344,7 @@ function spawnFloatingText(text, wx, wy, color='#ffb800') {
    =================================================================== */
 function spatialFromWorld(wx, wy) {
   const cp = CELL * view.zoom;
-  const W = cvs.width, H = cvs.height;
+  const W = viewW, H = viewH;
   const dx = (wx - view.x) * cp;
   const dy = (wy - view.y) * cp;
   const maxR = Math.sqrt((W / 2) ** 2 + (H / 2) ** 2);
@@ -2365,7 +2558,8 @@ function connect() {
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(proto+'://'+location.host+'/play');
   ws.onopen=()=>{
-    $('dot').className='dot ok'; $('cstat').textContent='CONNECTED';
+    if (reconnecting) toast('● CONNECTION RESTORED');   // only after a prior drop — normal connects stay silent
+    reconnecting=false;
     reconnectAttempts=0; // P7: successful connect resets the backoff
     // beta-v2 cookie auth: the HttpOnly __Host- session cookie set on the landing page rides the WS
     // upgrade automatically, so we just send `enter` (no token/password in JS — XSS-safe). A missing
@@ -2377,13 +2571,14 @@ function connect() {
   // the last grid through a brief drop so we render from it instead of flashing white; discard it
   // only after several failed attempts (a longer outage).
   ws.onclose=()=>{
-    $('dot').className='dot bad'; $('cstat').textContent='DISCONNECTED · RETRY'; reconnecting=true;
+    if (!reconnecting) toast('● CONNECTION LOST — RECONNECTING…');   // one-shot, not on every backoff retry
+    reconnecting=true;
     reconnectAttempts++;
     if (reconnectAttempts>=4) clientGrid=null;
     const delay=Math.min(30000, 1000*Math.pow(1.5, reconnectAttempts)) + Math.random()*1000;
     setTimeout(connect, delay);
   };
-  ws.onerror=()=>{ $('cstat').textContent='ERROR'; };
+  ws.onerror=()=>{};   // close handler drives the reconnect + toast; nothing to surface here
   ws.binaryType='arraybuffer';
   // Text frames → handle(). Binary frames route on byte 0: <16 = viewport (tile/ant) → handleViewBin();
   // >=16 = compressed CONTROL (me/leaderboard/stats/region-holders) → inflate → handle().
@@ -2604,7 +2799,15 @@ function handle(msg) {
         setTimeout(()=>{ card.style.display='none'; card.style.transform=''; }, 2500);
       }
       break;
-    case 'event': toast(msg.msg); admPushLog(msg.msg); pushEventLog(msg.msg); break;
+    case 'event':
+      if (msg.head!=null){   // structured, server-persisted gameplay event (bold head + dashed sub)
+        toast(msg.head); admPushLog(msg.head+(msg.sub?(' — '+msg.sub):''));
+        addEvent({ ts:msg.ts||Date.now(), head:String(msg.head), sub:msg.sub||'' });
+      } else {               // legacy system/admin one-liner (ephemeral — not persisted server-side)
+        toast(msg.msg); admPushLog(msg.msg); pushEventLog(msg.msg);
+      }
+      break;
+    case 'event-page': applyEventPage(msg); break;
     case 'logged-in':
       me=msg.me;
       if (me.catalog) setCatalog(me.catalog);   // cosmetics catalogue rides the full login payload
@@ -2615,9 +2818,8 @@ function handle(msg) {
       if (me.cfg) Object.entries(me.cfg).forEach(([k,v]) => applyCfgSlider(k,v));
       WORLD={w:me.worldW,h:me.worldH,geo:me.geo,spawnX:me.spawnX,spawnY:me.spawnY,spawnPan:me.spawnPan};
       // ∥B base-map + Phase-6 R2 snapshot config (static block; empty → features stay dormant).
-      if (me.basemapUrl!=null) BASEMAP_URL=me.basemapUrl;
-      // Optional MapLibre vector basemap (4-tier labels). Lazy-loads the lib on first use; raster
-      // stays the default when unset, so this is fully off-by-default + rollback-safe.
+      // MapLibre vector basemap (4-tier labels). Lazy-loads the lib on first use; the style URL is
+      // server-defaulted to OpenFreeMap liberty, so the basemap is always the vector map.
       if (me.vectorStyleUrl && !VECTOR_STYLE_URL) { VECTOR_STYLE_URL=me.vectorStyleUrl; initVectorBasemap(); }
       if (me.snapshotBase!=null) { SNAP_BASE=me.snapshotBase; SNAP_ON=true; }
       if (me.snapTileCells!=null) SNAP_CHUNK=me.snapTileCells; // lever B: super-tile span (S*256)
@@ -2657,7 +2859,7 @@ function handle(msg) {
         view.zoom=zoomTarget=1.0;
         setTimeout(()=>{
           mode='place-queen'; cvs.classList.add('placing');
-          hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+          hideSpawnScreen(); showSpawnScreen();
           doGeolocate();
         },300);
       }
@@ -2673,8 +2875,9 @@ function handle(msg) {
       // Phase-6: epoch flips on a world wipe → cache-bust the snapshot tiles (double-buffer).
       if (msg.epoch!=null && msg.epoch!==SNAP_EPOCH) { SNAP_EPOCH=msg.epoch; snapCache.clear(); }
       updateHUD();
+      updateHelpBadge();   // a level-up may have unlocked a tutorial page → badge the HELP button
       renderAntList();
-      if (winIsOpen('disc')) renderDiscoveryWindow();
+      if (winIsOpen('passport')) renderPassportWindow();
       if (winIsOpen('shop')) renderShopWindow();
       if ($('adm-tps')&&me.tickRate) $('adm-tps').textContent=me.tickRate;
       if ($('adm-tick')&&me.tick!=null) $('adm-tick').textContent=me.tick;
@@ -2683,24 +2886,73 @@ function handle(msg) {
     case 'cosmetics':   // ~1 Hz roster of every player's equipped aura/trail/queen-emblem (render-only)
       applyCosmRoster(msg.map);
       break;
-    case 'forbidden-zones':
+    case 'forbidden-zones':   // ant/brute deploy no-go bubbles (queen placement uses the red mask)
       forbiddenZones = msg.zones || [];
       forbiddenPlaceR = msg.placeR || 0;
-      if (mode==='place-queen') updateSpawnStatus();
       break;
+    case 'place-info':
+      placeRangeR = msg.r || 30;   // queen-placement clearance radius (red range ring)
+      break;
+    case 'daily-claim-token': {
+      // Server says we are eligible this window. Hold the nonce, then open the rewarded-ad gate.
+      // If the ad framework is absent/blocked the catch path shows a toast and never sends claim-daily.
+      pendingNonce = msg.nonce;
+      claimInFlight = true;   // updateHUD keeps the button disabled until this resolves (no mid-ad re-click)
+      // Watchdog: if the ad SDK never engages (blocked, ad-blocker, H5 ads not enabled, or a dev server)
+      // NONE of the callbacks below fire — so without this the user gets no feedback at all. `beforeReward`
+      // cancels it the instant a real ad engages, so a long-playing ad is never cut short.
+      let adWatchdog = null;
+      const _claimReset = () => {
+        if (adWatchdog) { clearTimeout(adWatchdog); adWatchdog = null; }
+        claimInFlight = false; pendingNonce = null;
+        const b=document.getElementById('btn-claim');   if(b)  b.disabled=false;
+        const mb=document.getElementById('m-btn-claim'); if(mb) mb.disabled=false;
+      };
+      try {
+        adWatchdog = setTimeout(() => { adWatchdog = null; toast('Ad unavailable — no ants granted'); _claimReset(); }, 10000);
+        adBreak({
+          type: 'reward',
+          name: 'daily-ants',
+          beforeReward: (showAdFn) => {
+            if (adWatchdog) { clearTimeout(adWatchdog); adWatchdog = null; }   // ad engaged — let it play out
+            try { showAdFn(); } catch(e) { toast('Ad unavailable — no ants granted'); _claimReset(); }
+          },
+          adViewed: () => {
+            if (adWatchdog) { clearTimeout(adWatchdog); adWatchdog = null; }
+            // Reward granted: send the claim with the server-signed nonce. Stay in-flight (button
+            // disabled) until the daily-claimed confirmation arrives.
+            if (pendingNonce) { send({t:'claim-daily', nonce: pendingNonce}); }
+            pendingNonce = null;
+          },
+          adDismissed: () => { toast('Ad skipped — no ants granted'); _claimReset(); },
+          adBreakDone: (info) => {
+            // If the break resolved without a view (no fill, filtered, etc.) re-enable.
+            if (info && info.breakStatus !== 'viewed') { _claimReset(); }
+          }
+        });
+      } catch(e) {
+        toast('Ad unavailable — no ants granted');
+        _claimReset();
+      }
+      break;
+    }
     case 'daily-claimed':
       // Server confirmed the window's portion. Apply the authoritative count immediately
       // (the next `me` tick would do it anyway) and flip the cell back to the countdown.
+      claimInFlight = false; pendingNonce = null;
       if (me){ me.antsAvail = msg.antsAvail; me.claimReady = false; updateHUD(); }
       toast(`+${msg.amount} DAILY WORKERS`);
       AudioEngine.plop();
+      // Re-enable claim buttons (they were disabled when claimDaily() fired).
+      { const b=document.getElementById('btn-claim'); if(b) b.disabled=false; }
+      { const mb=document.getElementById('m-btn-claim'); if(mb) mb.disabled=false; }
       break;
     case 'cfg': applyCfgSlider(msg.key, msg.value); break;
     case 'server-stats': applyServerStats(msg); break;
     case 'kill': pushKill(msg); break;
     case 'regions': regionMetros=msg.metros||[]; buildRegionSwitcher(); break;
-    case 'monuments': monuments=msg.list||[]; if(typeof renderMonumentAdminList==='function') renderMonumentAdminList(); break;
-    case 'region-holders': regionHolders=msg.holders||[]; buildRegionSwitcher(); if(winIsOpen('lb')) renderLbWindow(); break;
+    case 'monuments': monuments=msg.list||[]; if(monuments.length){ _seenLandmarks=true; updateHelpBadge(); } if(typeof renderMonumentAdminList==='function') renderMonumentAdminList(); if(winIsOpen('passport')) renderPassportWindow(); break;
+    case 'region-holders': regionHolders=msg.holders||[]; if(regionHolders.some(h=>h.holder)){ _seenLandmarks=true; updateHelpBadge(); } buildRegionSwitcher(); if(winIsOpen('lb')) renderLbWindow(); if(winIsOpen('passport')) renderPassportWindow(); break;
     case 'welcome-back': showWelcomeBack(msg); break;
     case 'queen-placed':
       _queenPlaceCooldown = false;
@@ -2708,7 +2960,7 @@ function handle(msg) {
       knownNames={};   // fresh life: discard any enemy identities carried over
       $('death-screen').classList.remove('vis');
       mode='idle'; cvs.classList.remove('placing');
-      stopForbiddenPoll(); hideSpawnScreen();
+      hideSpawnScreen();
       panLocked=false; view.x=msg.x+1; view.y=msg.y+1;
       view.zoom=zoomTarget=1.0;
       clampView();   // pull to the level zoom-out cap so the loadable region fills the screen (not a
@@ -2718,7 +2970,7 @@ function handle(msg) {
     case 'queen-dead':
       AudioEngine.queenShriek(0, 1);
       relocating=false;   // queen gone → any in-flight relocate is moot; next placement is a respawn
-      stopForbiddenPoll(); hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
+      hideSpawnScreen(); mode='idle'; cvs.classList.remove('placing');
       clearInspect();
       knownNames={};   // a new life starts blind — re-identify enemies by seeing their queens again
       showDeathScreen(msg);
@@ -2742,7 +2994,7 @@ function handle(msg) {
       // Re-enter placement for everyone. (The destructive WIPE now force-logs-out instead; the
       // milder season wipe still lands here, and admins must be able to re-place too.)
       mode='place-queen'; cvs.classList.add('placing');
-      hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+      hideSpawnScreen(); showSpawnScreen();
       doGeolocate();
       vw=null;
       if (tileCache){tileCache.fill(0);fogCache.fill(100);}
@@ -2759,7 +3011,7 @@ function handle(msg) {
       if (msg.item==='relocate' && relocating) {
         relocating=false;
         mode='idle'; cvs.classList.remove('placing');
-        stopForbiddenPoll(); hideSpawnScreen();
+        hideSpawnScreen();
         panLocked=false;
         if (msg.x!=null) { view.x=msg.x+1; view.y=msg.y+1; }
         view.zoom=zoomTarget=1.0;
@@ -2779,7 +3031,13 @@ function handle(msg) {
       AudioEngine.plop(); break;
     case 'clash': {
       const s=spatialFromWorld(msg.x, msg.y);
-      AudioEngine.clash(s.pan, s.vol); break;
+      // Audio: rate-cap so a sustained battle (many conversion pings/s) doesn't machine-gun the SFX.
+      const tnow=performance.now();
+      if (tnow-_lastClashSnd > 150) { _lastClashSnd=tnow; AudioEngine.clash(s.pan, s.vol); }
+      // Visual: a colour-coded pop where enemy workers were converted — winner's colour, sized by n.
+      const col=(typeof msg.by==='number') ? (((vw&&vw.palette&&vw.palette[msg.by])||palette[msg.by])||'#fff') : '#fff';
+      emitConversionBurst(msg.x+0.5, msg.y+0.5, col, msg.n||1);
+      break;
     }
     case 'queen-killed': {
       const s=spatialFromWorld(msg.x, msg.y);
@@ -2813,7 +3071,7 @@ function handle(msg) {
     case 'leaderboard': lbAll=msg.entries||[]; renderLeaderboard(); if(winIsOpen('lb')) renderLbWindow(); break;
     case 'alliance-state':
       myAlliance=msg.alliance||null;
-      if(myAlliance) incomingInvites=incomingInvites.filter(iv=>iv.allianceId!==myAlliance.id);
+      if(myAlliance){ incomingInvites=incomingInvites.filter(iv=>iv.allianceId!==myAlliance.id); _seenAlliance=true; updateHelpBadge(); }
       if(winIsOpen('alliance')) renderAllianceWindow();
       break;
     case 'factions':
@@ -2823,6 +3081,7 @@ function handle(msg) {
     case 'alliance-invite':
       if(!(myAlliance&&myAlliance.id===msg.allianceId) && !incomingInvites.some(x=>x.allianceId===msg.allianceId))
         incomingInvites.push({allianceId:msg.allianceId, name:msg.name});
+      _seenAlliance=true; updateHelpBadge();
       if(winIsOpen('alliance')) renderAllianceWindow();
       break;
     case 'mayday': handleMayday(msg); break;
@@ -2844,7 +3103,7 @@ function openWindow(title, kind){
 }
 function closeWindow(){ $('win-bg').style.display='none'; _winKind=null; syncHdrBtns(); }
 function syncHdrBtns(){
-  const map={shop:'hbtn-shop', disc:'hbtn-disc', alliance:'hbtn-alliance', events:'hbtn-events', help:'hbtn-help', settings:'hbtn-settings'};
+  const map={shop:'hbtn-shop', passport:'hbtn-passport', alliance:'hbtn-alliance', events:'hbtn-events', help:'hbtn-help', settings:'hbtn-settings'};
   for (const k in map){ const b=$(map[k]); if(b) b.classList.toggle('on', _winKind===k); }
 }
 function winIsOpen(kind){ const bg=$('win-bg'); return !!bg && bg.style.display!=='none' && (!kind || _winKind===kind); }
@@ -2936,7 +3195,7 @@ function buildRegionSwitcher(){
     let pop=$('region-pop');
     if(pop){ pop.remove(); return; }
     pop=document.createElement('div'); pop.id='region-pop';
-    pop.style.cssText="position:absolute;top:46px;left:120px;z-index:200;background:var(--bg2);border:2px solid var(--ink);box-shadow:4px 4px 0 0 var(--ink);max-height:60vh;overflow:auto;";
+    pop.style.cssText="position:absolute;top:46px;left:120px;z-index:200;background:var(--bg2);border:1.5px solid var(--ink);border-radius:var(--r-md);box-shadow:var(--shadow-pop);max-height:60vh;overflow:auto;";
     let h='';
     for (const m of regionMetros){
       const hh=regionHolders.find(x=>x.name===m.name);
@@ -2951,50 +3210,97 @@ function buildRegionSwitcher(){
   };
 }
 
-// ---- Discovery window (passport + USER-vs-QUEEN) ----
-function openDiscoveryWindow(){ AudioEngine.click(); openWindow('DISCOVERY — PASSPORT','disc'); renderDiscoveryWindow(); }
-function renderDiscoveryWindow(){
+// ---- Passport window (regions explored + landmarks held + rivalries + USER-vs-QUEEN) ----
+function openPassportWindow(){ AudioEngine.click(); openWindow('PASSPORT','passport'); renderPassportWindow(); }
+function renderPassportWindow(){
   const el=$('win-body'); if(!el||!me) return;
-  const countries=me.visitedCountries||[], continents=me.visitedContinents||[];
-  const q=me.queen, st=me.stats||{};
-  const chips=arr=>arr.length?arr.map(c=>`<span class="disc-chip">${c}</span>`).join(''):'<span class="disc-empty">— none yet — deploy ants to explore —</span>';
-  const contChips=continents.length?continents.map(c=>`<span class="disc-chip cont">${c}</span>`).join(''):'<span class="disc-empty">— none yet —</span>';
-  let html='<div class="disc-sec">▸ PASSPORT</div>';
-  html+=`<div class="disc-counts">
-    <div class="disc-count"><b>${continents.length}</b><span>CONTINENTS / 7</span></div>
-    <div class="disc-count"><b>${countries.length}</b><span>COUNTRIES</span></div>
+  // passportCountries is now [{name, iso, continent}, …]; passportContinents is a legacy fallback array.
+  const countryObjs=(me.passportCountries||[]).filter(o=>o&&typeof o==='object'&&o.name);
+  // Sort countries by name for consistent display within each group.
+  const sorted=[...countryObjs].sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  // Group by continent; derive unique continent list from the objects (prefer this over passportContinents).
+  const contMap={};
+  for (const c of sorted){
+    const cont=c.continent||'Unknown';
+    (contMap[cont]||(contMap[cont]=[])).push(c);
+  }
+  const continentNames=Object.keys(contMap).sort();
+  // Unique continents + unique country count for the summary header.
+  const numContinents=continentNames.filter(k=>k!=='Unknown').length;
+  const numCountries=sorted.length;
+  const q=me.queen, st=me.stats||{}, c=(me.cfg)||{};
+
+  // Build continent-grouped flag grid.
+  let flagsHtml='';
+  if (sorted.length===0){
+    flagsHtml='<span class="win-empty">— none yet — deploy ants to explore —</span>';
+  } else {
+    for (const cont of continentNames){
+      flagsHtml+=`<div class="pass-cont-hdr">▸ ${esc(cont)}</div><div class="pass-flags">`;
+      for (const ctry of contMap[cont]){
+        const iso=(ctry.iso||'').toLowerCase().replace(/[^a-z]/g,'');
+        if (iso){
+          flagsHtml+=`<span class="flag flag-${esc(iso)}" title="${esc(ctry.name)}"></span>`;
+        } else {
+          // Unknown ISO — fallback text chip so no country is silently dropped.
+          flagsHtml+=`<span class="pass-flag-chip" title="${esc(ctry.name)}">${esc(ctry.name)}</span>`;
+        }
+      }
+      flagsHtml+='</div>';
+    }
+  }
+
+  let html='<div class="pass-sec">▸ PASSPORT</div>';
+  html+=`<div class="pass-counts">
+    <div class="pass-count"><b>${numContinents}</b><span>CONTINENTS / 7</span></div>
+    <div class="pass-count"><b>${numCountries}</b><span>COUNTRIES</span></div>
   </div>`;
-  html+=`<div class="disc-chips" style="margin-bottom:12px">${contChips}</div>`;
-  html+=`<div class="disc-chips">${chips(countries)}</div>`;
-  const riv=me.topRivalries||{};
+  html+=flagsHtml;
+
+  // ---- LANDMARKS — the cities (metros) + monuments you currently hold, and the daily nectar each pays.
+  // Reward rates come straight off the live config (me.cfg); king-of-the-hill holder data rides the
+  // region-holders / monuments broadcasts. Light scope: current holdings + rate (no held-since history).
+  const metroRate=(+c.NECTAR_PER_100K_DAY)||0, monRate=(+c.MONUMENT_NECTAR_PER_DAY)||0;
+  const myMons   =(typeof monuments!=='undefined'?monuments:[]).filter(m=>m.holderId===me.id);
+  const myMetros =(regionHolders||[]).filter(h=>h.holderId===me.id);
+  const landRow=(name, tiles, rewardPerDay)=>`<div class="pass-stat mine">
+    <span>${esc(name)}</span><b>${fmtBig(tiles||0)} TILES · ${fmtBig(rewardPerDay)} / DAY</b></div>`;
+  let landHtml='';
+  for (const m of myMons)   landHtml+=landRow('⬩ '+m.name, m.tiles, Math.round(monRate));
+  for (const h of myMetros) landHtml+=landRow('◈ '+h.name, h.tiles, Math.round((h.tiles/100000)*metroRate));
+  html+='<div class="pass-sec">▸ LANDMARKS</div>';
+  html+= landHtml || '<div class="win-empty">— you hold no landmarks yet — own the most tiles around a city or monument to claim it and earn daily nectar —</div>';
+
+  const riv=me.passportRivalries||{};
   const rivRows=arr=>(arr&&arr.length)
-    ? arr.map(r=>`<div class="disc-stat"><span>${esc(String(r.name).toUpperCase())}</span><b>${r.count}</b></div>`).join('')
-    : '<div class="disc-empty">— no rivals yet —</div>';
-  html+='<div class="disc-sec">▸ TOP RIVALRIES</div>';
-  html+=`<div class="disc-cmp">
-    <div class="disc-col"><h4>☠ SLAIN YOU · ${riv.totalDeaths||0}</h4>${rivRows(riv.killedBy)}</div>
-    <div class="disc-col"><h4>⚔ YOU SLEW · ${riv.totalKills||0}</h4>${rivRows(riv.youKilled)}</div>
+    ? arr.map(r=>`<div class="pass-stat"><span>${esc(String(r.name).toUpperCase())}</span><b>${r.count}</b></div>`).join('')
+    : '<div class="win-empty">— no rivals yet —</div>';
+  html+='<div class="pass-sec">▸ TOP RIVALRIES</div>';
+  html+=`<div class="pass-cmp">
+    <div class="pass-col"><h4>☠ SLAIN YOU · ${riv.totalDeaths||0}</h4>${rivRows(riv.killedBy)}</div>
+    <div class="pass-col"><h4>⚔ YOU SLEW · ${riv.totalKills||0}</h4>${rivRows(riv.youKilled)}</div>
   </div>`;
-  html+='<div class="disc-sec">▸ USER vs QUEEN</div>';
-  html+=`<div class="disc-cmp">
-    <div class="disc-col user"><h4>◆ USER (ACCOUNT)</h4>
-      <div class="disc-stat"><span>QUEENS FIELDED</span><b>${me.queensFielded||0}</b></div>
-      <div class="disc-stat"><span>LIFETIME KILLS</span><b>${me.lifetimeKills||0}</b></div>
-      <div class="disc-stat"><span>PEAK TILES EVER</span><b>${fmtBig(me.lifetimePeakTiles||0)}</b></div>
-      <div class="disc-stat"><span>PRESTIGE</span><b>P${me.prestige||0}</b></div>
+  html+='<div class="pass-sec">▸ USER vs QUEEN</div>';
+  html+=`<div class="pass-cmp">
+    <div class="pass-col user"><h4>◆ USER (ACCOUNT)</h4>
+      <div class="pass-stat"><span>QUEENS FIELDED</span><b>${me.queensFielded||0}</b></div>
+      <div class="pass-stat"><span>LIFETIME KILLS</span><b>${me.lifetimeKills||0}</b></div>
+      <div class="pass-stat"><span>PEAK TILES EVER</span><b>${fmtBig(me.lifetimePeakTiles||0)}</b></div>
+      <div class="pass-stat"><span>PRESTIGE</span><b>P${me.prestige||0}</b></div>
+      <div class="pass-stat"><span>DEATHS</span><b style="color:var(--red)">${me.deaths||0}</b></div>
     </div>
-    <div class="disc-col queen"><h4>♛ THIS QUEEN</h4>
-      <div class="disc-stat"><span>REGION</span><b>${me.region||'—'}</b></div>
-      <div class="disc-stat"><span>TILES</span><b>${fmtBig(st.tiles||0)}</b></div>
-      <div class="disc-stat"><span>KILLS</span><b>${st.kills||0}</b></div>
-      <div class="disc-stat"><span>LEVEL</span><b>${q?q.level:'—'}</b></div>
-      <div class="disc-stat"><span>TIME ALIVE</span><b>${fmtDur(st.secs||0)}</b></div>
+    <div class="pass-col queen"><h4>♛ THIS QUEEN</h4>
+      <div class="pass-stat"><span>REGION</span><b>${me.region||'—'}</b></div>
+      <div class="pass-stat"><span>TILES</span><b>${fmtBig(st.tiles||0)}</b></div>
+      <div class="pass-stat"><span>KILLS</span><b>${st.kills||0}</b></div>
+      <div class="pass-stat"><span>LEVEL</span><b>${q?q.level:'—'}</b></div>
+      <div class="pass-stat"><span>TIME ALIVE</span><b>${fmtDur(st.secs||0)}</b></div>
     </div>
   </div>`;
   el.innerHTML=html;
 }
 
-// ---- Shop window (product cards, reuses the app window like Discovery) ----
+// ---- Shop window (product cards, reuses the app window like Passport) ----
 // ===== Progressive unlock gates — SINGLE SOURCE OF TRUTH (KEEP IN LOCKSTEP with GATE_* in src/config.rs) =====
 // Gating reads the player's PEAK level (highest ever reached; server-authoritative via me.peakLevel),
 // so unlocks persist across queen death / prestige. Locked features are FULLY omitted from the UI.
@@ -3095,7 +3401,7 @@ const TILEFX_SWATCH={
 };
 const BUNDLE_SWATCH='linear-gradient(135deg,#8338ec,#3a86ff,#06d6a0)';
 function cosmSwatch(it){
-  const sz='width:32px;height:32px;border-radius:6px;border:2px solid var(--ink);margin:0 auto 2px';
+  const sz='width:32px;height:32px;border-radius:6px;border:1.5px solid var(--ink);margin:0 auto 2px';
   let bg;
   if(it.category==='recolor'){ bg=it.params||'#888'; }
   else if(it.category==='aura'){
@@ -3125,7 +3431,7 @@ const GEM_PACKS=[
 
 function renderShopWindow(){
   const el=$('win-body'); if(!el) return;
-  if(!me){ el.innerHTML='<div class="disc-empty">CONNECTING…</div>'; return; }
+  if(!me){ el.innerHTML='<div class="win-empty">CONNECTING…</div>'; return; }
   const nectar=me.nectar||0, gems=me.gems||0, q=me.queen, haveQ=!!(q&&!q.dead);
   let html=`<div class="shop-top">
       <div class="shop-bal"><span class="bal-ic nectar"></span>NECTAR<b>${nectar.toLocaleString()}</b></div>
@@ -3161,7 +3467,7 @@ function renderShopWindow(){
         <button class="shop-buy" ${dis?'disabled':''} onclick="shopWindowBuy('${it.id}')">BUY</button></div>`;
     }
     _highlightDefender=false;   // one-shot nudge — clear after rendering
-    if (!any) html+=`<div class="disc-empty">LEVEL UP TO UNLOCK POWERUPS</div>`;
+    if (!any) html+=`<div class="win-empty">LEVEL UP TO UNLOCK POWERUPS</div>`;
     html+=`</div>`;
     const dCount=me.defenders||0;
     if (dCount>0) html+=`<div class="shop-foot blu">DEFENDERS QUEUED: ${dCount}</div>`;
@@ -3171,7 +3477,7 @@ function renderShopWindow(){
     const items=CATALOG.items||[], bundles=CATALOG.bundles||[];
     const RAR={common:'#9aa6b2',rare:'#3A86FF',epic:'#8338EC',legendary:'#FFB703'};
     const sec=(label)=>`<div style="grid-column:1/-1;font-family:'Press Start 2P',monospace;font-size:10px;color:var(--red);margin:12px 2px 2px;letter-spacing:.04em">${label}</div>`;
-    if(!items.length){ html+=`<div class="disc-empty">LOADING COSMETICS…</div>`; }
+    if(!items.length){ html+=`<div class="win-empty">LOADING COSMETICS…</div>`; }
     else {
       // Filter bar — ownership (All / Owned / Not owned) · category · rarity. Plain chips, no emoji.
       const fchip=(label,active,onclick)=>`<button onclick="${onclick}" style="font:8px 'Press Start 2P',monospace;padding:4px 7px;border:2px solid ${active?'var(--red)':'#3a3a3a'};background:${active?'var(--red)':'transparent'};color:${active?'#fff':'#9aa6b2'};cursor:pointer">${label}</button>`;
@@ -3192,7 +3498,7 @@ function renderShopWindow(){
           for (const b of bl){ const haveAll=(b.members||[]).every(m=>owned.includes(m));
             const btn = haveAll ? `<button class="shop-buy" style="background:var(--grn);color:var(--ink)" disabled>OWNED</button>`
                                 : `<button class="shop-buy" ${gems>=b.price?'':'disabled'} onclick="bundleBuy('${b.id}')">BUY</button>`;
-            html+=`<div class="shop-card shop-hot"><div class="shop-ic" style="width:32px;height:32px;border-radius:6px;border:2px solid var(--ink);margin:0 auto 2px;background:${BUNDLE_SWATCH}"></div>
+            html+=`<div class="shop-card shop-hot"><div class="shop-ic" style="width:32px;height:32px;border-radius:6px;border:1.5px solid var(--ink);margin:0 auto 2px;background:${BUNDLE_SWATCH}"></div>
               <div class="shop-nm">${b.name}</div><div class="shop-ds">${b.desc}</div>
               <div class="shop-pr gem"><s style="opacity:.55">${b.sticker.toLocaleString()}</s> ${b.price.toLocaleString()} GEMS</div>
               <div class="shop-ds" style="opacity:.7;margin-top:-4px">${(b.members||[]).length} items · ${haveAll?'complete':'save '+Math.round(100-100*b.price/b.sticker)+'%'}</div>${btn}</div>`; }
@@ -3220,7 +3526,7 @@ function renderShopWindow(){
             ${act}</div>`;
         }
       }
-      if (!shown) html+=`<div class="disc-empty" style="grid-column:1/-1">NO ITEMS MATCH THESE FILTERS</div>`;
+      if (!shown) html+=`<div class="win-empty" style="grid-column:1/-1">NO ITEMS MATCH THESE FILTERS</div>`;
     }
     html+=`</div><div class="shop-foot">COSMETICS ARE VISIBLE TO EVERYONE · EQUIP ANYTIME · GEMS SURVIVE SEASON WIPES</div>`;
   }
@@ -3267,63 +3573,133 @@ function checkGemReturn(){
   try{ const u=new URL(location.href); u.searchParams.delete('gems'); history.replaceState(null,'',u); }catch(e){}
 }
 
-// ---- Help window (E2): a field manual whose numbers come from the live me.cfg + GATES/SHOP_ITEMS ----
-function openHelpWindow(){ AudioEngine.click(); openWindow('HELP — FIELD MANUAL','help'); renderHelpWindow(); }
+// ---- Help → TUTORIAL (a game-style field manual): concept "pages" that unlock as you progress.
+// Each page is plain-language with the live numbers (from me.cfg) woven in + a placeholder slot for a
+// short animation the owner drops in later (keyed by page id via .tut-anim[data-anim]). Pages unlock
+// 'always' (the basics), by a peak-level GATE (shop/shield/brute/relocate), or on ENCOUNTER
+// (_seenLandmarks / _seenAlliance). "NEW" badges live in localStorage until a page is opened. ----
+let _seenLandmarks=false, _seenAlliance=false, _tutSel=null;
+const _tnum  =x=> (typeof x==='number'? x.toLocaleString() : x);
+const _tv    =(x,d)=> (x==null?d:x);
+const _tprice=id=>{ const it=SHOP_ITEMS.find(x=>x.id===id); return it?it.pr:'—'; };
+const _tlife =c=> Math.round(_tv(c.LIFESPAN,1296000)/_tv(c.TICK_RATE,15)/3600);
+const TUTORIAL_PAGES=[
+  { id:'queen', group:'FIRST STEPS', title:'Placing your queen', unlock:'always', body:c=>
+    `Your <b>queen</b> is your heart on the world map — drop her on land (never open water) and your whole empire grows from her. She starts at <b>${_tnum(_tv(c.HP_BASE,50))} HP</b> and a <b>${_tnum(_tv(c.BUBBLE_R,30))}-tile bubble</b> keeps rival queens from spawning on top of you. Choose her ground well: if she falls, the run ends.` },
+  { id:'workers', group:'FIRST STEPS', title:'Deploying worker ants', unlock:'always', body:c=>
+    `<b>Workers</b> are Langton's ants — they march, flip the tile under them and turn, painting your colour as they go. Claim <b>${_tnum(_tv(c.DAILY_ANTS,3))} free workers</b> every day at 00:00 UTC and aim each one when you place it. A worker lives about <b>${_tlife(c)} h</b>, then expires — so keep deploying.` },
+  { id:'territory', group:'FIRST STEPS', title:'Painting territory', unlock:'always', body:c=>
+    `Every tile your ants paint is yours and feeds your <b>Grand Score</b> and your rank on the leaderboard. Solid ground fills fast; the frontier is where empires meet. Watch your colour spread — that's your territory growing in real time.` },
+  { id:'enemies', group:'WAR', title:'Finding enemies', unlock:'always', body:c=>
+    `Rival queens hide out in the fog. Pan the map — or tap the <b>arrow to your queen</b> to fly straight home — and look for foreign colours bleeding toward yours. The closer their paint creeps, the closer the fight.` },
+  { id:'attacking', group:'WAR', title:'Attacking a queen', unlock:'always', body:c=>
+    `March workers into enemy land and onto a rival queen. Each bite deals <b>×${_tv(c.ANT_DAMAGE,1)} per worker × your queen's level</b>, so a swarm from a high-level queen drains HP fast. Overwhelm her to score the kill — and a fresh <b>+1 nectar</b>.` },
+  { id:'dying', group:'WAR', title:'When your queen dies', unlock:'always', body:c=>
+    `If your queen's HP hits zero she falls and the run ends — but your <b>account keeps everything</b>: peak level, unlocks, prestige and passport all survive. Drop a new queen and pick up where you left off. Death is a setback, never a reset.` },
+  { id:'leveling', group:'PROGRESS', title:'Leveling up', unlock:'always', body:c=>
+    `Painting tiles and killing queens earns <b>XP</b>. The early levels come fast — your first tile milestones level you up within minutes — then the curve (<b>base ${_tnum(_tv(c.XP_BASE,120))} × ${_tv(c.XP_EXP,1.16)} ^ level</b>, up to level <b>${_tnum(_tv(c.LEVEL_CAP,100))}</b>) bites hard. Each level makes your queen bigger, tougher, and harder-hitting — and unlocks new tools.` },
+  { id:'shop', group:'PROGRESS', title:'The Shop', unlock:'shop', body:c=>
+    `Unlocked at <b>peak level ${GATES.shop}</b>. Spend <b>nectar</b> (from kills and the regions you hold) on powerups — start with a <b>Defender</b> for ${_tprice('defender')} nectar, which spawns a free distraction ant when an enemy nears your queen.` },
+  { id:'shield', group:'WAR', title:'Shields', unlock:'shield', body:c=>
+    `Unlocked at <b>peak level ${GATES.shield}</b>. A <b>shield</b> wraps your queen in absorbing HP that soaks damage before her real health is touched — buy it for ${_tprice('shield')} nectar and raise it before a siege lands.` },
+  { id:'brute', group:'WAR', title:'Brutes', unlock:'brute', body:c=>
+    `Unlocked at <b>peak level ${GATES.brute}</b>. <b>Brutes</b> are heavy <b>2×2</b> siege workers that bulldoze through enemy paint and bite far harder than a normal ant. Drag to aim, ${_tprice('brute')} nectar each.` },
+  { id:'relocate', group:'PROGRESS', title:'Relocating your queen', unlock:'relocate', body:c=>
+    `Unlocked at <b>peak level ${GATES.relocate}</b>. <b>Relocate</b> lifts your queen and teleports her to any tile you choose for ${_tprice('relocate')} nectar — bail out of a losing front or leap to fresh, open ground.` },
+  { id:'landmarks', group:'THE WORLD', title:'Landmarks & regions', unlock:()=>_seenLandmarks, body:c=>
+    `Cities (metros) and monuments are <b>landmarks</b>. Hold the most tiles around one and it's yours — each held landmark pays <b>passive nectar every day</b>: ${_tv(c.NECTAR_PER_100K_DAY,1)}/day per 100k metro tiles, and ${_tnum(_tv(c.MONUMENT_NECTAR_PER_DAY,50))}/day per monument. Track everything you hold in your <b>Passport</b>.` },
+  { id:'alliances', group:'THE WORLD', title:'Alliances', unlock:()=>_seenAlliance, body:c=>
+    `Queens can band together. Allies rally to each other's defense — a <b>mayday</b> ping flares when an ally is besieged — and climb the faction board as one. Open the <b>Alliance</b> window to found a faction or request to join one.` },
+];
+function tutUnlocked(p){ return p.unlock==='always' ? true : (typeof p.unlock==='function' ? !!p.unlock() : isUnlocked(p.unlock)); }
+function tutLockHint(p){
+  if (typeof p.unlock==='string' && GATES[p.unlock]!=null) return 'Reach peak level '+GATES[p.unlock];
+  if (p.id==='landmarks') return 'Discovered when you encounter a landmark';
+  if (p.id==='alliances') return 'Discovered when you join or are invited to an alliance';
+  return 'Locked';
+}
+function tutSeenSet(){ try{ return new Set(JSON.parse(localStorage.getItem('antarchy-tut-seen')||'[]')); }catch(e){ return new Set(); } }
+function markTutSeen(id){ const s=tutSeenSet(); if(!s.has(id)){ s.add(id); try{ localStorage.setItem('antarchy-tut-seen',JSON.stringify([...s])); }catch(e){} updateHelpBadge(); } }
+function updateHelpBadge(){
+  const btn=$('hbtn-help'); if(!btn) return;
+  const seen=tutSeenSet();
+  btn.classList.toggle('badge', TUTORIAL_PAGES.some(p=>tutUnlocked(p)&&!seen.has(p.id)));
+}
+function selectTut(id){ _tutSel=id; AudioEngine.tick(); markTutSeen(id); renderHelpWindow(); }
+function openHelpWindow(){ AudioEngine.click(); openWindow('FIELD MANUAL','help'); renderHelpWindow(); }
 function renderHelpWindow(){
   const el=$('win-body'); if(!el) return;
   const c=(me&&me.cfg)||{};
-  const v=(x,d)=> (x==null?d:x);
-  const num=x=> (typeof x==='number'? x.toLocaleString() : x);
-  const price=id=>{ const it=SHOP_ITEMS.find(x=>x.id===id); return it?it.pr:'—'; };
-  const sec=(title,rows)=>`<div class="help-sec"><div class="help-h">${title}</div>${rows}</div>`;
-  const row=(k,val)=>`<div class="help-row"><span>${k}</span><span>${val}</span></div>`;
-  const lifeHrs=Math.round(v(c.LIFESPAN,1296000)/v(c.TICK_RATE,15)/3600);
-  let html=`<div class="help-intro">Drop your queen anywhere on the world map, deploy Langton's-ant workers to paint territory, and besiege rival queens. Hold metro regions for passive income and climb the global leaderboard.</div>`;
-  html+=sec('WORKERS',
-       row('Daily workers', num(v(c.DAILY_ANTS,3))+' / day — CLAIM at 00:00 UTC')
-     + row('Worker lifespan', lifeHrs+' h')
-     + row('Army cap', num(v(c.ARMY_CAP,1000)))
-     + row('Ant damage', '×'+v(c.ANT_DAMAGE,1)+' per bite × your queen level'));
-  html+=sec('LEVELING',
-       row('XP curve', 'base '+num(v(c.XP_BASE,400))+' × '+v(c.XP_EXP,1.14)+' ^ level')
-     + row('Level cap', num(v(c.LEVEL_CAP,100)))
-     + row('XP per kill', num(v(c.XP_KILL,5000))));
-  html+=sec('QUEEN',
-       row('Start HP', num(v(c.HP_BASE,50))+' (grows with level)')
-     + row('HP regen', v(c.HP_REGEN,0)+' /s')
-     + row('Bubble radius', num(v(c.BUBBLE_R,30))+' tiles'));
-  html+=sec('NECTAR · powerups',
-       row('Earn', '+1 per queen kill')
-     + row('Passive', v(c.NECTAR_PER_100K_DAY,1)+' / day per 100k metro tiles held')
-     + row('Defender', price('defender')+' nectar')
-     + row('Worker', price('worker')+' nectar')
-     + row('Shield', price('shield')+' nectar')
-     + row('Brute', price('brute')+' nectar')
-     + row('Relocate', price('relocate')+' nectar'));
-  html+=sec('GEMS · cosmetics', row('Tile / queen color & effects','coming soon'));
-  html+=sec('UNLOCKS · by peak level',
-       row('Shop', 'L'+GATES.shop) + row('Buy worker', 'L'+GATES.worker) + row('Shield', 'L'+GATES.shield)
-     + row('Brute', 'L'+GATES.brute) + row('Relocate', 'L'+GATES.relocate));
-  el.innerHTML=html;
+  // Default to the first unlocked page (and re-pick if the current selection became invalid).
+  if (!_tutSel || !TUTORIAL_PAGES.some(p=>p.id===_tutSel && tutUnlocked(p)))
+    _tutSel=(TUTORIAL_PAGES.find(tutUnlocked)||TUTORIAL_PAGES[0]).id;
+  const seen=tutSeenSet();
+  let rail='<div class="tut-rail">';
+  for (const g of [...new Set(TUTORIAL_PAGES.map(p=>p.group))]){
+    rail+=`<div class="tut-group">${g}</div>`;
+    for (const p of TUTORIAL_PAGES.filter(x=>x.group===g)){
+      const ok=tutUnlocked(p), isNew=ok&&!seen.has(p.id);
+      rail+=`<button class="tut-item${p.id===_tutSel?' on':''}${ok?'':' locked'}" ${ok?`onclick="selectTut('${p.id}')"`:'disabled'}>
+        <span class="tut-it-t">${ok?'':'🔒 '}${esc(p.title)}</span>${isNew?'<span class="tut-new">NEW</span>':''}</button>`;
+    }
+  }
+  rail+='</div>';
+  const p=TUTORIAL_PAGES.find(x=>x.id===_tutSel)||TUTORIAL_PAGES[0], ok=tutUnlocked(p);
+  let pane='<div class="tut-pane">';
+  if (ok){
+    pane+=`<div class="tut-title">${esc(p.title)}</div>`;
+    pane+=`<div class="tut-anim" data-anim="${p.id}"><span>▶ ANIMATION COMING SOON</span></div>`;
+    pane+=`<div class="tut-body">${p.body(c)}</div>`;
+  } else {
+    pane+=`<div class="tut-title">🔒 ${esc(p.title)}</div>`;
+    pane+=`<div class="tut-locked">${tutLockHint(p)} to unlock this page.</div>`;
+  }
+  pane+='</div>';
+  el.innerHTML=`<div class="tut-wrap">${rail}${pane}</div>`;
 }
 
-// ---- Events log (E3): a timestamped ring buffer fed from `event` messages, shown in a window ----
-const eventLog=[]; const EVENT_LOG_CAP=30;
-function pushEventLog(msg){
-  eventLog.push({ t:Date.now(), msg:String(msg==null?'':msg) });
-  if (eventLog.length>EVENT_LOG_CAP) eventLog.shift();
-  if (winIsOpen('events')) renderEventsWindow();   // live-append while open
+// ---- Events log: a PERSISTENT, account-level feed (server-side, ~20 h). The client holds a
+// newest-first list fed by `event-page` frames (initial + reconnect replays, "load older" appends)
+// plus live `event` frames (prepended). Each entry is a bold head + a dashed detail sub. ----
+let eventLog=[];                  // newest-first: [{ts, head, sub}]
+let _evtMore=false, _evtLoading=false;
+function addEvent(e){
+  eventLog.unshift(e);
+  if (eventLog.length>600) eventLog.length=600;   // bound live memory; older pages come from the server
+  if (winIsOpen('events')) renderEventsWindow();
 }
-function openEventsWindow(){ AudioEngine.click(); openWindow('EVENTS — LOG','events'); renderEventsWindow(); }
+// Back-compat + ad-hoc client events (e.g. mayday): a plain summary line, optional detail.
+function pushEventLog(head, sub){ addEvent({ ts:Date.now(), head:String(head==null?'':head), sub:sub||'' }); }
+function applyEventPage(msg){
+  const entries=(msg.entries||[]).map(e=>({ ts:e.ts, head:e.head||'', sub:e.sub||'' }));
+  if (msg.append) eventLog=eventLog.concat(entries);   // "load older" → append to the tail
+  else eventLog=entries;                                // initial / reconnect replay → replace
+  _evtMore=!!msg.more; _evtLoading=false;
+  if (winIsOpen('events')) renderEventsWindow();
+}
+function loadOlderEvents(){
+  if (_evtLoading || !_evtMore || !eventLog.length) return;
+  _evtLoading=true;
+  send({t:'event-history', before:eventLog[eventLog.length-1].ts});   // before the oldest we hold
+}
+function _evtTime(ts){ try{ return new Date(ts).toTimeString().slice(0,5); }catch(e){ return ''; } }
+function openEventsWindow(){
+  AudioEngine.click(); openWindow('EVENTS','events');
+  if (!eventLog.length) send({t:'event-history', before:null});   // refresh if we have nothing cached
+  renderEventsWindow();
+}
 function renderEventsWindow(){
   const el=$('win-body'); if(!el) return;
-  if(!eventLog.length){ el.innerHTML='<div class="disc-empty">No events yet — kills, claims, unlocks and region income appear here.</div>'; return; }
+  if(!eventLog.length){ el.innerHTML='<div class="win-empty">No events yet — kills, deaths, claims, level-ups and region income appear here.</div>'; return; }
   let html='<div class="evt-log">';
-  for (let i=eventLog.length-1;i>=0;i--){ const e=eventLog[i];
-    const ts=new Date(e.t).toTimeString().slice(0,8);
-    html+=`<div class="evt-row"><span class="evt-ts">[${ts}]</span><span class="evt-msg">${esc(e.msg)}</span></div>`;
+  for (const e of eventLog){   // already newest-first
+    html+=`<div class="evt-row"><div class="evt-body">
+      <div class="evt-head">${esc(e.head)}</div>${e.sub?`<div class="evt-sub">— ${esc(e.sub)}</div>`:''}</div>
+      <span class="evt-ts">${_evtTime(e.ts)}</span></div>`;
   }
-  el.innerHTML=html+'</div>';
+  html+='</div>';
+  if (_evtMore) html+=`<button class="lb-expand" onclick="loadOlderEvents()">▾ LOAD OLDER</button>`;
+  el.innerHTML=html;
 }
 
 // ---- Alliances (panel + faction board + banner recolour + mayday) ----
@@ -3396,7 +3772,7 @@ function _renderNoAlliance(){
   h+='<div class="al-icons">'+ALLIANCE_ICONS.map(i=>`<button class="al-ic${_alForm.icon===i?' on':''}" onclick="alPickIcon('${i}')">${i}</button>`).join('')+'</div>';
   h+='<button class="al-create-btn" onclick="allianceCreate()">FOUND ALLIANCE (FREE)</button></div>';
   h+='<div class="al-sec">JOIN AN ALLIANCE</div>';
-  if(!factionsAll.length) h+='<div class="disc-empty">No alliances yet — found the first.</div>';
+  if(!factionsAll.length) h+='<div class="win-empty">No alliances yet — found the first.</div>';
   for(const f of factionsAll){
     const full=(f.memberCount>=10);
     h+=`<div class="al-row"><span class="al-badge">${esc(f.icon||'🛡')}</span>
@@ -3477,17 +3853,29 @@ function renderSettingsWindow(){
     <div class="set-name">${name}</div><div class="set-desc">${desc}</div></div>
     <div class="set-toggle${on?' on':''}" role="switch" tabindex="0" aria-checked="${on?'true':'false'}" aria-label="${name}"
       onclick="${fn}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${fn};}"><div class="knob"></div></div></div>`;
+  const grp=t=>`<div class="set-group">${t}</div>`;
   let html='';
+  html+=grp('DISPLAY');
   html+=tog('DARK MODE','Dim, low-light interface theme.', document.documentElement.dataset.theme==='dark', "toggleSetting('theme')");
-  html+=tog('SOUND FX','Clicks, clashes, queen shrieks.', settings.sfx, "toggleSetting('sfx')");
-  html+=tog('MUSIC','Looping chiptune soundtrack.', settings.music, "toggleSetting('music')");
   html+=tog('BASE MAP','OpenStreetMap geography under your territory.', mapVisible, "toggleSetting('map')");
   html+=tog('SCANLINES','Retro CRT scanline overlay.', settings.scan, "toggleSetting('scan')");
   html+=tog('REDUCE EFFECTS','Calm cosmetic animations — gentle glow, no pulsing or flashing. Off by default; flip it on if you prefer.', settings.reduce, "toggleSetting('reduce')");
+  html+=grp('AUDIO');
+  html+=tog('SOUND FX','Clicks, clashes, queen shrieks.', settings.sfx, "toggleSetting('sfx')");
+  html+=tog('MUSIC','Looping chiptune soundtrack.', settings.music, "toggleSetting('music')");
   html+=`<div class="set-row"><div class="set-info"><div class="set-name">MASTER VOLUME</div>
     <div class="set-desc">Overall loudness of the game.</div></div>
     <div class="set-vol"><input type="range" min="0" max="100" value="${Math.round(settings.vol*100)}"
       oninput="setVolume(this.value)"></div></div>`;
+  html+=grp('ACCOUNT');
+  html+=`<div class="set-row"><div class="set-info"><div class="set-name">SIGNED IN</div>
+    <div class="set-desc">${esc((me&&me.username)||'—')}</div></div></div>`;
+  html+=`<div class="set-row"><div class="set-info"><div class="set-name">LOG OUT</div>
+    <div class="set-desc">End your session on this device.</div></div>
+    <button class="btn ghost set-btn" onclick="doLogout()">⎋ LOG OUT</button></div>`;
+  html+=`<div class="set-row"><div class="set-info"><div class="set-name" style="color:var(--red)">DELETE ACCOUNT</div>
+    <div class="set-desc">Permanently erase your account and progress. Password-confirmed — coming soon.</div></div>
+    <button class="btn ghost set-btn danger" disabled title="Coming soon">DELETE…</button></div>`;
   el.innerHTML=html;
 }
 function toggleSetting(key){
@@ -3545,6 +3933,11 @@ function fmtMMSS(secs){ secs=Math.max(0,secs|0); const m=(secs/60)|0, s=secs%60;
 // Daily-claim countdown — hours+minutes only, no seconds ("5H 23M", or "23M" under an hour).
 function fmtHM(secs){ secs=Math.max(0,secs|0); const h=(secs/3600)|0, m=((secs%3600)/60)|0;
   return h>0 ? h+'H '+String(m).padStart(2,'0')+'M' : (m>0?m+'M':'<1M'); }
+// Queen-age clock — DD:HH once past a day, else HH:MM (a queen can live the whole 7-day season).
+function fmtDDHH(secs){ secs=Math.max(0,secs|0);
+  const d=(secs/86400)|0, h=((secs%86400)/3600)|0, m=((secs%3600)/60)|0;
+  return d>0 ? String(d).padStart(2,'0')+':'+String(h).padStart(2,'0')
+             : String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'); }
 // Server-wide stats push (~1 Hz) → header bar + admin status cards.
 function applyServerStats(s) {
   $('hdr-online').textContent=s.online;
@@ -3593,12 +3986,15 @@ function updateHUD() {
   // Header now shows SERVER stats (applyServerStats); personal score lives in the sidebar.
   setBig($('score-big'), score, true);
   setBig($('sc-tiles'), tiles, true);
-  $('sc-time').textContent=fmtMMSS(secs);
+  $('sc-time').textContent=fmtDDHH(secs);
   $('sc-kills').textContent=kills;
   if ($('s-prestige')) $('s-prestige').textContent='P'+(me.prestige||0);   // prestige badge in the profile eyebrow
   // Header currency chips (D3): nectar = me.nectar balance; gems = cosmetics currency.
   if ($('hdr-nectar')) $('hdr-nectar').textContent=(me.nectar||0).toLocaleString();
   if ($('hdr-gems'))   $('hdr-gems').textContent=(me.gems||0).toLocaleString();
+  // MOBILE vitals strip mirrors the same currency values (single source of truth: the `me` payload).
+  if ($('m-nectar')) $('m-nectar').textContent=(me.nectar||0).toLocaleString();
+  if ($('m-gems'))   $('m-gems').textContent=(me.gems||0).toLocaleString();
   $('d-army').textContent=me.army||0;
   if (q) {
     $('hp-cur').textContent=q.hp|0;
@@ -3608,6 +4004,10 @@ function updateHUD() {
     $('shield-fill').style.width=(q.maxHp?Math.min(100,_sh/q.maxHp*100):0)+'%';
     $('hp-shield').textContent=_sh>0?(' +'+_sh):'';
     $('lvl').textContent=q.level;
+    // MOBILE vitals strip mirrors HP/shield + level (XP mirrored after the cap branch below).
+    if ($('m-hp-fill')) $('m-hp-fill').style.width=(q.hp/q.maxHp*100)+'%';
+    if ($('m-shield-fill')) $('m-shield-fill').style.width=(q.maxHp?Math.min(100,_sh/q.maxHp*100):0)+'%';
+    if ($('m-lvl')) $('m-lvl').textContent=q.level;
     const lvlCap = (me.cfg && me.cfg.LEVEL_CAP) || 100;
     if (q.level >= lvlCap) {
       // Maxed for the season: bar stays full, no more XP needed (the server caps accumulation, so
@@ -3620,10 +4020,16 @@ function updateHUD() {
       $('xp-fill').style.width=pct+'%';
       $('xp-val').textContent=into.toLocaleString()+'/'+span.toLocaleString();
     }
+    if ($('m-xp-fill')) $('m-xp-fill').style.width=$('xp-fill').style.width;   // MOBILE: mirror the XP bar
     // If we ran out of ants while in sticky place mode, exit it
     if (!me.unlimitedAnts && me.antsAvail<=0 && (mode==='place-ant-down' || mode==='place-ant-drag')) {
       exitPlaceMode();
       toast('OUT OF ANTS — PLACE MODE OFF');
+    }
+    // Same for sticky brute placement: a server-confirmed balance below the 20-nectar price ends it.
+    if (!me.unlimitedNectar && (me.nectar||0)<20 && mode.startsWith('shop-brute')) {
+      exitShopMode();
+      toast('OUT OF NECTAR — PLACE MODE OFF');
     }
   }
   $('ants-avail').textContent=me.unlimitedAnts?'∞':me.antsAvail;
@@ -3637,11 +4043,22 @@ function updateHUD() {
   // nextResetMs in `me`) — the claim-daily handler re-validates the window, so this is presentation only.
   const claimBtn=$('btn-claim');
   if (claimBtn){
-    if (me.claimReady){
+    if (claimInFlight){
+      // A claim is mid-flight (rewarded ad open / awaiting confirmation) — hold the button disabled
+      // so the per-tick reconcile below can't re-enable it under the ad and invite a double-claim.
+      claimBtn.disabled=true; claimBtn.classList.remove('claim-ready');
+    } else if (me.claimReady){
       claimBtn.disabled=false; claimBtn.classList.add('claim-ready'); claimBtn.textContent='CLAIM';
     } else {
       claimBtn.disabled=true; claimBtn.classList.remove('claim-ready');
       claimBtn.textContent=fmtHM((me.nextResetMs||0)/1000);
+    }
+    // MOBILE: the deploy-bar claim button mirrors the (drawer-hidden) sidebar claim button.
+    const mClaim=$('m-btn-claim');
+    if (mClaim){
+      mClaim.disabled=claimBtn.disabled;
+      mClaim.textContent=claimBtn.textContent;
+      mClaim.classList.toggle('claim-ready', claimBtn.classList.contains('claim-ready'));
     }
   }
   // ---- Progressive unlock visibility (desktop header + mobile nav + sidebar; one gate config) ----
@@ -3654,24 +4071,42 @@ function updateHUD() {
     wkBrute.style.display = bruteOn?'':'none';
     // Collapse the toggle to a single full-width control until brutes unlock (no half-width orphan).
     if ($('wk-types')) $('wk-types').classList.toggle('solo', !bruteOn);
+    // MOBILE: mirror the brute-toggle visibility onto the deploy bar's twin.
+    if ($('m-wk-brute')) $('m-wk-brute').style.display = bruteOn?'':'none';
+    if ($('m-wk-types')) $('m-wk-types').classList.toggle('solo', !bruteOn);
     if (!bruteOn && workerType==='brute') setWorkerType('normal');  // don't strand a hidden mode
   }
 }
 
-// Claim the day's worker portion. The grant lives ONLY in the server's claim-daily handler
-// (idempotent per 00:00-UTC window) — disabling the button here is just anti-spam polish.
+// Claim the day's worker portion — gated behind a rewarded ad.
+// Flow: this fn → daily-claim-begin → server replies daily-claim-token (nonce) → adBreak reward
+// → adViewed sends claim-daily with nonce → server replies daily-claimed.
+// If no ad fills, or the player skips, no claim is sent (no ad → no ants, by design).
 function claimDaily(){
   AudioEngine.click();
-  const b=document.getElementById('btn-claim');
-  if (b) b.disabled=true;
-  send({t:'claim-daily'});
+  const b=document.getElementById('btn-claim');   if (b)  b.disabled=true;
+  const mb=document.getElementById('m-btn-claim'); if (mb) mb.disabled=true;
+  // Ask the server whether this window is claimable. Server replies daily-claim-token or an error toast.
+  send({t:'daily-claim-begin'});
 }
 
 /* CANVAS */
 const cvs=$('map');
 const ctx=cvs.getContext('2d',{alpha:false});
 const CELL=4;
-function resize() { const r=cvs.getBoundingClientRect(); cvs.width=r.width; cvs.height=r.height; }
+// HiDPI: the backing store renders at devicePixelRatio (capped at 2 for perf) while ALL drawing/coord
+// code keeps working in CSS pixels via a base transform. `viewW`/`viewH` are the CSS-px viewport size
+// (use these, never cvs.width/height, which are now device px); `DPR` is the active device ratio.
+// Without this the whole canvas is rendered at CSS resolution and the browser upscales it on any scaled
+// display → soft text/edges. Every on-canvas pixel (incl. the blitted vector basemap) is now crisp.
+let viewW=0, viewH=0, DPR=1;
+function resize() {
+  const r=cvs.getBoundingClientRect();
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  viewW=Math.round(r.width); viewH=Math.round(r.height);
+  cvs.width=Math.round(viewW*DPR); cvs.height=Math.round(viewH*DPR);   // resets ctx state (incl. transform)
+  ctx.setTransform(DPR,0,0,DPR,0,0);                                    // CSS-px coords → device px
+}
 
 // ===== Fog-of-war helpers =====
 // While placing / relocating / queenless the whole planet is browsable (the one full-load moment):
@@ -3709,16 +4144,19 @@ function applyFowFromMe(){
 
 function clampView() {
   // Min zoom: the viewport may never exceed the world bounds.
-  const worldFit = Math.max(cvs.width / (CELL * WORLD.w), cvs.height / (CELL * WORLD.h), 0.0001);
+  const worldFit = Math.max(viewW / (CELL * WORLD.w), viewH / (CELL * WORLD.h), 0.0001);
   let minZoom = worldFit;
 
   // FoW LEASH: during play the camera is bounded to your revealed area — the bounding box of ALL
   // your tiles (`ownerBounds`) inflated by the reveal radius (`loadVoidR`). Both halves of a
   // split empire sit inside this box, so you can always pan across the fog to your far island.
   // Skipped while browsable (placement/relocate) so the player can frame the whole planet.
-  // ALSO skipped for an admin in GOD VIEW (fog off): the operator gets an unleashed camera — free pan
+  // ALSO skipped for an ADMIN at ALL times: the operator always gets an unleashed camera — free pan
   // to the world edges + zoom all the way out to the whole planet (paint streams via the LOD pyramid).
-  const leashed = !worldBrowsable() && !(me?.isAdmin && !admFogOn);
+  // The fog PREVIEW toggle (admFogOn) only changes what is rendered/served (see `fogActive` + the
+  // server's `god_view`); it must NEVER re-leash the camera, or an admin previewing player-fog gets
+  // trapped on their own territory and can't pan the world.
+  const leashed = !worldBrowsable() && !me?.isAdmin;
   const leash = leashed ? territoryAABB(loadVoidR) : null;   // PAN box (full reveal, split-empire safe)
   if (leashed) {
     // ZOOM-OUT CAP: frame your WHOLE territory at max zoom-out, so the entire domain fills the screen
@@ -3731,13 +4169,13 @@ function clampView() {
     const fb = territoryAABB(loadOsmR);                 // full territory (+ visible reveal ring)
     const fullSpan = Math.max(fb.x1 - fb.x0, fb.y1 - fb.y0, 2 * loadOsmR);
     const maxSpan  = fullSpan * 1.1;                    // whole domain + margin
-    minZoom = Math.max(minZoom, cvs.width / (CELL * maxSpan), cvs.height / (CELL * maxSpan));
+    minZoom = Math.max(minZoom, viewW / (CELL * maxSpan), viewH / (CELL * maxSpan));
   }
   view.zoom = clamp(view.zoom, minZoom, 16);
   zoomTarget = clamp(zoomTarget, minZoom, 16);
 
   const cp = CELL * view.zoom;
-  const halfW = cvs.width / (2*cp), halfH = cvs.height / (2*cp);
+  const halfW = viewW / (2*cp), halfH = viewH / (2*cp);
   if (leashed) {
     // Hard clamp: keep the viewport inside the leash box; centre on an axis the box is narrower
     // than the viewport. No scrolling into the unseen — the fog is never something you can wander.
@@ -3760,7 +4198,7 @@ let lastViewKey=null, pendingViewKey=null, viewSendTimer=null;
 const SERVER_MAX_DIM=800; // must match MAX_DIM in network.rs
 function _computeViewBox() {
   const cp=CELL*view.zoom;
-  const W=cvs.width, H=cvs.height;
+  const W=viewW, H=viewH;
   const needW=Math.ceil(W/cp)+8, needH=Math.ceil(H/cp)+8; // +8 pad keeps the edges covered
   if (needW <= SERVER_MAX_DIM && needH <= SERVER_MAX_DIM) {
     // Whole window fits at 1:1 within the server cap → request the exact visible rect (+pad), no
@@ -3877,6 +4315,8 @@ function showDeathScreen(m){
   $('ds-level').textContent=m.level||1;
   $('ds-region').textContent=m.region||'—';
   $('ds-credits').textContent=(m.nectar||0).toLocaleString();
+  // deaths = total fallen queens for this account; prestige = seasons fielded a queen
+  if ($('ds-deaths')) $('ds-deaths').textContent=m.deaths!=null?m.deaths:(me?.deaths||0);
   $('ds-prestige').textContent='P'+(m.prestige||0);
   $('ds-sub').textContent = m.killer ? ('SLAIN BY '+String(m.killer).toUpperCase()) : 'FALLEN';
   $('death-screen').classList.add('vis');
@@ -3888,7 +4328,7 @@ function redeployQueen(){
   view.x=SPAWN_FALLBACK.x; view.y=SPAWN_FALLBACK.y; panLocked=true;
   view.zoom=zoomTarget=1.0;
   mode='place-queen'; cvs.classList.add('placing');
-  hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+  hideSpawnScreen(); showSpawnScreen();
   doGeolocate();
 }
 $('ds-redeploy').onclick=redeployQueen;
@@ -3921,110 +4361,8 @@ function inspectAtTile(tile) {
   }
 }
 
-/* ===================================================================
-   OSM TILE SYSTEM — fetch/cache/draw OpenStreetMap tiles directly on canvas
-   =================================================================== */
-const OSM_RETRY_MS = 30000;   // don't re-request a failed tile more than once per 30s
-const OSM_MEM_BUDGET = 1500;  // in-memory decoded-tile cap (true-LRU); bounded panning keeps a region resident
-
-/* ---- Persistent tile cache (IndexedDB) -----------------------------------------------------------
-   Basemap tiles come from our own $0-egress Cloudflare/R2 cache and are immutable, so once a tile is
-   on disk it never needs the network again. This survives reloads → the home region paints instantly
-   on return AND we stop re-reading R2 (keeps R2 Class-B inside the free tier). Best-effort: any IDB
-   failure (private mode / quota) silently degrades to network-only. Format-agnostic: whatever the
-   cache serves (PNG today, WebP later) the browser decodes transparently — no client-side transcode. */
-let _osmDB=null, _osmDBP=null;
-function osmDB(){
-  if (_osmDB)  return Promise.resolve(_osmDB);
-  if (_osmDBP) return _osmDBP;
-  _osmDBP = new Promise((res,rej)=>{
-    let r; try{ r=indexedDB.open('antarchy-osm',1); }catch(e){ return rej(e); }
-    r.onupgradeneeded=()=>{ try{ r.result.createObjectStore('tiles'); }catch(e){} };
-    r.onsuccess=()=>{ _osmDB=r.result; res(_osmDB); };
-    r.onerror =()=>rej(r.error);
-  });
-  return _osmDBP;
-}
-function idbGetTile(key){
-  return osmDB().then(db=>new Promise(res=>{
-    try{ const rq=db.transaction('tiles','readonly').objectStore('tiles').get(key);
-         rq.onsuccess=()=>res(rq.result||null); rq.onerror=()=>res(null); }
-    catch(e){ res(null); }
-  })).catch(()=>null);
-}
-function idbPutTile(key, blob){
-  osmDB().then(db=>{ try{ db.transaction('tiles','readwrite').objectStore('tiles').put(blob,key); }catch(e){} }).catch(()=>{});
-}
-function blobToImage(blob){
-  return new Promise((res,rej)=>{
-    const url=URL.createObjectURL(blob); const img=new Image();
-    img.onload =()=>{ URL.revokeObjectURL(url); res(img); };
-    img.onerror=()=>{ URL.revokeObjectURL(url); rej(new Error('decode')); };
-    img.src=url;   // blob: is same-origin → untainted, so the water-sampler can still read pixels
-  });
-}
-// Load one tile entry: IndexedDB (disk) first, then the network (persisting the bytes to IDB).
-// Populates e.img/loaded/failed when done; the render loop polls `e.loaded`.
-async function _loadOsmTile(key, z, x, y, e){
-  try{
-    let blob = await idbGetTile(key);
-    if (!blob){
-      const resp = await fetch(osmTileUrl(z,x,y), {mode:'cors', credentials:'omit'});
-      if (!resp.ok) throw new Error('http '+resp.status);
-      blob = await resp.blob();
-      idbPutTile(key, blob);
-    }
-    e.img = await blobToImage(blob);
-    e.loaded = true; e.failed = false;
-  }catch(err){
-    e.failed = true; e.failedAt = performance.now();
-  }
-}
-function getOsmTile(z, x, y) {
-  const key=`${z}/${x}/${y}`;
-  const cached = osmCache.get(key);
-  if (cached) {
-    // Loaded or still-pending tiles are returned as-is. A previously-failed tile is re-requested only
-    // after a backoff window — otherwise a single 4xx would retry every frame, hammering the server.
-    if (!(cached.failed && performance.now() - cached.failedAt > OSM_RETRY_MS)) {
-      osmCache.delete(key); osmCache.set(key, cached);   // touch → most-recently-used
-      return cached;
-    }
-  }
-  const e={img:null, loaded:false, failed:false, failedAt:0};
-  osmCache.set(key, e);
-  _loadOsmTile(key, z, x, y, e);
-  // True-LRU eviction: oldest (front of the insertion-ordered Map) goes first.
-  while (osmCache.size > OSM_MEM_BUDGET) osmCache.delete(osmCache.keys().next().value);
-  return e;
-}
-
-function gameToOsmTile(tx, ty, n, geo, cosLat) {
-  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
-  const mY=mY0+(WORLD.spawnY-ty)*geo.tileMeters/(111111*(180/Math.PI)*cosLat);
-  const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cosLat);
-  return {
-    x:Math.max(0,Math.min(n-1, Math.floor(((lon+180)/360)*n))),
-    y:Math.max(0,Math.min(n-1, Math.floor((1-mY/Math.PI)*n/2)))
-  };
-}
-
-function gameToOsmFrac(tx, ty, n, geo, cosLat) {
-  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
-  const mY=mY0+(WORLD.spawnY-ty)*geo.tileMeters/(111111*(180/Math.PI)*cosLat);
-  const lon=geo.capitolLon+(tx-WORLD.spawnX)*geo.tileMeters/(111111*cosLat);
-  return {fx:((lon+180)/360)*n, fy:(1-mY/Math.PI)*n/2};
-}
-
-function osmTileCorner(ox, oy, n, geo, cosLat) {
-  const lon=ox/n*360-180;
-  const mY=Math.PI*(1-2*oy/n);
-  const mY0=Math.log(Math.tan(geo.capitolLat*Math.PI/360+Math.PI/4));
-  return {
-    tx: WORLD.spawnX+(lon-geo.capitolLon)*111111*cosLat/geo.tileMeters,
-    ty: WORLD.spawnY-(mY-mY0)*111111*(180/Math.PI)*cosLat/geo.tileMeters
-  };
-}
+/* (Legacy OSM raster tile system removed — the MapLibre vector basemap is the only basemap now.
+   Its own water-layer query replaced the raster pixel-sampler; see sampleTileWater / vectorPointIsWater.) */
 
 // ===== Optional MapLibre GL vector basemap (gated on me.vectorStyleUrl) =====
 // Lazy-load MapLibre from CDN, build a vector basemap, restrict labels to the 4 allowed place
@@ -4049,7 +4387,11 @@ function buildVectorMap(){
     (document.querySelector('.canvas-area')||document.body).appendChild(host); }
   mlMap=new maplibregl.Map({container:host, style:VECTOR_STYLE_URL, interactive:false,
     attributionControl:false, preserveDrawingBuffer:true, fadeDuration:0, refreshExpiredTiles:false,
-    center:[0,0], zoom:2});
+    pixelRatio:DPR, center:[0,0], zoom:2});
+  // Render MapLibre's own canvas at the SAME device ratio as the game canvas → the per-frame blit is a
+  // 1:1 device-pixel copy (no resample blur, crisp vector labels). Guarded: older builds lack the setter.
+  try{ mlMap.setPixelRatio?.(DPR); }catch(e){}
+  mlRatio=DPR;
   mlMap.on('error',()=>{});   // swallow tile/style errors — raster fallback stays usable
   mlMap.on('load',()=>{
     try{
@@ -4074,20 +4416,36 @@ function buildVectorMap(){
   });
 }
 // Sync the MapLibre camera to the game camera + blit its canvas. Returns true if it drew (caller
-// then skips the raster path). cp = screen px per tile. cos(center-lat) so the basemap pixel scale
-// matches the game scale at the screen centre (true-mercator vs the game grid diverges only toward
-// the viewport edges at high latitude / extreme zoom-out — acceptable for a basemap).
+// then skips the raster path). cp = screen px per tile. The game grid is a CONFORMAL Web Mercator
+// anchored at the capitol latitude (see gameToLatLon), so its pixels-per-mercator-unit is constant
+// across the whole view — matching MapLibre's zoom to that fixed capitol scale (NOT the moving centre
+// latitude) locks the basemap to the territory at EVERY point. (Centre-lat scaled the basemap wrong
+// away from the capitol, so map + tiles only coincided at the screen centre and drifted elsewhere.)
 function blitVectorBasemap(cp, W, H){
   if (!mlReady || !mlMap || !WORLD.geo) return false;
   try{
+    // Track DPR too: moving to a different-DPI monitor must re-render MapLibre at the new ratio so the
+    // blit stays a crisp 1:1 device copy.
+    if (mlRatio!==DPR){ try{ mlMap.setPixelRatio?.(DPR); }catch(e){} mlRatio=DPR; mlW=mlH=0; }
     if (W!==mlW || H!==mlH){ const h=mlMap.getContainer(); h.style.width=W+'px'; h.style.height=H+'px'; mlMap.resize(); mlW=W; mlH=H; }
     const c=gameToLatLon(view.x, view.y); if(!c) return false;
-    const cosLat=Math.cos(c.lat*Math.PI/180)||1;
+    // cos(capitolLat): the grid's fixed Mercator scale — the anchor the territory grid locks to.
+    // Using c.lat here was the bug that let the basemap slide off the tiles away from centre.
+    const cosLat=Math.cos(WORLD.geo.capitolLat*Math.PI/180)||1;
     let z=Math.log2(cp*40075016.686*cosLat/(WORLD.geo.tileMeters*512));   // MapLibre 512px-tile zoom
     z=Math.max(0,Math.min(22,z));
     mlMap.jumpTo({center:[c.lon,c.lat],zoom:z,bearing:0,pitch:0});
     if (mlMap.redraw) mlMap.redraw();                 // force a synchronous paint of the new camera
+    // pixelRatio==DPR makes this a 1:1 device copy; smoothing only matters on a transient DPR-change
+    // frame. Preserve/restore the state the territory blit relies on (crisp pixelated, smoothing off).
+    const sm=ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled=true;
+    // Colour basemap (liberty), pushed back: a gentle desaturation + slight lift keeps the map clearly
+    // coloured yet soft, so the muted faction territory layered on top stays the focus. The filter is
+    // reset immediately so the territory/ant/queen blits that follow stay crisp + unfiltered.
+    const pf=ctx.filter; ctx.filter='saturate(0.8) brightness(1.04)';
     ctx.drawImage(mlMap.getCanvas(),0,0,W,H);         // blit as the basemap layer
+    ctx.filter=pf;
+    ctx.imageSmoothingEnabled=sm;
     return true;
   }catch(e){ return false; }
 }
@@ -4102,58 +4460,7 @@ function vectorPointIsWater(px,py){
 // Drawn purely from the live camera (view.x/view.y/cp) — independent of the server
 // viewport `vw`. This keeps the base map tracking pan/zoom in real time, even when
 // zoomed out far enough that the server tile overlay (and thus `vw`) is suppressed.
-function drawOsmTiles(cp, canvasW, canvasH) {
-  if (!WORLD.geo) return;
-  const geo=WORLD.geo;
-  const cosLat=Math.cos(geo.capitolLat*Math.PI/180) || 1;
-  const osmZ=Math.max(1,Math.min(18,Math.round(Math.log2(cp*40075016.686*cosLat/(geo.tileMeters*256)))));
-  const n=Math.pow(2,osmZ);
-  // Visible viewport in game coordinates, anchored to the camera.
-  const gx0=view.x-canvasW/(2*cp), gy0=view.y-canvasH/(2*cp);
-  const gx1=view.x+canvasW/(2*cp), gy1=view.y+canvasH/(2*cp);
-  const tl=gameToOsmTile(gx0, gy0, n, geo, cosLat);
-  const br=gameToOsmTile(gx1, gy1, n, geo, cosLat);
-  // FOG-OF-WAR GATE (real FoW): ONE window = the reveal ring around your tiles (`loadOsmR`, which the
-  // server sets to clearR + feather). We fetch AND draw basemap tiles only inside it; the opaque fog
-  // overlay masks the feather edge and the dark-slate background shows beyond. No "remembered terrain"
-  // far from your tiles — the map is only ever visible near your territory. Whole map while browsing.
-  const osmTileRange=(radius)=>{
-    const a=territoryAABB(radius);
-    const c0=gameToOsmTile(a.x0,a.y0,n,geo,cosLat), c1=gameToOsmTile(a.x1,a.y1,n,geo,cosLat);
-    return [Math.min(c0.x,c1.x)-1, Math.max(c0.x,c1.x)+1, Math.min(c0.y,c1.y)-1, Math.max(c0.y,c1.y)+1];
-  };
-  let fMinX=-Infinity,fMaxX=Infinity,fMinY=-Infinity,fMaxY=Infinity;   // reveal window (fetch + draw)
-  if (!worldBrowsable()) {
-    [fMinX,fMaxX,fMinY,fMaxY]=osmTileRange(loadOsmR);
-  }
-  const inFetch=(ox,oy)=> ox>=fMinX&&ox<=fMaxX&&oy>=fMinY&&oy<=fMaxY;
-  for (let ox=tl.x-1; ox<=br.x+1; ox++) {
-    for (let oy=tl.y-1; oy<=br.y+1; oy++) {
-      if (ox<0||oy<0||ox>=n||oy>=n) continue;
-      if (!inFetch(ox,oy)) continue;                 // outside the reveal ring → fog background
-      const e=getOsmTile(osmZ,ox,oy);
-      if (!e.loaded) continue;
-      const {tx:x0,ty:y0}=osmTileCorner(ox,   oy,   n, geo, cosLat);
-      const {tx:x1,ty:y1}=osmTileCorner(ox+1, oy+1, n, geo, cosLat);
-      // screen px for a game-x of gx is canvasW/2 + (gx - view.x)*cp
-      const px=(canvasW/2+(x0-view.x)*cp)|0, py=(canvasH/2+(y0-view.y)*cp)|0;
-      const pw=((canvasW/2+(x1-view.x)*cp)|0)-px, ph=((canvasH/2+(y1-view.y)*cp)|0)-py;
-      if (pw>0&&ph>0) ctx.drawImage(e.img, px, py, pw, ph);
-    }
-  }
-  // Prefetch one ring beyond the drawn tiles so a pan reveals already-loaded tiles. Warmed only —
-  // restricted to the fetch (clear) window so the void never triggers network/R2 reads.
-  for (let ox=tl.x-2; ox<=br.x+2; ox++) {
-    for (let oy=tl.y-2; oy<=br.y+2; oy++) {
-      if (ox<0||oy<0||ox>=n||oy>=n) continue;
-      if (ox>=tl.x-1 && ox<=br.x+1 && oy>=tl.y-1 && oy<=br.y+1) continue; // already touched above
-      if (!inFetch(ox,oy)) continue;
-      getOsmTile(osmZ, ox, oy);
-    }
-  }
-}
-
-// Phase-6: fetch one R2 snapshot chunk tile (cached, with the same failed-tile backoff as OSM).
+// Phase-6: fetch one R2 snapshot chunk tile (cached, with the same failed-tile backoff as the basemap).
 function getSnapTile(cx, cy) {
   const key=`${SNAP_EPOCH}/${cx}/${cy}`;
   const cached=snapCache.get(key);
@@ -4258,35 +4565,16 @@ function sampleTileWater(tx, ty) {
   _waterCheckTile = key;
   if (waterCache.has(key)) { hoverIsWater = waterCache.get(key); return; }
   if (!WORLD.geo) { hoverIsWater = false; return; }
-  // Vector basemap active → query its water layer at the tile's screen point (the raster osmCache is
-  // empty when vector is on, so the pixel-sample path below would always fail-open to "land").
+  // Query the vector basemap's water layer at the tile's screen point. Until it's ready (or if the
+  // point can't be resolved) fail-open to "land" — the server is the authoritative spawn gate, so a
+  // missed water hit only costs a redundant client check, never a bad spawn.
   if (mlReady) {
     const cp=CELL*view.zoom;
-    const sx=cvs.width/2 + (tx+0.5 - view.x)*cp, sy=cvs.height/2 + (ty+0.5 - view.y)*cp;
+    const sx=viewW/2 + (tx+0.5 - view.x)*cp, sy=viewH/2 + (ty+0.5 - view.y)*cp;
     const w=vectorPointIsWater(sx,sy);
     if (w!==null) { waterCache.set(key,w); hoverIsWater=w; return; }
   }
-  const geo = WORLD.geo;
-  const cosLat = Math.cos(geo.capitolLat * Math.PI / 180) || 1;
-  const osmZ = Math.max(1, Math.min(18, Math.round(
-    Math.log2((CELL * view.zoom) * 40075016.686 * cosLat / (geo.tileMeters * 256))
-  )));
-  const n = Math.pow(2, osmZ);
-  const {fx, fy} = gameToOsmFrac(tx, ty, n, geo, cosLat);
-  const tileX = Math.floor(fx), tileY = Math.floor(fy);
-  const entry = osmCache.get(`${osmZ}/${tileX}/${tileY}`);
-  if (!entry || !entry.loaded) { hoverIsWater = false; return; }
-  const px = Math.min(255, Math.max(0, Math.floor((fx - tileX) * 256)));
-  const py = Math.min(255, Math.max(0, Math.floor((fy - tileY) * 256)));
-  try {
-    _waterSampleCtx.drawImage(entry.img, px, py, 1, 1, 0, 0, 1, 1);
-    const [r, g, b, a] = _waterSampleCtx.getImageData(0, 0, 1, 1).data;
-    const isWater = a > 128 && b > 160 && b > r + 20 && g > 130;
-    waterCache.set(key, isWater);
-    hoverIsWater = isWater;
-  } catch (_) {
-    hoverIsWater = false; // CORS read blocked — fail-open
-  }
+  hoverIsWater = false;
 }
 
 function doGeolocate() {
@@ -4336,7 +4624,7 @@ function updateOsmAttrib() {
 function drawLodTiles(v, cp, W, H) {
   const step=v.lod||1, gw=v.w, gh=v.h, tiles=v.tiles, fog=v.fog;
   if (!gw || !gh || !tiles) return;
-  if (worldBrowsable()) return;   // queen-select: whole-world map only, no territory
+  if (worldBrowsable() && mode!=='place-queen') return;   // queen-select shows the red placement mask
   if (lodCanvas.width!==gw || lodCanvas.height!==gh) { lodCanvas.width=gw; lodCanvas.height=gh; lodImg=null; lodBuiltVw=null; }
   // Only repaint the offscreen when the frame actually changed; panning/zooming between the
   // ~10 Hz frames just re-blits the cached canvas (the positioning below runs every frame).
@@ -4361,25 +4649,50 @@ function drawLodTiles(v, cp, W, H) {
   if (dw>0 && dh>0) { ctx.imageSmoothingEnabled=false; ctx.drawImage(lodCanvas, sx, sy, dw, dh); }
 }
 
-// Build the seamless value-noise cloud tile ONCE. A small random grid sampled with wrap-around
-// (row/col G == 0) → a tile that repeats with no seam, smoothstep-bilinear-upscaled into 256².
-// `mistTile` = opaque clouds coloured between FOG_MIST_LO and HI (the drifting-mist shroud layers).
+// Fog texture/scale tunables — declared BEFORE buildMistTile/fillMistWorld (which reference them) so
+// the lazily-built tile can never hit a const TDZ, even if a future caller runs at module-init time.
+const FOG_NOISE_WPP_A = 2.6;   // layer A world tiles/noise-px: large soft clouds
+const FOG_NOISE_WPP_B = 0.9;   // layer B: fine detail
+const FOG_CONTRAST    = 0.72;  // <1 pulls noise toward mid grey → softer, foggier
+const FOG_JIGGLE_CELLS = 2;    // ± world cells the fog dances in place
+// Build the seamless fBm cloud tile ONCE. Sum of 5 wrap-around value-noise octaves (each grid G
+// divides T and wraps row/col G==0 → seamless), smoothstep-bilinear, persistence ~0.5. 512^2 tile
+// → long repeat period; contrast softened toward mid so it reads as fog. Same outputs as before.
 function buildMistTile(){
-  const G=8, T=256;
-  const grid=new Float32Array((G+1)*(G+1));
-  for (let y=0;y<G;y++) for (let x=0;x<G;x++) grid[y*(G+1)+x]=Math.random();
-  for (let y=0;y<=G;y++) grid[y*(G+1)+G]=grid[y*(G+1)];            // wrap right = left
-  for (let x=0;x<=G;x++) grid[G*(G+1)+x]=grid[x];                  // wrap bottom = top
+  const T=512;
+  const OCT=[ {G:4,amp:1.00},{G:8,amp:0.55},{G:16,amp:0.30},{G:32,amp:0.16},{G:64,amp:0.08} ];
+  const N=OCT.length;
+  const grids=new Array(N), gScale=new Float32Array(N), gAmp=new Float32Array(N), rowW=new Int32Array(N);
+  let ampSum=0;
+  for (let k=0;k<N;k++){
+    const G=OCT[k].G, row=G+1, g=new Float32Array(row*row);
+    for (let y=0;y<G;y++) for (let x=0;x<G;x++) g[y*row+x]=Math.random();
+    for (let y=0;y<=G;y++) g[y*row+G]=g[y*row];     // wrap right = left
+    for (let x=0;x<=G;x++) g[G*row+x]=g[x];         // wrap bottom = top
+    grids[k]=g; gScale[k]=G/T; gAmp[k]=OCT[k].amp; rowW[k]=row; ampSum+=OCT[k].amp;
+  }
+  const invAmp=1/ampSum;
   mistTile=document.createElement('canvas'); mistTile.width=T; mistTile.height=T;
   const mctx=mistTile.getContext('2d');
   const mi=mctx.createImageData(T,T), md=mi.data;
-  const sc=G/T;
+  const rowY0=new Int32Array(N), rowSY=new Float32Array(N);
   for (let py=0;py<T;py++){
-    const gy=py*sc, y0=gy|0, fy=gy-y0, sY=fy*fy*(3-2*fy);
+    for (let k=0;k<N;k++){
+      const gy=py*gScale[k], y0=gy|0, fy=gy-y0;
+      rowY0[k]=y0; rowSY[k]=fy*fy*(3-2*fy);
+    }
     for (let px=0;px<T;px++){
-      const gx=px*sc, x0=gx|0, fx=gx-x0, sX=fx*fx*(3-2*fx);
-      const a=grid[y0*(G+1)+x0], b=grid[y0*(G+1)+x0+1], c2=grid[(y0+1)*(G+1)+x0], e=grid[(y0+1)*(G+1)+x0+1];
-      const v=(a*(1-sX)+b*sX)*(1-sY)+(c2*(1-sX)+e*sX)*sY;          // 0..1
+      let sum=0;
+      for (let k=0;k<N;k++){
+        const sc=gScale[k], g=grids[k], rw=rowW[k];
+        const gx=px*sc, x0=gx|0, fx=gx-x0, sX=fx*fx*(3-2*fx);
+        const i=rowY0[k]*rw+x0, sY=rowSY[k];
+        const ab=g[i]+(g[i+1]-g[i])*sX;
+        const cd=g[i+rw]+(g[i+rw+1]-g[i+rw])*sX;
+        sum += (ab+(cd-ab)*sY)*gAmp[k];
+      }
+      let v=sum*invAmp;
+      v=0.5+(v-0.5)*FOG_CONTRAST; v=v<0?0:v>1?1:v;
       const o=(py*T+px)*4;
       md[o]  =(FOG_MIST_LO[0]+(FOG_MIST_HI[0]-FOG_MIST_LO[0])*v)|0;
       md[o+1]=(FOG_MIST_LO[1]+(FOG_MIST_HI[1]-FOG_MIST_LO[1])*v)|0;
@@ -4396,10 +4709,8 @@ function buildMistTile(){
 // transform, so the clouds sit on the terrain and pan/zoom WITH it (not pasted to the screen). `ppw` =
 // on-context px per world tile (`cp` for the full-res ctx, `cp*FOG_SCREEN_SCALE` for the half-res
 // shroud). `jcx/jcy` shift the anchor by a few WORLD cells → the in-place "dance" (bounded jiggle).
-const FOG_NOISE_WORLD_PER_PX = 1.5;   // world tiles per noise-tile pixel → cloud grain/scale
-const FOG_JIGGLE_CELLS = 2;           // ± world cells the fog dances in place
-function fillMistWorld(c, cw, ch, pat, ppw, jcx, jcy, alpha){
-  const s  = ppw * FOG_NOISE_WORLD_PER_PX;            // px per noise-pixel (zoom-scaled)
+function fillMistWorld(c, cw, ch, pat, ppw, wpp, jcx, jcy, alpha){
+  const s  = ppw * wpp;                               // px per noise-pixel (zoom-scaled)
   const tx = cw/2 - (view.x - jcx) * ppw;             // world (0,0) → context px, + jiggle (cells)
   const ty = ch/2 - (view.y - jcy) * ppw;
   if (s <= 0) return;
@@ -4455,8 +4766,8 @@ function drawFog(v, cp, W, H) {
   fctx.fillStyle=FOG_BASE_CSS; fctx.fillRect(0,0,sw,sh);                         // opaque light-blue base
   fctx.imageSmoothingEnabled=true;
   const ppwS=cp*FOG_SCREEN_SCALE;                                               // half-res px per world tile
-  fillMistWorld(fctx, sw, sh, mistPattern, ppwS, jAx, jAy, 0.55);               // layer A (world-anchored)
-  fillMistWorld(fctx, sw, sh, mistPattern, ppwS, jBx, jBy, 0.35);               // layer B (different dance)
+  fillMistWorld(fctx, sw, sh, mistPattern, ppwS, FOG_NOISE_WPP_A, jAx, jAy, 0.50); // A: coarse soft base
+  fillMistWorld(fctx, sw, sh, mistPattern, ppwS, FOG_NOISE_WPP_B, jBx, jBy, 0.30); // B: fine detail
   // Erase the reveal (scaled to half-res). Outside the revealed area the shroud stays fully opaque.
   fctx.globalCompositeOperation='destination-out';
   if (useCache) {
@@ -4483,7 +4794,8 @@ function drawFog(v, cp, W, H) {
 
 function render() {
   const cp=CELL*view.zoom;
-  const W=cvs.width, H=cvs.height;
+  const W=viewW, H=viewH;
+  ctx.setTransform(DPR,0,0,DPR,0,0);   // base CSS-px→device transform (re-asserted each frame)
   ctx.imageSmoothingEnabled=false;
 
   // Compute viewport: either from vw (tile payload) or just from view center
@@ -4505,7 +4817,7 @@ function render() {
   if (mapVisible) {
     ctx.fillStyle = browsable ? '#c8d8e8' : VOID_GREY_CSS; ctx.fillRect(0,0,W,H);
     // Prefer the MapLibre vector basemap when active (4-tier labels); else the raster path.
-    if (!blitVectorBasemap(cp, W, H)) drawOsmTiles(cp, W, H);
+    blitVectorBasemap(cp, W, H);   // vector basemap (OpenFreeMap); legacy OSM raster removed
   } else {
     ctx.fillStyle = browsable ? '#ffffff' : VOID_GREY_CSS; ctx.fillRect(0,0,W,H);
   }
@@ -4606,7 +4918,7 @@ function render() {
 
   // Placement mode hover: glowing queen sprite
   if (placingMode && hover) {
-    const blocked = tileInForbiddenZone(hover, forbiddenPlaceR) || hoverIsWater;
+    const blocked = rangeHasRed(hover) || hoverIsWater;
     const hx = hover.x - v.x0, hy = hover.y - v.y0;
     const QSZ = 2;
     const px = offX + hx * cp, py = offY + hy * cp;
@@ -4671,19 +4983,12 @@ function render() {
     }
     ctx.fillStyle=q.color;     // queen's own colour (no shared alliance colour)
     ctx.fillRect(px,py,qw,qw);
-    ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1,cp*.1);
+    ctx.strokeStyle='#0d0d0d'; ctx.lineWidth=Math.max(1.5,cp*.14);   // bolder outline for clarity
     ctx.strokeRect(px,py,qw,qw);
     // Queen AURA cosmetic — ringed around the body (queens are few → always drawn).
     { const ar=cosmRoster[q.id]; if (ar&&ar.aura && cosmActive()) cosmGuard('queen-aura', ()=>drawEntityAura(px+qw/2, py+qw/2, qw*0.9, ar.aura, true, q.x+q.size/2, q.y+q.size/2, 0, 0)); }
-    const _fic=factionIcon[q.id];                  // alliance emblem above the queen
-    if (_fic && cp>=2) { ctx.save(); ctx.font=`${Math.max(9,qw*0.5)}px serif`; ctx.textAlign='center'; ctx.textBaseline='bottom'; ctx.fillText(_fic, px+qw/2, py-(cp>=4?8:3)); ctx.restore(); }
-    // (Queen emblem slot retired — emoji glyphs were the banned icon-as-cosmetic; see catalogue.)
-    if (qw>=12) {
-      ctx.fillStyle='#0d0d0d';
-      ctx.font=`${qw*.5}px serif`;
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText('♛', px+qw/2, py+qw/2);
-    }
+    // (Alliance emblem-above-queen removed by request; alliance identity lives in its own window.)
+    // (Queen crown glyph removed by request — the ink-outlined coloured body + HP bar + aura read it.)
     if (cp>=4) {
       // Hide the HP bar at full health; clamp ratios so a bar never over/under-draws.
       const hpFrac=Math.max(0,Math.min(1,q.hp/q.maxHp));
@@ -4695,6 +5000,18 @@ function render() {
         const shFrac=Math.max(0,Math.min(1,q.shield/q.maxHp));
         ctx.fillStyle='#4488ff';
         ctx.fillRect(px,(hpFrac<1?py-9:py-5),qw*shFrac,3);
+      }
+      // Enemy queen name label — opaque dark box + white text above the HP/shield bar.
+      if (q.id!==(me?.id) && q.username && q.username!=='???') {
+        const nm=q.username.slice(0,14);
+        ctx.font='7px "Press Start 2P",monospace'; ctx.textAlign='center'; ctx.textBaseline='bottom';
+        const tw=ctx.measureText(nm).width, pad=3;
+        const cx=px+qw/2, topY=py-(hpFrac<1?9:5)-2;
+        ctx.fillStyle='rgba(13,13,13,.85)';
+        ctx.fillRect(cx-tw/2-pad, topY-11, tw+pad*2, 11);
+        ctx.fillStyle='#fff';
+        ctx.fillText(nm, cx, topY-1.5);
+        ctx.textAlign='left'; ctx.textBaseline='alphabetic';
       }
     }
   }
@@ -4787,7 +5104,9 @@ function render() {
         drawEntityAura(px+half, py+half, (kind===1?cp*1.1:cp*0.7), ar.aura, kind===1, lx+c, ly+c, adx, ady); }); }
   }
   // Aura particle pool — update + draw once per frame, over the entities (trailing comet/stardust).
-  if ((auraAny||pcount) && cosmActive()) cosmGuard('aura-particles', ()=>stepAuraParticles(cp));
+  // Runs whenever ANY particle is live (`pcount`), so clash-conversion bursts always draw even with
+  // cosmetics off/shed; aura emission itself still only happens when cosmetics are active.
+  if (pcount || (auraAny && cosmActive())) cosmGuard('aura-particles', ()=>stepAuraParticles(cp));
 
   // 8) Floating texts (+XP, damage numbers)
   if (vw && floatingTexts.length) {
@@ -4844,8 +5163,10 @@ function render() {
     ctx.restore();
   }
 
-  // 10b) Off-screen QUEEN marker — a chevron pinned to the screen edge pointing home, so after
-  // roaming into the fog you can always find (and fly back to) your queen. Only when she's off-screen.
+  // 10b) Off-screen QUEEN marker — a refined teardrop pointer pinned to the screen edge pointing
+  // home, so after roaming into the fog you can always find (and tap to fly back to) your queen.
+  // It is a live control: `queenArrowHit` exposes its CSS-px hot-zone to the click/tap handlers.
+  queenArrowHit = null;
   if (me?.queen && !me.queen.dead && !worldBrowsable()) {
     const qcx = me.queen.x + (me.queen.size||2)/2, qcy = me.queen.y + (me.queen.size||2)/2;
     const qsx = W/2 + (qcx - view.x)*cp, qsy = H/2 + (qcy - view.y)*cp;
@@ -4857,24 +5178,34 @@ function render() {
       const tEdge = Math.min(hx/Math.max(Math.abs(c),1e-6), hy/Math.max(Math.abs(s),1e-6));
       const ax = W/2 + c*tEdge, ay = H/2 + s*tEdge;
       const col = safeColor(me.color || '#ffb800');
-      const pulse = 0.75 + 0.25*Math.sin(performance.now()/300);
-      const r = 14;
+      const pulse = 0.78 + 0.22*Math.sin(performance.now()/360);
+      const r = 15;
+      queenArrowHit = {x:ax, y:ay, r:r};                            // hot-zone for tap-to-recenter
       ctx.save();
-      ctx.translate(ax, ay); ctx.rotate(ang);
-      ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowBlur=6;
-      ctx.globalAlpha=pulse; ctx.fillStyle=col;
+      ctx.translate(ax, ay);
+      // soft pulsing halo — signals "this is an interactive control"
+      ctx.globalAlpha = 0.16*pulse; ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(0,0,r+5,0,Math.PI*2); ctx.fill();
+      // teardrop pointer in the queen's colour, ink-outlined, soft drop shadow (on-brand soft shape)
+      ctx.rotate(ang);
+      ctx.shadowColor='rgba(0,0,0,0.40)'; ctx.shadowBlur=6; ctx.shadowOffsetY=1;
+      ctx.globalAlpha = 0.96; ctx.fillStyle = col;
       ctx.beginPath();
-      ctx.moveTo(r,0); ctx.lineTo(-r*0.7, r*0.85); ctx.lineTo(-r*0.25,0); ctx.lineTo(-r*0.7,-r*0.85);
+      ctx.moveTo(r,0);
+      ctx.quadraticCurveTo(r*0.10, r*0.34, -r*0.62, r*0.62);
+      ctx.quadraticCurveTo(-r*0.18, 0, -r*0.62, -r*0.62);
+      ctx.quadraticCurveTo(r*0.10, -r*0.34, r,0);
       ctx.closePath(); ctx.fill();
-      ctx.globalAlpha=1; ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.shadowBlur=0; ctx.shadowOffsetY=0; ctx.globalAlpha=1;
+      ctx.lineWidth=1.4; ctx.strokeStyle='rgba(13,13,13,0.55)'; ctx.stroke();
       ctx.restore();
-      // distance (tiles) just inside the arrow, upright
+      // distance (tiles) just inside the arrow, upright — no crown glyph
       const dist = Math.hypot(qcx - view.x, qcy - view.y);
       const dtxt = dist>=1000 ? (dist/1000).toFixed(1)+'k' : Math.round(dist)+'';
       ctx.save();
       ctx.font='8px "Press Start 2P",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillStyle='#fff'; ctx.shadowColor='rgba(0,0,0,0.85)'; ctx.shadowBlur=4;
-      ctx.fillText('♛'+dtxt, W/2 + c*(tEdge-28), H/2 + s*(tEdge-28));
+      ctx.fillText(dtxt, W/2 + c*(tEdge-30), H/2 + s*(tEdge-30));
       ctx.restore();
     }
   }
@@ -4947,9 +5278,11 @@ function loop(t) {
   // Frame delta (ms), clamped so a backgrounded/janky tab can't cause a huge camera jump.
   const dt = camLastT ? Math.min(100, t-camLastT) : 16;
   camLastT = t;
-  // Keep canvas pixel buffer in sync with its CSS layout size
+  // Keep canvas pixel buffer in sync with its CSS layout size (and re-render at the right DPR when the
+  // window crosses to a monitor with a different devicePixelRatio).
   const _r=cvs.getBoundingClientRect();
-  if (cvs.width!==(_r.width|0) || cvs.height!==(_r.height|0)) { resize(); clampView(); }
+  const _dpr=Math.min(window.devicePixelRatio||1, 2);
+  if (viewW!==(_r.width|0) || viewH!==(_r.height|0) || DPR!==_dpr) { resize(); clampView(); }
   if (t-fpsT>500) {
     $('d-fps').textContent=((frameCount*1000/(t-fpsT))|0);
     frameCount=0; fpsT=t;
@@ -4992,6 +5325,9 @@ let forbiddenZones = []; // [{x, y, r}] - rendered as red gradients during place
 // (zones can never intersect), so queen-placement checks inflate each zone by this; ant/brute
 // placement uses the raw zone radius (no deploying inside an enemy bubble).
 let forbiddenPlaceR = 0;
+// Queen-placement clearance radius (server `place-info.r`) + the foreign-occupancy mask sentinel.
+const MASK_OWNER = 4294967295;   // 0xFFFFFFFF — server's red placement-mask owner id (network::MASK_OWNER)
+let placeRangeR = 30;
 function screenToTile(sx,sy) {
   const r=cvs.getBoundingClientRect();
   const cp=CELL*view.zoom;
@@ -5023,7 +5359,7 @@ cvs.addEventListener('mousedown', e => {
   } else if (mode==='place-queen') {
     if (!tile || _queenPlaceCooldown) return;
     if (hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); return; }
-    if (tileInForbiddenZone(tile, forbiddenPlaceR)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); return; }
+    if (rangeHasRed(tile)) { toast('FOREIGN TERRITORY IN RANGE'); return; }
     _queenPlaceCooldown = true;
     setTimeout(() => { _queenPlaceCooldown = false; }, 600);
     // RELOCATE reuses the full placement flow (geolocate + forbidden zones) — same screen, but the
@@ -5073,11 +5409,11 @@ window.addEventListener('mousemove', e => {
       card.style.display='block';
       card.style.left=(e.clientX+18)+'px';
       card.style.top=Math.max(10,e.clientY-58)+'px';
-      const blocked = tileInForbiddenZone(hover, forbiddenPlaceR);
+      const blocked = rangeHasRed(hover);
       if (blocked) {
         card.className='bad';
         $('ss-card-title').textContent='✕ BLOCKED';
-        $('ss-card-sub').textContent='Enemy queen nearby';
+        $('ss-card-sub').textContent='Foreign territory in range';
       } else if (hoverIsWater) {
         card.className='water';
         $('ss-card-title').textContent='〰 OCEAN';
@@ -5133,15 +5469,19 @@ window.addEventListener('mouseup', () => {
     dragFrom = null;
   }
   if (mode==='shop-brute-drag' && dragFrom && shopOrigin) {
-    $('dir-overlay').style.display='none';
-    if (tileInForbiddenZone(shopOrigin)) toast('TOO CLOSE TO AN ENEMY QUEEN');
-    else send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
-    dragFrom=null; exitShopMode();
+    finishBrutePlacement(shopOrigin, shopDir);
   }
   if (dragging) { dragging=false; cvs.classList.remove('dragging'); dragFrom=null; }
   if (mouseDownAt) {
-    // Was a click (never became a drag) — inspect what was clicked
-    inspectAtTile(screenToTile(mouseDownAt.x, mouseDownAt.y));
+    // Was a click (never became a drag). The off-screen queen arrow is a live control: a click in
+    // its hot-zone flies the camera home (mirrors #btn-recenter); otherwise inspect what was clicked.
+    const rr=cvs.getBoundingClientRect();
+    const lx=mouseDownAt.x-rr.left, ly=mouseDownAt.y-rr.top;
+    if (queenArrowHit && me?.queen && Math.hypot(lx-queenArrowHit.x, ly-queenArrowHit.y) <= queenArrowHit.r*1.5) {
+      AudioEngine.click(); panTarget={x:me.queen.x+1, y:me.queen.y+1};
+    } else {
+      inspectAtTile(screenToTile(mouseDownAt.x, mouseDownAt.y));
+    }
     mouseDownAt=null;
   }
 });
@@ -5224,7 +5564,7 @@ cvs.addEventListener('touchstart', e=>{
 
 cvs.addEventListener('touchmove', e=>{
   e.preventDefault();
-  const W=cvs.width, H=cvs.height;
+  const W=viewW, H=viewH;
 
   if (e.touches.length===2 && _pinch) {
     const r=cvs.getBoundingClientRect();
@@ -5283,12 +5623,8 @@ function _onTouchEnd(e){
 
   } else if (mode==='shop-brute-drag') {
     // Finalize brute placement (same as mouseup). A pure tap (no drag) sends the default [0,-1].
-    $('dir-overlay').style.display='none';
-    if (shopOrigin) {
-      if (tileInForbiddenZone(shopOrigin)) toast('TOO CLOSE TO AN ENEMY QUEEN');
-      else send({t:'shop-buy',item:'brute',x:shopOrigin.x,y:shopOrigin.y,dx:shopDir[0],dy:shopDir[1]});
-    }
-    dragFrom=null; exitShopMode();
+    if (shopOrigin) finishBrutePlacement(shopOrigin, shopDir);
+    else { $('dir-overlay').style.display='none'; dragFrom=null; exitShopMode(); }
 
   } else if (_tpTapStart && e.changedTouches.length>=1) {
     const t=e.changedTouches[0];
@@ -5299,7 +5635,7 @@ function _onTouchEnd(e){
       // Tap-to-place modes — mirror the mousedown branches so mobile reaches full parity.
       if (mode==='place-queen') {
         if (tile && hoverIsWater) { toast('OPEN WATER — Queens cannot spawn here'); }
-        else if (tile && tileInForbiddenZone(tile, forbiddenPlaceR)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); }
+        else if (tile && rangeHasRed(tile)) { toast('FOREIGN TERRITORY IN RANGE'); }
         else if (tile) { send(relocating ? {t:'shop-buy',item:'relocate',x:tile.x,y:tile.y} : {t:'place-queen',x:tile.x,y:tile.y}); }
       } else if (mode==='admin-move') {
         if (tile && adminMoveTargetId!==null)
@@ -5314,8 +5650,14 @@ function _onTouchEnd(e){
         mode='idle'; cvs.style.cursor='';
         const b=$('adm-mon-place-btn'); if(b){ b.textContent='⬩ PLACE MONUMENT'; b.style.background=''; b.style.color=''; }
       } else {
-        // Idle tap → inspect whatever is under the finger (mirrors the desktop click→inspect path).
-        inspectAtTile(tile);
+        // Idle tap → tap the off-screen queen arrow to fly home, else inspect under the finger.
+        const rr=cvs.getBoundingClientRect();
+        const lx=t.clientX-rr.left, ly=t.clientY-rr.top;
+        if (queenArrowHit && me?.queen && Math.hypot(lx-queenArrowHit.x, ly-queenArrowHit.y) <= queenArrowHit.r*1.8) {
+          AudioEngine.click(); panTarget={x:me.queen.x+1, y:me.queen.y+1};
+        } else {
+          inspectAtTile(tile);
+        }
       }
     }
   }
@@ -5377,7 +5719,7 @@ function enterRelocate() {
   panLocked=true;                 // browsable: free pan + whole-world zoom + global basemap load
   view.x=me.queen.x+1; view.y=me.queen.y+1; view.zoom=zoomTarget=1.0;
   mode='place-queen'; cvs.classList.add('placing');
-  hideSpawnScreen(); showSpawnScreen(); startForbiddenPoll();
+  hideSpawnScreen(); showSpawnScreen();
   doGeolocate();
 }
 
@@ -5398,7 +5740,8 @@ function shopBuy(item) {
   startForbiddenPoll();           // enemy queen zones are no-deploy — show + block them live
   closeSidebar();                 // MOBILE: reveal the map for placement (brute)
   $('prompt').style.display='';
-  $('prompt').textContent='Click start tile, drag direction';
+  $('prompt').textContent='Click start tile, drag direction · click DEPLOY again to stop';
+  syncMnavDeploy(true);           // MOBILE: brute placement active → bottom-nav shows STOP
 }
 
 function exitShopMode() {
@@ -5408,6 +5751,22 @@ function exitShopMode() {
   stopForbiddenPoll();
   $('prompt').style.display='none';
   $('dir-overlay').style.display='none';
+  syncMnavDeploy(false);
+}
+
+// Continuous brute deploy: drop one brute, optimistically debit its 20-nectar price, and STAY in
+// shop-brute mode so the player can keep clicking — exactly like the worker sticky-place flow.
+// Placement stops only when the (optimistic) balance can no longer afford another; the next
+// authoritative `me` reconciles the real balance. The server independently validates each purchase.
+function finishBrutePlacement(origin, dir) {
+  $('dir-overlay').style.display='none';
+  dragFrom=null;
+  if (tileInForbiddenZone(origin)) { toast('TOO CLOSE TO AN ENEMY QUEEN'); mode='shop-brute'; return; }
+  send({t:'shop-buy',item:'brute',x:origin.x,y:origin.y,dx:dir[0],dy:dir[1]});
+  if (me && !me.unlimitedNectar) me.nectar=Math.max(0,(me.nectar||0)-20);   // optimistic; reconciled by next `me`
+  if (me && !me.unlimitedNectar && (me.nectar||0)<20) { exitShopMode(); toast('OUT OF NECTAR'); }
+  else mode='shop-brute';                                                   // sticky: ready for the next click+drag
+  updateHUD();                                                             // refresh nectar chip + DEPLOY label now
 }
 function spawnDist(tile) {
   const dx=tile.x-WORLD.spawnX, dy=tile.y-WORLD.spawnY;
@@ -5422,20 +5781,43 @@ function tileInZone(tile, z, extraR) {
 function tileInForbiddenZone(tile, extraR) {
   return !!tile && forbiddenZones.some(z => tileInZone(tile, z, extraR));
 }
+// Queen-placement gate: does the queen's initial range (radius placeRangeR around its center) overlap
+// any RED mask cell (foreign territory, server-dilated)? Mirrors the server's range_has_foreign_tile;
+// the client gates on the dilated red, so a green spot is always server-legal. Scans only the range bbox.
+function placeCenterOf(tile) {
+  const sz = (relocating && me && me.queen && !me.queen.dead) ? (me.queen.size||2) : 2;
+  return { cx: tile.x + (sz>>1), cy: tile.y + (sz>>1) };
+}
+function rangeHasRed(tile) {
+  if (!tile || !vw || !vw.tiles) return false;
+  const { cx, cy } = placeCenterOf(tile);
+  const s = vw.lod||1, r = placeRangeR, r2 = r*r;
+  // Direct cell under the center — robust at LOD where the range is sub-cell.
+  const cgx = Math.floor((cx-vw.x0)/s), cgy = Math.floor((cy-vw.y0)/s);
+  if (cgx>=0 && cgx<vw.w && cgy>=0 && cgy<vw.h && vw.tiles[cgy*vw.w+cgx]===MASK_OWNER) return true;
+  const gx0 = Math.max(0, Math.floor((cx-r-vw.x0)/s)), gx1 = Math.min(vw.w-1, Math.ceil((cx+r-vw.x0)/s));
+  const gy0 = Math.max(0, Math.floor((cy-r-vw.y0)/s)), gy1 = Math.min(vw.h-1, Math.ceil((cy+r-vw.y0)/s));
+  for (let gy=gy0; gy<=gy1; gy++) { const wy=vw.y0+gy*s, ddy=wy-cy;
+    for (let gx=gx0; gx<=gx1; gx++) { const wx=vw.x0+gx*s, ddx=wx-cx;
+      if (ddx*ddx+ddy*ddy<=r2 && vw.tiles[gy*vw.w+gx]===MASK_OWNER) return true; } }
+  return false;
+}
 function showSpawnScreen() {
   $('spawn-screen').classList.add('vis');
+  sendPlaceMode(true);   // server serves the anonymized red placement mask while choosing a spot
   updateSpawnStatus();
   initialGeolocate = true;
   setTimeout(() => { if (mode === 'place-queen') doGeolocate(); }, 50);
 }
 function hideSpawnScreen() {
   $('spawn-screen').classList.remove('vis');
+  sendPlaceMode(false);   // leaving placement → server resumes normal (real) territory frames
   $('ss-card').style.display='none';
   hoverIsWater = false;
   _waterCheckTile = null;
 }
 function updateSpawnStatus() {
-  $('ss-queen-count').textContent = forbiddenZones.length;
+  $('ss-queen-count').textContent = '—';   // queen count hidden during placement (anti-inference)
   if (me) {
     $('ss-color').style.background = me.color;
     $('ss-name').textContent = me.username;
@@ -5444,6 +5826,10 @@ function updateSpawnStatus() {
   }
 }
 let forbiddenPollId = null;
+
+// Queen placement: tell the server to serve the anonymized red occupancy mask (or stop). Replaces the
+// forbidden-zone poll for queen placement; ant/brute deploy still uses startForbiddenPoll below.
+function sendPlaceMode(on){ if (ws && ws.readyState===1) send({ t: 'place-mode', on: !!on }); }
 
 function startForbiddenPoll() {
   if (forbiddenPollId) return;
@@ -5461,6 +5847,9 @@ function setWorkerType(t) {
   workerType=t;
   $('wk-type-normal').classList.toggle('active',t==='normal');
   $('wk-type-brute').classList.toggle('active',t==='brute');
+  // MOBILE deploy-bar twins reflect the same active state.
+  if ($('m-wk-normal')) $('m-wk-normal').classList.toggle('active',t==='normal');
+  if ($('m-wk-brute'))  $('m-wk-brute').classList.toggle('active',t==='brute');
   // Leaving a half-started placement of the other type
   if (mode==='place-ant-down'||mode==='place-ant-drag') exitPlaceMode();
   if (mode.startsWith('shop-brute')) exitShopMode();
@@ -5468,6 +5857,12 @@ function setWorkerType(t) {
 }
 function updateDeployBtn() {
   const b=$('btn-ant'); if (!b) return;
+  // MOBILE deploy-bar readout: READY ants (worker) or the brute COST (kept in sync even mid-placement).
+  if ($('m-ready')) {
+    const isBrute = workerType==='brute';
+    if ($('m-dep-l')) $('m-dep-l').textContent = isBrute ? 'COST' : 'READY';
+    $('m-ready').textContent = isBrute ? '20' : (me?.unlimitedAnts ? '∞' : (me?.antsAvail||0));
+  }
   // Don't fight the "STOP PLACING" label while a placement is active.
   if (mode==='place-ant-down'||mode==='place-ant-drag'||mode.startsWith('shop-brute')) return;
   const q=me?.queen, haveQ=!!(q&&!q.dead);
@@ -5560,14 +5955,16 @@ $('admin-chk').onchange=e=>{
   AudioEngine.tick();
   document.body.classList.toggle('admin-on',e.target.checked);
 };
-$('btn-recenter').onclick=()=>{ AudioEngine.click(); if (me?.queen) panTarget={x:me.queen.x+1,y:me.queen.y+1}; };
-$('btn-logout').onclick=()=>{
+// Center-queen is still accessible via the queen-arrow hot-zone tap (see ~5040/5334) — the
+// sidebar button was removed; this handler is gone with it.
+// Logout lives in the Settings window + the mobile drawer (the header button was removed). One impl.
+function doLogout(){
   AudioEngine.click();
   try{ localStorage.removeItem('antarchy-handle'); sessionStorage.removeItem('hive-active'); }catch(_){}
   // Revoke the session server-side (clears the HttpOnly cookie), then return to the landing page.
   // `credentials:'same-origin'` sends the cookie; the Origin header satisfies the CSRF guard.
   fetch('/api/logout',{method:'POST',credentials:'same-origin'}).finally(()=>{ location.href='/'; });
-};
+}
 
 /* AUTH */
 function showStep(n) {
@@ -6004,7 +6401,11 @@ function admLoadPreset(slot) {
   } catch { toast('PRESET '+slot+' CORRUPT'); }
 }
 function admCfgReset() {
-  AudioEngine.click(); send({t:'admin-cfg-reset'}); toast('CFG RESET TO DEFAULTS');
+  AudioEngine.click();
+  // Restores the XP curve + paint-XP + prices to code defaults, re-levels live queens to the new
+  // curve, and writes config.json immediately. Destructive to slider tuning → confirm once.
+  if (!confirm('Reset ALL gameplay tuning to defaults?\n\nRestores the XP curve & paint-XP, re-levels live queens, and saves config.json. Any slider tweaks are lost.')) return;
+  send({t:'admin-cfg-reset'}); toast('CONFIG RESET TO DEFAULTS · saved');
 }
 
 /* legacy compat — keep old target-panel functions working for canvas click path */
@@ -6035,7 +6436,7 @@ document.addEventListener('click', () => AudioEngine.init(), { once: true });
 document.addEventListener('keydown', e => {
   // Skip if user is typing in an input
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-  const panStep = () => (cvs.height / (CELL * view.zoom)) * 0.2 * panFriction();  // slowed in fog
+  const panStep = () => (viewH / (CELL * view.zoom)) * 0.2 * panFriction();  // slowed in fog
   switch (e.key) {
     case 'w': case 'W': case 'ArrowUp':    view.y -= panStep(); clampView(); panTarget=null; break;
     case 's': case 'S': case 'ArrowDown':  view.y += panStep(); clampView(); panTarget=null; break;
@@ -6068,6 +6469,10 @@ document.addEventListener('keydown', e => {
 
 /* Apply saved user settings (sfx / music / scanlines / master volume) before audio starts */
 applySettings();
+
+// Push the HUD rectangle ad unit (sidebar, below RANKINGS). Wrapped in try/catch so a blocked
+// ad SDK never throws into the boot path.
+try { (adsbygoogle=window.adsbygoogle||[]).push({}); } catch(e) {}
 
 connect();
 requestAnimationFrame(loop);
